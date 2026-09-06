@@ -279,17 +279,31 @@ public class DeduplicatingContentRetriever implements ContentRetriever {
                 .filter(RetrievalRouteResult::hasUsableContent).toList();
         int maxRouteSize = routes.stream().mapToInt(route -> route.contents().size()).max().orElse(0);
         Map<String, RetrievedCandidate> exactUnique = new LinkedHashMap<>();
+        // Secondary index for canonical chunk alignment: a graph segment and
+        // its vector/BM25 chunk describe the same source text and must fuse
+        // even when the route texts differ slightly.
+        Map<String, RetrievedCandidate> uniqueByChunkUuid = new LinkedHashMap<>();
         for (int index = 0; index < maxRouteSize; index++) {
             for (RetrievalRouteResult route : routes) {
                 if (index < route.contents().size()) {
                     RetrievedCandidate candidate = RetrievedCandidate.from(
                             route.contents().get(index), route.route(), index + 1);
                     String key = normalize(candidate.text());
+                    RetrievedCandidate existing = StringUtils.isNotBlank(key)
+                            ? exactUnique.get(key)
+                            : null;
+                    if (existing == null && candidate.chunkUuid() != null) {
+                        existing = uniqueByChunkUuid.get(candidate.chunkUuid());
+                    }
+                    if (existing != null) {
+                        existing.merge(candidate);
+                        continue;
+                    }
                     if (StringUtils.isNotBlank(key)) {
-                        exactUnique.merge(key, candidate, (existing, duplicate) -> {
-                            existing.merge(duplicate);
-                            return existing;
-                        });
+                        exactUnique.put(key, candidate);
+                    }
+                    if (candidate.chunkUuid() != null) {
+                        uniqueByChunkUuid.put(candidate.chunkUuid(), candidate);
                     }
                 }
             }
@@ -330,20 +344,26 @@ public class DeduplicatingContentRetriever implements ContentRetriever {
 
     private boolean shouldProtectVectorEvidence(List<RetrievalRouteResult> results) {
         boolean rerankSuccessful = lastRerankResult != null && lastRerankResult.successful();
-        if (rerankSuccessful || retrievalProperties.getHybridProtectedVectorCount() <= 0) {
-            return false;
-        }
-        Set<String> requestedRoutes = results.stream()
+        Set<String> routesWithUsableContent = results.stream()
+                .filter(RetrievalRouteResult::hasUsableContent)
                 .map(RetrievalRouteResult::route)
                 .collect(java.util.stream.Collectors.toSet());
-        if (!requestedRoutes.equals(Set.of("vector", "graph"))) {
+        return shouldProtectVectorEvidence(rerankSuccessful,
+                retrievalProperties.getHybridProtectedVectorCount(), routesWithUsableContent);
+    }
+
+    /**
+     * Protection is keyed on vector and graph evidence coexisting. Whether
+     * additional routes (for example BM25) also contributed must not silently
+     * disable it.
+     */
+    static boolean shouldProtectVectorEvidence(boolean rerankSuccessful, int protectedCount,
+                                               Set<String> routesWithUsableContent) {
+        if (rerankSuccessful || protectedCount <= 0) {
             return false;
         }
-        boolean hasVector = results.stream()
-                .anyMatch(result -> "vector".equals(result.route()) && result.hasUsableContent());
-        boolean hasGraph = results.stream()
-                .anyMatch(result -> "graph".equals(result.route()) && result.hasUsableContent());
-        return hasVector && hasGraph;
+        return routesWithUsableContent.contains("vector")
+                && routesWithUsableContent.contains("graph");
     }
 
     private boolean isEpisodicMemorySource() {
@@ -457,6 +477,14 @@ public class DeduplicatingContentRetriever implements ContentRetriever {
         int graphTokens = 0;
         for (RetrievedCandidate candidate : ordered) {
             if (selected.size() >= topN) break;
+            // diversifyCandidates only demotes near-duplicates (for example a
+            // graph segment and its vector chunk) to the tail; do not let them
+            // back into the packed context where they repeat evidence.
+            if (!selected.isEmpty() && isRedundant(candidate.text(), selected.stream()
+                    .map(RetrievedCandidate::text).toList())) {
+                deferred.add(candidate);
+                continue;
+            }
             int tokens = estimator.estimateTokenCountInText(candidate.text());
             boolean relation = RetrievedCandidate.GRAPH_RELATION.equals(candidate.contentType());
             String documentId = candidate.documentId();
@@ -472,9 +500,14 @@ public class DeduplicatingContentRetriever implements ContentRetriever {
             if (relation) graphTokens += tokens;
             if (StringUtils.isNotBlank(documentId)) documentCounts.merge(documentId, 1, Integer::sum);
         }
-        // The per-document cap is soft. Refill with relevant evidence when room remains.
+        // The per-document cap is soft. Refill with relevant evidence when room
+        // remains, but never re-admit near-duplicates of already packed text.
         for (RetrievedCandidate candidate : deferred) {
             if (selected.size() >= topN) break;
+            if (isRedundant(candidate.text(), selected.stream()
+                    .map(RetrievedCandidate::text).toList())) {
+                continue;
+            }
             int tokens = estimator.estimateTokenCountInText(candidate.text());
             boolean relation = RetrievedCandidate.GRAPH_RELATION.equals(candidate.contentType());
             if (usedTokens + tokens <= tokenBudget

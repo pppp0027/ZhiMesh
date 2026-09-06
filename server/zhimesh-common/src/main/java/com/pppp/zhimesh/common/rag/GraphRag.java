@@ -179,6 +179,24 @@ public class GraphRag {
 
     public void ingest(GraphIngestParam graphIngestParam) {
         log.info("GraphRag ingest");
+        buildIngestor(graphIngestParam).ingest(graphIngestParam.getDocument());
+    }
+
+    /**
+     * Ingests the canonical chunks shared with the vector and BM25 branches so
+     * graph segment text and chunk provenance stay identical to those routes.
+     * A null or empty segment list falls back to the legacy re-splitting path.
+     */
+    public void ingest(GraphIngestParam graphIngestParam, List<TextSegment> canonicalSegments) {
+        if (canonicalSegments == null || canonicalSegments.isEmpty()) {
+            ingest(graphIngestParam);
+            return;
+        }
+        log.info("GraphRag ingest with {} canonical segments", canonicalSegments.size());
+        buildIngestor(graphIngestParam).ingestSegments(canonicalSegments);
+    }
+
+    private GraphStoreIngestor buildIngestor(GraphIngestParam graphIngestParam) {
         User user = graphIngestParam.getUser();
         DocumentSplitter documentSplitter = DocumentSplitterFactory.create(
                 graphIngestParam.getStrategy(),
@@ -226,7 +244,7 @@ public class GraphRag {
                 .graphIndexVersionUuid(graphIngestParam.getGraphIndexVersionUuid())
                 .graphStore(graphStore)
                 .build();
-        ingestor.ingest(graphIngestParam.getDocument());
+        return ingestor;
     }
 
     private Triple<TextSegment, String, String> extractSegment(

@@ -113,26 +113,15 @@ public class GraphStoreIngestor {
     }
 
     public void ingest(List<Document> documents) {
+        ingestSegments(splitDocuments(documents));
+    }
 
-        log.info("Starting to ingest {} documents", documents.size());
-
-        if (documentTransformer != null) {
-            documents = documentTransformer.transformAll(documents);
-            log.info("Documents were transformed into {} documents", documents.size());
-        }
-        List<TextSegment> segments;
-        if (documentSplitter != null) {
-            segments = documentSplitter.splitAll(documents);
-            log.info("Documents were split into {} text segments", segments.size());
-        } else {
-            segments = documents.stream()
-                    .map(Document::toTextSegment)
-                    .toList();
-        }
-        if (textSegmentTransformer != null) {
-            segments = textSegmentTransformer.transformAll(segments);
-            log.info("Text segments were transformed into {} text segments", documents.size());
-        }
+    /**
+     * Ingests pre-split segments, for example the canonical chunks shared with
+     * the vector and BM25 branches. No document splitting is applied so the
+     * graph segment text and chunk provenance stay identical to those routes.
+     */
+    public void ingestSegments(List<TextSegment> segments) {
 
         // TODO handle failures, parallelize
         log.info("Starting to extract {} text segments", segments.size());
@@ -206,6 +195,28 @@ public class GraphStoreIngestor {
 
         log.info("Finished storing {} text segments into the graph store", segments.size());
         }
+    }
+
+    private List<TextSegment> splitDocuments(List<Document> documents) {
+        log.info("Starting to ingest {} documents", documents.size());
+        if (documentTransformer != null) {
+            documents = documentTransformer.transformAll(documents);
+            log.info("Documents were transformed into {} documents", documents.size());
+        }
+        List<TextSegment> segments;
+        if (documentSplitter != null) {
+            segments = documentSplitter.splitAll(documents);
+            log.info("Documents were split into {} text segments", segments.size());
+        } else {
+            segments = documents.stream()
+                    .map(Document::toTextSegment)
+                    .toList();
+        }
+        if (textSegmentTransformer != null) {
+            segments = textSegmentTransformer.transformAll(segments);
+            log.info("Text segments were transformed into {} text segments", documents.size());
+        }
+        return segments;
     }
 
     private GraphVertex storeEntity(EntityRecord entity, String segmentUuid, Filter metadataFilter,

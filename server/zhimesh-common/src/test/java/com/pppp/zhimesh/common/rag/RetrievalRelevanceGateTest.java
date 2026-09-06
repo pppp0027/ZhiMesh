@@ -75,11 +75,53 @@ class RetrievalRelevanceGateTest {
                 "火影忍者里面的面具男是谁", List.of(weak), properties));
     }
 
+    @Test
+    void rerankerFallbackKeepsTopRankedGraphEvidenceWithoutLexicalOverlap() {
+        RetrievedCandidate graphTop = routedCandidate("订单流程触发库存扣减", "graph", 1);
+        RetrievedCandidate graphSecond = routedCandidate("库存扣减触发物流发货", "graph", 2);
+
+        assertEquals(List.of(graphTop, graphSecond), RetrievalRelevanceGate.filter(
+                "用户下单之后仓库怎么处理", List.of(graphTop, graphSecond), false, true, properties));
+    }
+
+    @Test
+    void rerankerFallbackCapsGraphExemptionsAndDropsDeepGraphTail() {
+        RetrievedCandidate graphTop = routedCandidate("订单流程触发库存扣减", "graph", 1);
+        RetrievedCandidate graphSecond = routedCandidate("库存扣减触发物流发货", "graph", 2);
+        RetrievedCandidate graphThird = routedCandidate("物流发货结束订单生命周期", "graph", 3);
+
+        assertEquals(List.of(graphTop, graphSecond), RetrievalRelevanceGate.filter(
+                "用户下单之后仓库怎么处理",
+                List.of(graphTop, graphSecond, graphThird), false, true, properties));
+    }
+
+    @Test
+    void rerankerFallbackKeepsCorroboratedHybridCandidates() {
+        RetrievedCandidate corroborated = routedCandidate("版本治理统一管理文档发布", "vector", 3);
+        corroborated.merge(routedCandidate("版本治理统一管理文档发布", "graph", 2));
+
+        assertEquals(List.of(corroborated), RetrievalRelevanceGate.filter(
+                "如何管理文档的迭代发布", List.of(corroborated), false, true, properties));
+    }
+
+    @Test
+    void graphExemptionCanBeDisabledByRankFloorZero() {
+        properties.setFallbackGraphRankFloor(0);
+        RetrievedCandidate graphTop = routedCandidate("订单流程触发库存扣减", "graph", 1);
+
+        assertTrue(RetrievalRelevanceGate.filter(
+                "用户下单之后仓库怎么处理", List.of(graphTop), false, true, properties).isEmpty());
+    }
+
     private static RetrievedCandidate candidate(String text, Double vectorScore) {
         Metadata metadata = vectorScore == null
                 ? new Metadata()
                 : new Metadata(Map.of(RetrievedCandidate.VECTOR_SCORE, vectorScore));
         return RetrievedCandidate.from(
                 Content.from(TextSegment.from(text, metadata)), "vector", 1);
+    }
+
+    private static RetrievedCandidate routedCandidate(String text, String route, int rank) {
+        return RetrievedCandidate.from(Content.from(TextSegment.from(text)), route, rank);
     }
 }

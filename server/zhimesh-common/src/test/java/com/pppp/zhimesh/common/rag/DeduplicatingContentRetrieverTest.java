@@ -185,6 +185,27 @@ class DeduplicatingContentRetrieverTest {
     }
 
     @Test
+    void vectorProtectionCoversHybridRetrievalWithBm25Present() {
+        assertTrue(DeduplicatingContentRetriever.shouldProtectVectorEvidence(
+                false, 1, Set.of("vector", "graph", "bm25")));
+        assertTrue(DeduplicatingContentRetriever.shouldProtectVectorEvidence(
+                false, 1, Set.of("vector", "graph")));
+    }
+
+    @Test
+    void vectorProtectionRequiresBothVectorAndGraphUsableEvidence() {
+        assertFalse(DeduplicatingContentRetriever.shouldProtectVectorEvidence(
+                false, 1, Set.of("vector", "bm25")));
+        assertFalse(DeduplicatingContentRetriever.shouldProtectVectorEvidence(
+                false, 1, Set.of("graph", "bm25")));
+        // A successful rerank replaces the RRF order, so protection is moot.
+        assertFalse(DeduplicatingContentRetriever.shouldProtectVectorEvidence(
+                true, 1, Set.of("vector", "graph", "bm25")));
+        assertFalse(DeduplicatingContentRetriever.shouldProtectVectorEvidence(
+                false, 0, Set.of("vector", "graph", "bm25")));
+    }
+
+    @Test
     void removesWeakRerankTailUsingRelativeScore() {
         RetrievedCandidate best = rerankedCandidate("best", 0.90D);
         RetrievedCandidate weak = rerankedCandidate("weak", 0.10D);
@@ -229,6 +250,67 @@ class DeduplicatingContentRetrieverTest {
 
         assertTrue(tokens <= 8);
         assertFalse(result.isEmpty());
+    }
+
+    @Test
+    void nearDuplicateFromAnotherRouteIsNotPackedIntoTheContext() {
+        // A graph segment and its vector chunk of the same source text differ
+        // only in framing; only the first may occupy context slots.
+        ContentRetriever vector = query -> List.of(Content.from(TextSegment.from(
+                "According to the document, Microsoft invested in OpenAI in 2019.")));
+        ContentRetriever graph = query -> List.of(Content.from(TextSegment.from(
+                "Microsoft invested in OpenAI in 2019.")));
+        DeduplicatingContentRetriever retriever = new DeduplicatingContentRetriever(
+                List.of(vector, graph), null, 5, false, null, new ZhiMeshProperties.Retrieval());
+
+        assertEquals(List.of("According to the document, Microsoft invested in OpenAI in 2019."),
+                texts(retriever.retrieve(Query.from("question"))));
+    }
+
+    @Test
+    void documentCapRefillStillPacksNonRedundantDeferredEvidence() {
+        ContentRetriever route = query -> List.of(
+                documentChunk("doc-a", "alpha handles request routing for the gateway"),
+                documentChunk("doc-a", "beta persists order records with strict schema"),
+                documentChunk("doc-a", "gamma emits audit events for every change"));
+        DeduplicatingContentRetriever retriever = new DeduplicatingContentRetriever(
+                List.of(route), null, 5, false, null, new ZhiMeshProperties.Retrieval());
+
+        assertEquals(3, texts(retriever.retrieve(Query.from("question"))).size());
+    }
+
+    private static Content documentChunk(String documentId, String text) {
+        return Content.from(TextSegment.from(text,
+                new Metadata(Map.of(RetrievedCandidate.SOURCE_DOCUMENT_IDS, documentId))));
+    }
+
+    @Test
+    void sameCanonicalChunkFromDifferentRoutesFusesByProvenance() {
+        // Same canonical chunk uuid: the graph segment text may differ in
+        // framing from the vector chunk, but they are one piece of evidence.
+        ContentRetriever vector = query -> List.of(Content.from(TextSegment.from(
+                "Microsoft invested in OpenAI in 2019.",
+                new Metadata(Map.of(Bm25ContentRetriever.CHUNK_UUID, "chunk-9")))));
+        ContentRetriever graph = query -> List.of(Content.from(TextSegment.from(
+                "微软于2019年投资了OpenAI",
+                new Metadata(Map.of(Bm25ContentRetriever.CHUNK_UUID, "chunk-9")))));
+        DeduplicatingContentRetriever retriever = new DeduplicatingContentRetriever(
+                List.of(
+                        new RoutedRetriever(new RetrievalRouteKey(
+                                KnowledgeSourceType.DOCUMENT_KB, RetrievalRoute.VECTOR, "kb"), vector),
+                        new RoutedRetriever(new RetrievalRouteKey(
+                                KnowledgeSourceType.DOCUMENT_KB, RetrievalRoute.GRAPH, "kb"), graph)),
+                null, 5, false, null, new ZhiMeshProperties.Retrieval(), 0, null, true);
+
+        List<Content> selected = retriever.retrieve(Query.from("question"));
+
+        assertEquals(1, selected.size());
+        assertEquals("Microsoft invested in OpenAI in 2019.",
+                selected.get(0).textSegment().text());
+        assertEquals("vector,graph", selected.get(0).textSegment().metadata()
+                .getString(RetrievedCandidate.ROUTES));
+        assertEquals("chunk-9", selected.get(0).textSegment().metadata()
+                .getString(Bm25ContentRetriever.CHUNK_UUID));
     }
 
     @Test

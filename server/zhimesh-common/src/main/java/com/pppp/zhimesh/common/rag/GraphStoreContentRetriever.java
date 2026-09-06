@@ -239,6 +239,11 @@ public class GraphStoreContentRetriever implements ContentRetriever {
                 metadata.put(ZhiMeshConstant.MetadataKey.KB_ITEM_UUID, segment.getKbItemUuid());
                 metadata.put(RetrievedCandidate.GRAPH_SEGMENT_UUID, segment.getUuid());
                 metadata.put(RetrievedCandidate.SEGMENT_UUID, segment.getUuid());
+                // Canonical chunk alignment lets the fusion layer merge this
+                // segment with the identical vector/BM25 chunk by provenance.
+                if (StringUtils.isNotBlank(segment.getChunkUuid())) {
+                    metadata.put(ZhiMeshConstant.MetadataKey.CHUNK_UUID, segment.getChunkUuid());
+                }
                 Set<String> graphElementIds = elementIdsBySegment.getOrDefault(segment.getUuid(), Set.of());
                 if (!graphElementIds.isEmpty()) {
                     metadata.put(RetrievedCandidate.GRAPH_ELEMENT_IDS,

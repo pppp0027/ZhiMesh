@@ -353,6 +353,13 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
         LambdaQueryWrapper<KnowledgeBaseItem> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(KnowledgeBaseItem::getKbUuid, kbUuid);
         if (knowledgeBaseItemService.count(wrapper) <= 0) return true;
+        // A full-KB graphical rebuild starts from an emptied graph so historical
+        // leftovers (including elements that lost their provenance rows) cannot
+        // survive into the new generation. Item-subset indexing keeps the
+        // incremental per-document cleanup instead.
+        if (indexTypes != null && indexTypes.contains(ZhiMeshConstant.DOC_INDEX_TYPE_GRAPHICAL)) {
+            knowledgeBaseItemService.cleanupKnowledgeBaseGraph(kbUuid);
+        }
         KnowledgeBaseItemService.IndexBatchCompletion batch =
                 knowledgeBaseItemService.beginIndexBatch(knowledgeBase, indexTypes);
         try {
@@ -396,10 +403,35 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
             }
         }
         for (Map.Entry<String, List<String>> entry : itemsByKnowledgeBase.entrySet()) {
-            knowledgeBaseItemService.checkAndIndexing(
-                    knowledgeBases.get(entry.getKey()), entry.getValue(), indexTypes);
+            KnowledgeBase knowledgeBase = knowledgeBases.get(entry.getKey());
+            // Selecting every item of a knowledge base upgrades a graphical
+            // rebuild to the whole-KB path: the graph is wiped first so legacy
+            // leftovers that lost their provenance rows cannot survive into the
+            // new generation. Other index types (embedding, fulltext) keep their
+            // regular per-item rebuild; without a graphical request nothing is wiped.
+            if (indexTypes != null && indexTypes.contains(ZhiMeshConstant.DOC_INDEX_TYPE_GRAPHICAL)
+                    && selectsAllKnowledgeBaseItems(knowledgeBase.getUuid(), entry.getValue())) {
+                knowledgeBaseItemService.cleanupKnowledgeBaseGraph(knowledgeBase.getUuid());
+            }
+            knowledgeBaseItemService.checkAndIndexing(knowledgeBase, entry.getValue(), indexTypes);
         }
         return true;
+    }
+
+    /**
+     * Reports whether the selection covers every item of one knowledge base.
+     * Callers have already resolved each uuid to this knowledge base, so equal
+     * distinct counts mean the selection is exactly the full item set; a stale
+     * or partial selection falls back to the incremental per-document path.
+     */
+    boolean selectsAllKnowledgeBaseItems(String kbUuid, List<String> selectedUuids) {
+        Set<String> distinct = new HashSet<>(selectedUuids);
+        if (distinct.isEmpty()) {
+            return false;
+        }
+        LambdaQueryWrapper<KnowledgeBaseItem> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(KnowledgeBaseItem::getKbUuid, kbUuid);
+        return distinct.size() == knowledgeBaseItemService.count(wrapper);
     }
 
     /** Index items from the user workspace only after excluding system KBs. */
@@ -776,12 +808,17 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                     List<RetrieverWrapper> retrieverWrappers = compositeRag.createRetriever(createParam);
 
                     StringBuilder sb = new StringBuilder();
+                    boolean evidenceLabeling = adiProperties.getRetrieval()
+                            .isEvidenceLabelingEnabled();
                     for (RetrieverWrapper wrapper : retrieverWrappers) {
                         List<Content> contents = wrapper.getRetriever().retrieve(
                                 Query.from(resolvedQuery.retrievalQuery()));
                         wrapper.setResponse(contents);
-                        for (Content content : contents) {
-                            sb.append(content.textSegment().text()).append("\n");
+                        if (!contents.isEmpty()) {
+                            if (sb.length() > 0) {
+                                sb.append("\n\n");
+                            }
+                            sb.append(LabeledEvidenceFormatter.format(evidenceLabeling, contents));
                         }
                     }
                     knowledgeContext = sb.toString();

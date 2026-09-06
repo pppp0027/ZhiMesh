@@ -45,6 +45,7 @@ final class RetrievedCandidate {
     private final Set<String> sourceDocumentIds = new LinkedHashSet<>();
     private final Set<String> sourceSegmentIds = new LinkedHashSet<>();
     private final Map<String, Integer> routeRanks = new LinkedHashMap<>();
+    private String chunkUuid;
     private Double vectorScore;
     private Double bm25Score;
     private Double rrfScore;
@@ -63,6 +64,8 @@ final class RetrievedCandidate {
         addCsvValues(sourceSegmentIds, metadata.get(ZhiMeshConstant.MetadataKey.CHUNK_UUID));
         addCsvValues(sourceSegmentIds, metadata.get(SEGMENT_UUID));
         addCsvValues(sourceSegmentIds, metadata.get(GRAPH_SEGMENT_UUID));
+        this.chunkUuid = StringUtils.trimToNull(stringValue(
+                metadata.get(ZhiMeshConstant.MetadataKey.CHUNK_UUID)));
         this.vectorScore = doubleValue(metadata.get(VECTOR_SCORE));
         this.bm25Score = doubleValue(metadata.get(BM25_SCORE));
         Integer legacyVectorRank = integerValue(metadata.get(VECTOR_RANK));
@@ -93,6 +96,9 @@ final class RetrievedCandidate {
         if (bm25Score == null || other.bm25Score != null && other.bm25Score > bm25Score) {
             bm25Score = other.bm25Score;
         }
+        if (chunkUuid == null) {
+            chunkUuid = other.chunkUuid;
+        }
     }
 
     void calculateRrfScore() {
@@ -108,6 +114,8 @@ final class RetrievedCandidate {
     String text() { return text; }
     String documentId() { return sourceDocumentIds.stream().findFirst().orElse(null); }
     String contentType() { return StringUtils.defaultIfBlank(stringValue(metadata.get(CONTENT_TYPE)), ORIGINAL_SEGMENT); }
+    /** Canonical chunk uuid shared with the vector/BM25 branches, when aligned. */
+    String chunkUuid() { return chunkUuid; }
     Integer vectorRank() { return routeRanks.get("vector"); }
     Double vectorScore() { return vectorScore; }
     Double bm25Score() { return bm25Score; }
@@ -133,6 +141,7 @@ final class RetrievedCandidate {
         if (!routeRanks.isEmpty()) output.put(ROUTE_RANKS, routeRanks.entrySet().stream()
                 .map(entry -> entry.getKey() + "=" + entry.getValue()).collect(java.util.stream.Collectors.joining(",")));
         if (routes.size() == 1) output.put(ROUTE_TYPE, routes.iterator().next());
+        if (chunkUuid != null) output.put(ZhiMeshConstant.MetadataKey.CHUNK_UUID, chunkUuid);
         if (vectorScore != null) output.put(VECTOR_SCORE, vectorScore);
         if (bm25Score != null) output.put(BM25_SCORE, bm25Score);
         if (rrfScore != null) output.put(RRF_SCORE, rrfScore);
@@ -148,6 +157,7 @@ final class RetrievedCandidate {
         candidate.sourceDocumentIds.addAll(sourceDocumentIds);
         candidate.sourceSegmentIds.addAll(sourceSegmentIds);
         candidate.routeRanks.putAll(routeRanks);
+        candidate.chunkUuid = chunkUuid;
         candidate.vectorScore = vectorScore;
         candidate.bm25Score = bm25Score;
         candidate.rrfScore = rrfScore;

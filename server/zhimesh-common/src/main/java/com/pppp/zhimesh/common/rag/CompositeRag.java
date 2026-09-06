@@ -254,10 +254,7 @@ public class CompositeRag {
             QueryTransformer queryTransformer = StringUtils.isNotBlank(chatModelRequest.getRetrievalQuery())
                     ? ignored -> List.of(Query.from(chatModelRequest.getRetrievalQuery()))
                     : new CompressingQueryTransformer(llmService.buildChatLLM(params.getModelProperties()));
-            RetrievalAugmentor retrievalAugmentor = DefaultRetrievalAugmentor.builder()
-                    .queryTransformer(queryTransformer)
-                    .queryRouter(queryRouter)
-                    .build();
+            RetrievalAugmentor retrievalAugmentor = retrievalAugmentor(queryRouter, queryTransformer);
             IStreamingChatAssistant assistant = AiServices.builder(IStreamingChatAssistant.class)
                     .streamingChatModel(llmService.buildStreamingChatModel(params.getModelProperties()))
                     .retrievalAugmentor(retrievalAugmentor)
@@ -271,7 +268,7 @@ public class CompositeRag {
         } else {
             ITempStreamingChatAssistant assistant = AiServices.builder(ITempStreamingChatAssistant.class)
                     .streamingChatModel(llmService.buildStreamingChatModel(params.getModelProperties()))
-                    .retrievalAugmentor(DefaultRetrievalAugmentor.builder().queryRouter(queryRouter).build())
+                    .retrievalAugmentor(retrievalAugmentor(queryRouter, null))
                     .build();
             if (StringUtils.isNotBlank(chatModelRequest.getSystemMessage())) {
                 tokenStream = assistant.chatWithSystem(chatModelRequest.getSystemMessage(), chatModelRequest.getUserMessage(), new ArrayList<>());
@@ -293,6 +290,23 @@ public class CompositeRag {
                     }
                 })
                 .start();
+    }
+
+    private static RetrievalAugmentor retrievalAugmentor(QueryRouter queryRouter,
+                                                         QueryTransformer queryTransformer) {
+        // The builder implementation type is package-private in langchain4j,
+        // so hold it through var and configure conditionally.
+        var builder = DefaultRetrievalAugmentor.builder().queryRouter(queryRouter);
+        if (queryTransformer != null) {
+            builder = builder.queryTransformer(queryTransformer);
+        }
+        // Labeling distinguishes original chunks from inferred graph relations
+        // in the injected context; disabled falls back to langchain4j defaults.
+        if (SpringUtil.getBean(ZhiMeshProperties.class)
+                .getRetrieval().isEvidenceLabelingEnabled()) {
+            builder = builder.contentInjector(new LabeledEvidenceContentInjector());
+        }
+        return builder.build();
     }
 
     private static ChatMemoryStore leaseGuardedStore(ChatMemoryStore delegate,

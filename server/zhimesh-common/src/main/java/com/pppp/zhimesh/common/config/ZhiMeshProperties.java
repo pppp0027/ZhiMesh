@@ -226,6 +226,16 @@ public class ZhiMeshProperties {
         private boolean preRerankGateEnabled = true;
         /** Weak vector-only candidates below this score need informative lexical overlap. */
         private double preRerankVectorScoreFloor = 0.70D;
+        /**
+         * Graph candidates at or above this route rank survive the no-reranker
+         * fallback gate: their route already applied lexical and diversity
+         * selection, while rephrased evidence has no literal query overlap.
+         */
+        private int fallbackGraphRankFloor = 2;
+        /** Cap on graph candidates exempted by the fallback rank floor. */
+        private int fallbackGraphMaxExemptions = 2;
+        /** Label evidence (document chunk vs. inferred graph relation) when injecting context. */
+        private boolean evidenceLabelingEnabled = true;
         /** Recency share used only after episodic candidates pass semantic relevance checks. */
         private double episodicRecencyWeight = 0.20D;
         /** Age at which the episodic recency contribution decays to one half. */

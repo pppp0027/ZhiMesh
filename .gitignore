@@ -114,3 +114,9 @@ docker/.env
 docker/.env.*
 !docker/.env.example
 !docker/.env.*.example
+
+# Project MCP config holds real DB/Redis credentials (keep template)
+.mcp.json
+.mcp.env
+.mcp.env.*
+!.mcp.json.example

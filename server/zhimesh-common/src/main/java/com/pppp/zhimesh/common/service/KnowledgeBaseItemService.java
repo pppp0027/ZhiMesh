@@ -73,6 +73,7 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
      */
     private Semaphore graphIngestSemaphore;
     private Semaphore embeddingIngestSemaphore;
+    private int graphIngestPermits;
 
     @Resource
     private ZhiMeshProperties adiProperties;
@@ -83,6 +84,7 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
         int embeddingConcurrency = Math.max(1, adiProperties.getIndexing().getEmbeddingConcurrency());
         graphIngestSemaphore = new Semaphore(graphConcurrency, true);
         embeddingIngestSemaphore = new Semaphore(embeddingConcurrency, true);
+        graphIngestPermits = graphConcurrency;
         log.info("Knowledge-base indexing concurrency initialized, graph:{}, embedding:{}", graphConcurrency, embeddingConcurrency);
     }
 
@@ -217,6 +219,28 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
         return new IndexBatchCompletion(completion);
     }
 
+    /**
+     * Wipes the whole knowledge-base graph so a full rebuild starts clean. Every
+     * graph-ingest permit is drained first, letting in-flight document builds
+     * finish before their elements are deleted; builds queued behind the drain
+     * then reingest on the emptied graph. Legacy elements that lost their
+     * provenance rows are removed too, because the wipe filters by kb_uuid
+     * metadata instead of provenance ids.
+     */
+    void cleanupKnowledgeBaseGraph(String kbUuid) {
+        graphIngestSemaphore.acquireUninterruptibly(graphIngestPermits);
+        try {
+            knowledgeBaseGraphRag().cleanupKnowledgeBase(kbUuid);
+        } finally {
+            graphIngestSemaphore.release(graphIngestPermits);
+        }
+    }
+
+    /** Test seam: resolves the knowledge-base GraphRag without a static context. */
+    GraphRag knowledgeBaseGraphRag() {
+        return GraphRagContext.get(KNOWLEDGE_BASE);
+    }
+
     void submitIndexTask(User user, KnowledgeBase knowledgeBase, KnowledgeBaseItem item,
                          List<String> indexTypes, IndexBatchCompletion batch) {
         String userIndexKey = MessageFormat.format(USER_INDEXING, knowledgeBase.getOwnerId());
@@ -254,14 +278,16 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                 return;
             }
             kbItem = currentItem;
-            boolean embeddingRequested = requestedIndexTypes.contains(DOC_INDEX_TYPE_EMBEDDING)
-                    && kbItem.getEmbeddingStatus() != EmbeddingStatusEnum.DOING;
-            boolean graphRequested = requestedIndexTypes.contains(DOC_INDEX_TYPE_GRAPHICAL)
-                    && kbItem.getGraphicalStatus() != GraphicalStatusEnum.DOING;
             ZhiMeshProperties.Retrieval.Bm25 bm25Config = adiProperties.getRetrieval().getBm25();
-            boolean bm25Requested = bm25Config.isEnabled()
-                    && (bm25Config.isAutoIndex() || requestedIndexTypes.contains(DOC_INDEX_TYPE_FULLTEXT))
-                    && kbItem.getFulltextStatus() != FulltextStatusEnum.DOING;
+            IndexRequestPlan plan = planIndexRequests(requestedIndexTypes,
+                    EmbeddingStatusEnum.DOING == kbItem.getEmbeddingStatus(),
+                    GraphicalStatusEnum.DOING == kbItem.getGraphicalStatus(),
+                    FulltextStatusEnum.DOING == kbItem.getFulltextStatus(),
+                    bm25Config.isEnabled(), bm25Config.isAutoIndex(),
+                    adiProperties.getIndexing().isCanonicalChunkEnabled());
+            boolean embeddingRequested = plan.embeddingRequested();
+            boolean bm25Requested = plan.bm25Requested();
+            boolean graphRequested = plan.graphRequested();
 
             Metadata metadata = new Metadata();
             metadata.put(ZhiMeshConstant.MetadataKey.KB_UUID, kbItem.getKbUuid());
@@ -269,8 +295,7 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
             Document document = new DefaultDocument(kbItem.getRemark(), metadata);
 
             CanonicalChunkSnapshot snapshot = null;
-            boolean canonicalRequired = adiProperties.getIndexing().isCanonicalChunkEnabled() || bm25Requested;
-            if (canonicalRequired && (embeddingRequested || graphRequested || bm25Requested)) {
+            if (plan.canonicalChunksRequired()) {
                 try {
                     snapshot = canonicalChunkIndexService.index(knowledgeBase, kbItem);
                 } catch (Exception exception) {
@@ -368,6 +393,36 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                 || requested.contains(DOC_INDEX_TYPE_GRAPHICAL)
                 || requested.contains(DOC_INDEX_TYPE_FULLTEXT)
                 || bm25Enabled && bm25AutoIndex;
+    }
+
+    /** Per-branch execution plan resolved from the requested index types and current statuses. */
+    record IndexRequestPlan(boolean embeddingRequested, boolean bm25Requested,
+                            boolean graphRequested, boolean canonicalChunksRequired) {
+    }
+
+    /**
+     * Resolves which index branches one indexing job must run. Every combination of
+     * embedding, graphical and fulltext is valid: branches already marked DOING are
+     * skipped, fulltext stays gated by the BM25 toggle, and canonical chunks are
+     * required whenever the canonical toggle is on or BM25 needs them — so all
+     * requested branches share one aligned chunk snapshot per job.
+     */
+    static IndexRequestPlan planIndexRequests(List<String> requestedIndexTypes,
+                                              boolean embeddingInProgress,
+                                              boolean graphInProgress,
+                                              boolean fulltextInProgress,
+                                              boolean bm25Enabled,
+                                              boolean bm25AutoIndex,
+                                              boolean canonicalChunkEnabled) {
+        List<String> requested = requestedIndexTypes == null ? List.of() : requestedIndexTypes;
+        boolean embeddingRequested = requested.contains(DOC_INDEX_TYPE_EMBEDDING) && !embeddingInProgress;
+        boolean graphRequested = requested.contains(DOC_INDEX_TYPE_GRAPHICAL) && !graphInProgress;
+        boolean bm25Requested = bm25Enabled
+                && (bm25AutoIndex || requested.contains(DOC_INDEX_TYPE_FULLTEXT))
+                && !fulltextInProgress;
+        boolean canonicalChunksRequired = (canonicalChunkEnabled || bm25Requested)
+                && (embeddingRequested || graphRequested || bm25Requested);
+        return new IndexRequestPlan(embeddingRequested, bm25Requested, graphRequested, canonicalChunksRequired);
     }
 
     private void indexingEmbedding(KnowledgeBase knowledgeBase, KnowledgeBaseItem kbItem,
@@ -532,7 +587,9 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                             .build()
             );
 
-            //Ingest document
+            //Ingest document. Canonical chunks keep the graph segments aligned
+            //with the vector and BM25 branches (same text, real chunk uuids);
+            //a missing snapshot keeps the legacy re-splitting path.
             graphRag.ingest(
                     GraphIngestParam.builder()
                             .user(user)
@@ -549,7 +606,8 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                             .graphModelId(knowledgeBase.getIngestModelId())
                             .graphIndexVersionUuid(graphIndexVersionUuid)
                             .isFreeToken(llmService.getAiModel().getIsFree())
-                            .build()
+                            .build(),
+                    snapshot == null ? null : snapshot.segments()
             );
             boolean published = ChainWrappers.lambdaUpdateChain(baseMapper)
                     .eq(KnowledgeBaseItem::getId, kbItem.getId())

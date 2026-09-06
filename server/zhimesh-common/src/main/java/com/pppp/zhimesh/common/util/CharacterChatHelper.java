@@ -12,6 +12,7 @@ import com.pppp.zhimesh.common.rag.ZhiMeshEmbeddingStoreContentRetriever;
 import com.pppp.zhimesh.common.rag.BgeReranker;
 import com.pppp.zhimesh.common.rag.CompositeRag;
 import com.pppp.zhimesh.common.rag.EmbeddingRagContext;
+import com.pppp.zhimesh.common.rag.LabeledEvidenceFormatter;
 import com.pppp.zhimesh.common.rag.bm25.Bm25ReadinessService;
 import com.pppp.zhimesh.common.rag.intent.ContextualQueryRewriter;
 import com.pppp.zhimesh.common.rag.intent.IntentRoutingService;
@@ -364,8 +365,11 @@ public class CharacterChatHelper {
                     episodicMemory.append("- ").append(content.textSegment().text()).append("\n");
                 }
             } else if (ZhiMeshConstant.RetrieveContentFrom.KNOWLEDGE_BASE.equals(retrieveType)) {
-                for (Content content : response) {
-                    knowledge.append(content.textSegment().text()).append("\n");
+                if (!response.isEmpty()) {
+                    knowledge.append(LabeledEvidenceFormatter.format(SpringUtil.getBean(
+                                    ZhiMeshProperties.class).getRetrieval()
+                                    .isEvidenceLabelingEnabled(), response))
+                            .append('\n');
                 }
             }
         });

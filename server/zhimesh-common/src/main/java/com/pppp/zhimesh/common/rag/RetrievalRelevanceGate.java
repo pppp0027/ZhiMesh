@@ -2,6 +2,7 @@ package com.pppp.zhimesh.common.rag;
 
 import com.pppp.zhimesh.common.config.ZhiMeshProperties;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -48,11 +49,32 @@ final class RetrievalRelevanceGate {
         }
         Set<String> terms = informativeTerms(rawQuery);
         double highConfidence = Math.max(0D, properties.getFallbackHighConfidenceVectorScore());
-        return ranked.stream().filter(candidate -> {
-            if (candidate.vectorScore() != null && candidate.vectorScore() >= highConfidence) return true;
+        int graphRankFloor = Math.max(0, properties.getFallbackGraphRankFloor());
+        int maxGraphExemptions = Math.max(0, properties.getFallbackGraphMaxExemptions());
+        List<RetrievedCandidate> retained = new ArrayList<>(ranked.size());
+        int graphExemptions = 0;
+        for (RetrievedCandidate candidate : ranked) {
+            if (candidate.vectorScore() != null && candidate.vectorScore() >= highConfidence
+                    || candidate.routeRanks().size() > 1) {
+                // Corroborated candidates are already exempt before the reranker.
+                retained.add(candidate);
+                continue;
+            }
+            Integer graphRank = candidate.routeRanks().get("graph");
+            if (graphRank != null && graphRank <= graphRankFloor
+                    && graphExemptions < maxGraphExemptions) {
+                // Rephrased graph evidence rarely quotes the question, so its
+                // route rank is the only remaining relevance signal here.
+                graphExemptions++;
+                retained.add(candidate);
+                continue;
+            }
             String evidence = candidate.text().toLowerCase(java.util.Locale.ROOT);
-            return terms.stream().anyMatch(evidence::contains);
-        }).toList();
+            if (terms.stream().anyMatch(evidence::contains)) {
+                retained.add(candidate);
+            }
+        }
+        return retained;
     }
 
     static Set<String> informativeTerms(String rawQuery) {

@@ -5,6 +5,7 @@ import com.pppp.zhimesh.common.service.KnowledgeBaseGraphElementSourceService;
 import com.pppp.zhimesh.common.vo.*;
 import dev.langchain4j.data.document.DefaultDocument;
 import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.segment.TextSegment;
 import org.apache.commons.lang3.tuple.Triple;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Test;
@@ -254,6 +255,35 @@ class GraphStoreIngestorIdentityTest {
         assertEquals(0, graphStore.addVertexAttempts);
         assertEquals("曜穹机器人股份公司",
                 graphStore.vertices.values().iterator().next().getName());
+    }
+
+    @Test
+    void ingestSegmentsPassesCanonicalChunksThroughWithoutSplitting() {
+        InMemoryGraphStore graphStore = new InMemoryGraphStore();
+        Metadata metadata = new Metadata();
+        metadata.put(ZhiMeshConstant.MetadataKey.KB_UUID, "kb-1");
+        metadata.put(ZhiMeshConstant.MetadataKey.KB_ITEM_UUID, "doc-1");
+        metadata.put(ZhiMeshConstant.MetadataKey.CHUNK_UUID, "chunk-77");
+        TextSegment canonicalSegment = TextSegment.from("canonical chunk text", metadata);
+        List<TextSegment> received = new ArrayList<>();
+        GraphStoreIngestor.builder()
+                .graphStore(graphStore)
+                .segmentsFunction(segments -> {
+                    received.addAll(segments);
+                    return List.of(Triple.of(segments.get(0), "seg-1", ""));
+                })
+                .identifyColumns(List.of(ZhiMeshConstant.MetadataKey.KB_UUID))
+                .appendColumns(List.of(ZhiMeshConstant.MetadataKey.KB_ITEM_UUID))
+                .chunkSetUuid("chunk-set-1")
+                .graphModelId(24L)
+                .graphIndexVersionUuid("build-1")
+                .elementSourceService(graphStore.contributionService)
+                .build()
+                .ingestSegments(List.of(canonicalSegment));
+
+        // The segment must reach extraction exactly as provided: canonical
+        // alignment only works when no splitter re-cuts the chunk text.
+        assertEquals(List.of(canonicalSegment), received);
     }
 
     private void ingest(InMemoryGraphStore graphStore, String response) {
