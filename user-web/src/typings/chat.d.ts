@@ -1,0 +1,303 @@
+declare namespace Chat {
+
+	interface ChatMessage {
+		uuid: string | '',
+		contentType: number // 2: text, 3: audio
+		createTime: string
+		thinkingContent: string //思考过程
+		remark: string
+		audioUuid: string
+		audioUrl: string
+		audioDuration: number // in seconds
+		messageRole?: number
+		children: ChatMessage[] //AI回复的消息
+		aiModelId?: string | number
+		aiModelPlatform?: string
+		attachmentUrls: string[]
+		isRefMemoryEmbedding: boolean //是否引用记忆向量
+		isRefEmbedding: boolean //是否是引用知识库向量
+		isRefGraph: boolean //是否是引用知识库图谱
+		isRefBm25: boolean //是否命中 BM25 关键词检索
+
+		//Frontend only
+		inversion?: boolean
+		error?: boolean
+		thinking?: boolean //是否正在思考
+		loading?: boolean
+		audioPlayState: AudioPlayState
+		state?: Map<string, string> //消息状态描述
+
+		//Token observability
+		inputTokens?: number
+		outputTokens?: number
+		duration?: number
+
+		//MCP tool call observability
+		toolCalls?: { toolName: string; durationMs: number; success: boolean }[]
+	}
+
+	interface CharacterPreset {
+		id: string
+		uuid: string
+		title: string
+		remark: string
+		aiSystemMessage: string
+		systemKnowledgeEnabled?: boolean
+		mcpIds: string
+		type: string
+		isSystem: boolean
+
+		used: boolean
+	}
+
+	interface CharacterToPresetRel {
+		id: string
+		uuid: string
+		userCharacterId: string
+		presetCharacterId: string
+	}
+
+	//会话关联的知识库信息
+	interface CharacterKnowledge {
+		id: string
+		uuid: string
+		title: string
+		isMine: boolean
+		isPublic: boolean
+		kbInfo?: KnowledgeBase.Info
+		isEnable: boolean //该知识库是否可用
+		isSystem?: boolean
+		isReadOnly?: boolean
+	}
+
+	interface ConfigVoice {
+		param_name: string // 用于API请求的参数名称
+		model: string
+		platform: string
+	}
+
+	interface AudioConfig {
+		voice: ConfigVoice
+	}
+
+	interface Character {
+		id?: string | number
+		title: string
+		uuid: string
+		remark: string
+		aiSystemMessage: string
+		understandContextEnable: boolean
+		loadedAll: boolean
+		loadedFirstPageMsg: boolean
+		minMsgUuid?: string | ''
+		mcpIds: string[]
+		kbIds: string[] // 关联的知识库ID
+		characterKnowledgeList: CharacterKnowledge[] //关联的知识库包装信息
+		systemKnowledgeEnabled?: boolean
+		/** Number of enabled system knowledge bases occupying the session limit. */
+		systemKnowledgeCount?: number
+		/** Server-enforced total knowledge-base limit for this character. */
+		knowledgeBaseLimit?: number
+		answerContentType: number // 1: auto, 2: text, 3: audio
+		isAutoplayAnswer: boolean //聊天时音频类型的响应内容是否自动播放
+		isEnableThinking: boolean //是否启用思考过程
+		isEnableWebSearch: boolean //是否启用网络搜索
+		audioConfig: AudioConfig //语音配置
+	}
+
+	interface CharacterWithMessages {
+		uuid: string
+		data: ChatMessage[]
+	}
+
+	interface Conversation {
+		id: string | number
+		uuid: string
+		characterId: string | number
+		title: string
+		status: number
+		isDefault: boolean
+		lastMessageTime?: string
+		createTime: string
+		updateTime: string
+		loadedAll?: boolean
+		loadedFirstPageMsg?: boolean
+		minMsgUuid?: string
+	}
+
+	interface ConversationPage {
+		total: number
+		size: number
+		current: number
+		pages: number
+		records: Conversation[]
+	}
+
+	interface ChatState {
+		active: string
+		activeConversationUuid: string
+		usingContext: boolean
+		characters: Character[]
+		conversations: Conversation[]
+		chats: CharacterWithMessages[]
+		loadingMsgs: Set<string>
+		presetCharacters: CharacterPreset[]
+		msgToMemoryRef: Map<string, MemoryEmbedding[]>
+		msgToEmbeddingRef: Map<string, KnowledgeBase.QaRecordEmbeddingRef[]>
+    msgToGraphRef: Map<string, KnowledgeBase.QaRecordGraphRef>
+    loadingGraphRef: Map<string, boolean>
+	}
+
+	interface CharacterRequest {
+		prompt: string,
+		characterUuid?: string
+		parentMessageId?: string
+	}
+
+	interface CharacterResponse {
+		text: string
+	}
+
+	interface AudioInfo {
+		url: string
+		uuid: string
+		duration: number // in seconds
+	}
+
+	interface MetaData {
+		conversationUuid?: string
+		question: {
+			inputTokens: number,
+			uuid: string
+		},
+		answer: {
+			inputTokens: number,
+			outputTokens: number,
+			uuid: string,
+			duration?: number
+			isRefEmbedding?: boolean
+			isRefGraph?: boolean
+			isRefMemoryEmbedding?: boolean
+			isRefBm25?: boolean
+		},
+		audioInfo: AudioInfo
+	}
+
+	interface CharacterMsgListResp {
+		minMsgUuid: string
+		msgList: Chat.ChatMessage[]
+	}
+
+	interface CharactersResp {
+		total: number
+		records: Chat.Character[]
+	}
+
+	interface Prompt {
+		renderKey: string
+		renderValue: string
+		id: number
+		act: string
+		prompt: string
+	}
+
+	interface DrawState {
+		loadingUuid: string
+		loading: boolean
+		myDraws: Draw[] //倒序，队尾的为最新数据
+	}
+
+
+	interface Draw {
+		id?: number
+		uuid: string
+		prompt: string
+		aiModelName: string
+		originalImageUuid?: string
+		originalImageUrl: string
+		maskImageUuid?: string
+		maskImageUrl: string
+		interactingMethod: number
+		processStatus: number   //1:processing,2:fail,3:success
+		processStatusRemark: string
+
+		aiModelPlatform: string
+		//绘图成功后生成的图片
+		imageUuids: string[]
+		imageUrls: string[]
+		createTime: string
+		isPublic: boolean
+		isStar: boolean
+		starCount: number
+		userUuid: string
+		userName: string
+		dynamicParams: any
+		duration?: number
+	}
+
+	interface DrawListResp {
+		minId: number
+		draws: Draw[]
+	}
+
+	interface DrawComment {
+		uuid: string
+		userUuid: string
+		userName: string
+		drawUuid: string
+		remark: string
+		createTime: string
+	}
+
+	interface DrawCommentsResp {
+		records: Chat.DrawComment[]
+		total: number
+		current: number
+	}
+
+	interface GalleryState {
+		loadingUuid: string
+		loading: boolean
+		publicDraws: Draw[]
+		myStarDraws: Draw[]
+	}
+
+	 interface MemoryEmbedding {
+    embeddingId: string
+    text: string
+    /**
+     * 记忆类型：semantic 或 episodic。
+     * Memory type: semantic or episodic.
+     */
+    memoryType?: string
+    /**
+     * 事件发生时间（仅 episodic）。格式 yyyy-MM-dd HH:mm:ss。
+     * Event timestamp (episodic only). Format yyyy-MM-dd HH:mm:ss.
+     */
+    createTime?: string
+    /**
+     * 事件类型（仅 episodic）。
+     * Event type (episodic only).
+     */
+    eventType?: string
+    /**
+     * 重要性 1-5（仅 episodic）。
+     * Importance 1-5 (episodic only).
+     */
+    importance?: number
+  }
+
+  interface KeywordHit {
+    chunkUuid: string
+    kbUuid: string
+    kbItemUuid: string
+    text: string
+    score: number
+    rank: number
+  }
+
+  interface KeywordReference {
+    terms: string[]
+    hits: KeywordHit[]
+  }
+}

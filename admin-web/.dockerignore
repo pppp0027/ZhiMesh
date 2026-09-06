@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.git/
+.idea/
+.vscode/
+.env*
+!.env.example
+npm-debug.log*
+pnpm-debug.log*

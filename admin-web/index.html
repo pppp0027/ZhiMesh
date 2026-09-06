@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-cmn-Hans" id="htmlRoot" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta content="IE=edge,chrome=1" http-equiv="X-UA-Compatible"/>
+  <meta content="webkit" name="renderer"/>
+  <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport" />
+  <link href="/favicon.ico" rel="icon"/>
+  <title><%= title %></title>
+</head>
+<body><!--
+THESIS: ZhiMesh administration makes the capability network governable; it refuses the generic card-grid dashboard and decorative AI glow.
+OWN-WORLD: Mineral-white and graphite layers, ink-blue authority controls, teal only for healthy connections, compact geometry, and border-led hierarchy.
+STORY: An administrator understands scale and health, configures capabilities and access, and can trace operational impact without losing context.
+FIRST VIEWPORT: A dense navigation rail anchors the left, governance summaries and capability paths fill the main plane, and high-value actions stay close to state.
+FORM: Cognitive Mesh / 智识网络, Direction A pinned by the user; seed key 73b16682.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+-->
+<div id="appProvider" style="display: none"></div>
+<div id="app">
+  <style>
+    .first-loading-wrap {
+      display: flex;
+      width: 100%;
+      min-height: 100vh;
+      min-height: 100dvh;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      background: #f1f5f7;
+    }
+
+    .ops-loader {
+      position: relative;
+      width: 42px;
+      height: 42px;
+    }
+
+    .ops-loader::before,
+    .ops-loader::after {
+      position: absolute;
+      background: #234a7a;
+      content: "";
+    }
+
+    .ops-loader::before {
+      top: 20px;
+      left: 5px;
+      width: 32px;
+      height: 2px;
+    }
+
+    .ops-loader::after {
+      top: 5px;
+      left: 20px;
+      width: 2px;
+      height: 32px;
+    }
+
+    .ops-loader i {
+      z-index: 1;
+      width: 10px;
+      height: 10px;
+      position: absolute;
+      display: block;
+      box-sizing: border-box;
+      border: 2px solid #234a7a;
+      border-radius: 3px;
+      background: #f1f5f7;
+      animation: ops-node 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite alternate;
+    }
+
+    .ops-loader i:nth-child(1) {
+      top: 0;
+      left: 16px;
+    }
+
+    .ops-loader i:nth-child(2) {
+      top: 16px;
+      right: 0;
+      border-color: #16877d;
+      background: #16877d;
+      animation-delay: 160ms;
+    }
+
+    .ops-loader i:nth-child(3) {
+      bottom: 0;
+      left: 16px;
+      animation-delay: 320ms;
+    }
+
+    .ops-loader i:nth-child(4) {
+      top: 16px;
+      left: 0;
+      animation-delay: 480ms;
+    }
+
+    @keyframes ops-node {
+      to {
+        opacity: .45;
+        transform: scale(.82);
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .first-loading-wrap {
+        background: #111b24;
+      }
+
+      .ops-loader::before,
+      .ops-loader::after {
+        background: #6f91b0;
+      }
+
+      .ops-loader i {
+        border-color: #6f91b0;
+        background: #111b24;
+      }
+
+      .ops-loader i:nth-child(2) {
+        border-color: #2d9d92;
+        background: #2d9d92;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ops-loader i {
+        animation: none;
+      }
+    }
+  </style>
+  <div class="first-loading-wrap">
+      <div class="ops-loader" role="status" aria-label="知脉管理端正在初始化能力网络">
+      <i></i><i></i><i></i><i></i>
+    </div>
+  </div>
+</div>
+<script>var globalThis = window;</script>
+<script src="/src/main.ts" type="module"></script>
+</body>
+</html>

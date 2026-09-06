@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pppp.zhimesh.common.mapper.KnowledgeBaseQaRecordRefGraphMapper">
+    <select id="listByQaUuid" resultType="com.pppp.zhimesh.common.entity.KnowledgeBaseQaRefGraph">
+        select *
+        from adi_knowledge_base_qa_ref_graph a
+                 inner join adi_knowledge_base_qa b on a.qa_record_id = b.id
+        where b.uuid = #{qaUuid}
+    </select>
+
+    <select id="listQaRecordIdsWithRefs" resultType="java.lang.Long">
+        select distinct qa_record_id
+        from adi_knowledge_base_qa_ref_graph
+        where qa_record_id in
+        <foreach collection="qaRecordIds" item="qaRecordId" open="(" separator="," close=")">
+            #{qaRecordId}
+        </foreach>
+        and (
+            jsonb_array_length(coalesce(
+                (case when btrim(graph_from_store) = '' then '{}'::jsonb else graph_from_store::jsonb end) -> 'vertices',
+                '[]'::jsonb)) &gt; 0
+            or jsonb_array_length(coalesce(
+                (case when btrim(graph_from_store) = '' then '{}'::jsonb else graph_from_store::jsonb end) -> 'edges',
+                '[]'::jsonb)) &gt; 0
+        )
+    </select>
+
+</mapper>

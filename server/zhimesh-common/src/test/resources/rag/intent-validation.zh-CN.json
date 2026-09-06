@@ -1,0 +1,21 @@
+{
+  "version": "phase1-validation-zh-CN-v1",
+  "examples": [
+    {"query": "你好呀", "intent": "NO_RAG"},
+    {"query": "谢谢，解释得很清楚", "intent": "NO_RAG"},
+    {"query": "晚安，明天见", "intent": "NO_RAG"},
+    {"query": "你能做些什么", "intent": "NO_RAG"},
+    {"query": "如何修改 Redis 的连接地址", "intent": "KNOWLEDGE_LOOKUP"},
+    {"query": "B_BREAK_SEARCH 错误码是什么意思", "intent": "KNOWLEDGE_LOOKUP"},
+    {"query": "请说明 POST /api/knowledge-base/ask 的参数", "intent": "KNOWLEDGE_LOOKUP"},
+    {"query": "这个项目怎样打包部署", "intent": "KNOWLEDGE_LOOKUP"},
+    {"query": "用户与角色之间是什么关系", "intent": "RELATIONSHIP"},
+    {"query": "KnowledgeBaseService 依赖哪些组件", "intent": "RELATIONSHIP"},
+    {"query": "展示订单到客户的关联路径", "intent": "RELATIONSHIP"},
+    {"query": "哪些成员归属于该团队", "intent": "RELATIONSHIP"},
+    {"query": "这个", "intent": "UNCERTAIN"},
+    {"query": "继续", "intent": "UNCERTAIN"},
+    {"query": "连接", "intent": "UNCERTAIN"},
+    {"query": "为什么", "intent": "UNCERTAIN"}
+  ]
+}

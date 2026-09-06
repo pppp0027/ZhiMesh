@@ -1,0 +1,37 @@
+package com.pppp.zhimesh.common.entity;
+
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+
+import java.io.Serializable;
+
+@Data
+@TableName("adi_knowledge_base_qa_ref_embedding")
+@Schema(title = "知识库问答记录-引用实体 | Knowledge Base QA Record Embedding Reference Entity", description = "知识库问答记录-引用列表 | Knowledge Base QA Record Reference List")
+public class KnowledgeBaseQaRefEmbedding implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    @TableId(type = IdType.AUTO)
+    private Long id;
+
+    @Schema(title = "问答记录ID | QA Record ID")
+    @TableField("qa_record_id")
+    private Long qaRecordId;
+
+    @Schema(title = "向量id | Embedding ID")
+    @TableField("embedding_id")
+    private String embeddingId;
+
+    @Schema(title = "分数 | Score")
+    @TableField("score")
+    private Double score;
+
+    @Schema(title = "提问用户id | Question User ID")
+    @TableField("user_id")
+    private Long userId;
+}

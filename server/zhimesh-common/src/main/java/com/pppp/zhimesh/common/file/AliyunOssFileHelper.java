@@ -1,0 +1,99 @@
+package com.pppp.zhimesh.common.file;
+
+import com.aliyun.oss.OSS;
+import com.aliyun.oss.OSSClientBuilder;
+import com.aliyun.oss.model.DeleteObjectsRequest;
+import com.aliyun.oss.model.DeleteObjectsResult;
+import com.aliyun.oss.model.PutObjectResult;
+import com.pppp.zhimesh.common.cosntant.ZhiMeshConstant;
+import com.pppp.zhimesh.common.enums.ErrorEnum;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.util.JsonUtil;
+import com.pppp.zhimesh.common.util.LocalCache;
+import com.pppp.zhimesh.common.vo.AliOssConfig;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.stereotype.Service;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.util.List;
+
+import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.STORAGE_LOCATION_VALUE_ALI_OSS;
+
+@Slf4j
+@Service
+public class AliyunOssFileHelper {
+
+    private OSS client = null;
+    @Getter
+    private AliOssConfig configObj = null;
+    private String configStr = "";
+
+    public synchronized void init() {
+        String aliStorageConfigKey = ZhiMeshConstant.SysConfigKey.STORAGE_LOCATION_ALI_OSS;
+        String newConfigStr = LocalCache.CONFIGS.get(aliStorageConfigKey);
+        if (StringUtils.isBlank(newConfigStr)) {
+            throw new BaseException(ErrorEnum.C_ALI_OSS_CONFIG_ERROR, "Aliyun OSS config error: no config row found in adi_sys_config for key " + aliStorageConfigKey);
+        }
+        //配置没有变化，无需重新加载
+        // Config unchanged, no need to reload
+        if (configStr.equals(newConfigStr)) {
+            return;
+        }
+        //配置有变化，重新加载
+        // Config changed, reload
+        AliOssConfig newConfigObj = JsonUtil.fromJson(newConfigStr, AliOssConfig.class);
+        if (null == newConfigObj) {
+            throw new BaseException(ErrorEnum.C_ALI_OSS_CONFIG_ERROR, "Aliyun OSS config error: invalid config value for key " + aliStorageConfigKey);
+        }
+        if (null != client) {
+            client.shutdown();
+        }
+        if (StringUtils.isAnyBlank(newConfigObj.getEndpoint(), newConfigObj.getAccessKeyId(), newConfigObj.getAccessKeySecret(), newConfigObj.getBucketName())) {
+            log.warn("Aliyun OSS config is incomplete, skip initializing OSSClient");
+            if (STORAGE_LOCATION_VALUE_ALI_OSS == Integer.parseInt(LocalCache.CONFIGS.get(ZhiMeshConstant.SysConfigKey.STORAGE_LOCATION))) {
+                log.error("^^^ Aliyun OSS is unavailable, please switch storage location to local ^^^");
+            }
+            return;
+        }
+        configStr = newConfigStr;
+        configObj = newConfigObj;
+        client = new OSSClientBuilder().build(configObj.getEndpoint(), configObj.getAccessKeyId(), configObj.getAccessKeySecret());
+    }
+
+    public void reload() {
+        init();
+    }
+
+    public void saveObj(byte[] bytes, String name) {
+        InputStream is = new ByteArrayInputStream(bytes);
+        PutObjectResult putObjectResult = client.putObject(configObj.getBucketName(), name, is);
+        if (null != putObjectResult) {
+            log.info("Ali oss put object:{}", putObjectResult.getETag());
+        }
+    }
+
+    public void deleteObjs(List<String> objectNames) {
+        DeleteObjectsResult deleteObjectsResult = client.deleteObjects(new DeleteObjectsRequest(configObj.getBucketName()).withKeys(objectNames));
+        List<String> deletedObjects = deleteObjectsResult.getDeletedObjects();
+        for (String object : deletedObjects) {
+            log.warn("Object {} deleted", object);
+        }
+    }
+
+    public boolean doesObjectExist(String objectName) {
+        return client.doesObjectExist(configObj.getBucketName(), objectName);
+    }
+
+    /**
+     * 获取完整访问路径 | Get the full access URL
+     *
+     * @param objectName 对象名称 | Object name
+     * @return 完整访问路径 | Full access URL
+     */
+    public String getUrl(String objectName) {
+        return "https://" + configObj.getBucketName() + "." + configObj.getEndpoint() + "/" + objectName;
+    }
+}

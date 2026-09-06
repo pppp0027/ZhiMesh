@@ -1,0 +1,104 @@
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+spring:
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://${ZHIMESH_DB_HOST:localhost}:${ZHIMESH_DB_PORT:5432}/${ZHIMESH_DB_NAME:zhimesh}
+    username: ${ZHIMESH_DB_USERNAME:your-db-account}
+    password: ${ZHIMESH_DB_PASSWORD:your-db-password}
+  data:
+    redis:
+      host: ${ZHIMESH_REDIS_HOST:localhost}
+      port: ${ZHIMESH_REDIS_PORT:6379}
+      password: ${ZHIMESH_REDIS_PASSWORD:}
+      database: 0
+      lettuce:
+        pool:
+          # Max connections in pool
+          # 连接池最大连接数
+          max-active: 20
+          # Max blocking wait time in pool
+          # 连接池最大阻塞等待时间
+          max-wait: -1
+          # Max idle connections in pool
+          # 连接池中的最大空闲连接
+          max-idle: 5
+          # Min idle connections in pool
+          # 连接池中的最小空闲连接
+          min-idle: 1
+
+zhimesh:
+  openrouter-sync:
+    enabled: ${ZHIMESH_OPENROUTER_SYNC_ENABLED:true}
+    platform-name: ${ZHIMESH_OPENROUTER_PLATFORM_NAME:OpenRouter}
+    cron: "${ZHIMESH_OPENROUTER_SYNC_CRON:0 0 4 * * *}"
+    zone: ${ZHIMESH_OPENROUTER_SYNC_ZONE:Asia/Shanghai}
+    health-check-enabled: ${ZHIMESH_OPENROUTER_HEALTH_CHECK_ENABLED:true}
+    health-check-cron: "${ZHIMESH_OPENROUTER_HEALTH_CHECK_CRON:0 0 0,9,14,19 * * *}"
+    health-check-min-active-models: ${ZHIMESH_OPENROUTER_HEALTH_CHECK_MIN_ACTIVE_MODELS:5}
+    health-check-max-probes-per-run: ${ZHIMESH_OPENROUTER_HEALTH_CHECK_MAX_PROBES_PER_RUN:20}
+    active-run-timeout-minutes: ${ZHIMESH_OPENROUTER_ACTIVE_RUN_TIMEOUT_MINUTES:35}
+    rate-limit-backoff-minutes: ${ZHIMESH_OPENROUTER_RATE_LIMIT_BACKOFF_MINUTES:10}
+    min-context-tokens: ${ZHIMESH_OPENROUTER_MIN_CONTEXT_TOKENS:8192}
+    max-catalog-p50-latency-ms: ${ZHIMESH_OPENROUTER_MAX_CATALOG_P50_LATENCY_MS:4000}
+    min-catalog-throughput-tps: ${ZHIMESH_OPENROUTER_MIN_THROUGHPUT_TPS:12}
+    min-catalog-uptime-1d: ${ZHIMESH_OPENROUTER_MIN_UPTIME_1D:98}
+    max-probe-ttft-ms: ${ZHIMESH_OPENROUTER_MAX_PROBE_TTFT_MS:6000}
+    max-probe-total-ms: ${ZHIMESH_OPENROUTER_MAX_PROBE_TOTAL_MS:15000}
+    connect-timeout-ms: ${ZHIMESH_OPENROUTER_CONNECT_TIMEOUT_MS:5000}
+    request-timeout-ms: ${ZHIMESH_OPENROUTER_REQUEST_TIMEOUT_MS:20000}
+    probe-interval-ms: ${ZHIMESH_OPENROUTER_PROBE_INTERVAL_MS:4000}
+    max-probes-per-run: ${ZHIMESH_OPENROUTER_MAX_PROBES_PER_RUN:100}
+    min-active-models: ${ZHIMESH_OPENROUTER_MIN_ACTIVE_MODELS:10}
+    catch-up-after-hours: ${ZHIMESH_OPENROUTER_CATCH_UP_AFTER_HOURS:26}
+    protected-models: ${ZHIMESH_OPENROUTER_PROTECTED_MODELS:}
+  # Embedding model options (see embedding type data in adi_ai_model):
+  # local:all-minilm-l6-v2 (Better for English, weaker for Chinese)
+  # local:bge-small-zh-v1.5 (Default, better for Chinese, uses more memory than all-minilm-l6-v2)
+  # openai:text-embedding-3-small, openai:text-embedding-3-large (Multilingual)
+  # dashscope:text-embedding-v1, dashscope:text-embedding-v3 (Multilingual, better for Chinese)
+  # Note: Different vector models with different dimensions generate incompatible vector spaces that cannot be stored in the same table for mixed search. Recommend deciding on a vector model and its dimensions early in the project. If changed later, vector data must be regenerated.
+  # 向量模型选项（参见 adi_ai_model 中 embedding 类型的数据）：
+  # local:all-minilm-l6-v2（英文效果较好，中文效果较差）
+  # local:bge-small-zh-v1.5（默认、中文效果较好、相比 all-minilm-l6-v2 占用内存较大）
+  # openai:text-embedding-3-small, openai:text-embedding-3-large（多语言）
+  # dashscope:text-embedding-v1, dashscope:text-embedding-v3（多语言，中文效果较好）
+  # 注意：由于不同向量模型不同维度参数生成的向量特征空间不一致，无法兼容存储于一张表并进行混合搜索，建议项目初期确定好向量模型及其维度，后期如有修改，需重新生成向量数据
+  embedding-model: ${ZHIMESH_EMBEDDING_MODEL:local:bge-small-zh-v1.5}
+  # vector-database: pgvector, neo4j
+  vector-database: ${ZHIMESH_VECTOR_DATABASE:pgvector}
+  # graph-database: apache-age, neo4j
+  graph-database: ${ZHIMESH_GRAPH_DATABASE:apache-age}
+  # A platform only uses this HTTP proxy when its own "proxy enabled" switch is on.
+  # Keep this disabled for providers that should connect directly.
+  proxy:
+    enable: ${ZHIMESH_PROXY_ENABLE:false}
+    host: ${ZHIMESH_PROXY_HOST:}
+    http-port: ${ZHIMESH_PROXY_HTTP_PORT:0}
+  retrieval:
+    concurrency: ${ZHIMESH_RETRIEVAL_CONCURRENCY:8}
+    vector-timeout-ms: ${ZHIMESH_VECTOR_RETRIEVAL_TIMEOUT_MS:5000}
+    graph-timeout-ms: ${ZHIMESH_GRAPH_RETRIEVAL_TIMEOUT_MS:30000}
+    retry-count: ${ZHIMESH_RETRIEVAL_RETRY_COUNT:1}
+    rerank-timeout-ms: ${ZHIMESH_RERANK_TIMEOUT_MS:3000}
+    rerank-candidate-limit: ${ZHIMESH_RERANK_CANDIDATE_LIMIT:15}
+    rerank-failure-threshold: ${ZHIMESH_RERANK_FAILURE_THRESHOLD:3}
+    rerank-circuit-open-ms: ${ZHIMESH_RERANK_CIRCUIT_OPEN_MS:60000}
+    context-max-tokens: ${ZHIMESH_RAG_CONTEXT_MAX_TOKENS:4000}
+    context-reserved-output-tokens: ${ZHIMESH_RAG_RESERVED_OUTPUT_TOKENS:1800}
+    context-reserved-history-tokens: ${ZHIMESH_RAG_RESERVED_HISTORY_TOKENS:1000}
+    context-safety-ratio: ${ZHIMESH_RAG_CONTEXT_SAFETY_RATIO:0.08}
+    context-per-document-limit: ${ZHIMESH_RAG_CONTEXT_PER_DOCUMENT_LIMIT:2}
+    graph-description-token-ratio: ${ZHIMESH_GRAPH_DESCRIPTION_TOKEN_RATIO:0.20}
+    graph-description-limit: ${ZHIMESH_GRAPH_DESCRIPTION_LIMIT:3}
+  datasource:
+    neo4j:
+      host: ${ZHIMESH_NEO4J_HOST:localhost}
+      port: ${ZHIMESH_NEO4J_PORT:7687}
+      username: ${ZHIMESH_NEO4J_USERNAME:your-db-account}
+      password: ${ZHIMESH_NEO4J_PASSWORD:your-db-password}
+      database: ${ZHIMESH_NEO4J_DATABASE:your-db-name}

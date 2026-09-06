@@ -1,0 +1,217 @@
+server:
+  port: 9999
+  context-path: /
+  servlet:
+    session:
+      timeout: 28800s
+  tomcat:
+    uri-encoding: UTF-8
+    threads:
+      max: ${ZHIMESH_TOMCAT_MAX_THREADS:50}
+      min-spare: ${ZHIMESH_TOMCAT_MIN_SPARE_THREADS:5}
+    accept-count: ${ZHIMESH_TOMCAT_ACCEPT_COUNT:50}
+
+spring:
+  application:
+    name: ZhiMesh
+  profiles:
+    active: dev
+  mvc:
+    async:
+      request-timeout: 180000
+  jackson:
+    date-format: "yyyy-MM-dd HH:mm:ss"
+    time-zone: "GMT+8"
+    serialization: { write-dates-as-timestamps: false }
+  cache:
+    type: redis
+    redis:
+      key-prefix: 'AUTO_CACHE\:'
+      time-to-live: 1h
+  mail:
+    default-encoding: UTF-8
+    protocol: smtps
+    host: ${ZHIMESH_MAIL_HOST:your-email-host}
+    username: ${ZHIMESH_MAIL_USERNAME:your-email-username}
+    password: ${ZHIMESH_MAIL_PASSWORD:your-email-password}
+    port: 465
+    properties:
+      mail:
+        smtp:
+          ssl:
+            enable: true
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 20MB
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+mybatis-plus:
+  # Support wildcards * or semicolon separation
+  # 支持统配符 * 或者 ; 分割
+  mapper-locations: classpath*:/mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+zhimesh:
+  host: ${ZHIMESH_HOST:zhimesh.com}
+  frontend-url: ${ZHIMESH_FRONTEND_URL:http://www.${zhimesh.host}}
+  backend-url: ${ZHIMESH_BACKEND_URL:http://www.${zhimesh.host}/api}
+  auth:
+    # Keep email activation on outside a deliberately configured demonstration environment.
+    demo-register-enabled: ${ZHIMESH_DEMO_REGISTER_ENABLED:false}
+  indexing:
+    canonical-chunk-enabled: ${ZHIMESH_CANONICAL_CHUNK_ENABLED:true}
+    graph-concurrency: ${ZHIMESH_INDEXING_GRAPH_CONCURRENCY:1}
+    graph-segment-concurrency: ${ZHIMESH_GRAPH_SEGMENT_CONCURRENCY:2}
+    graph-request-concurrency: ${ZHIMESH_GRAPH_REQUEST_CONCURRENCY:2}
+    graph-request-timeout-seconds: ${ZHIMESH_GRAPH_REQUEST_TIMEOUT_SECONDS:120}
+    graph-request-max-attempts: ${ZHIMESH_GRAPH_REQUEST_MAX_ATTEMPTS:3}
+    graph-retry-initial-backoff-ms: ${ZHIMESH_GRAPH_RETRY_INITIAL_BACKOFF_MS:2000}
+    graph-retry-max-backoff-ms: ${ZHIMESH_GRAPH_RETRY_MAX_BACKOFF_MS:10000}
+    # A DOING graphical status older than this is treated as abandoned and recovered to FAIL.
+    graph-doing-timeout-minutes: ${ZHIMESH_GRAPH_DOING_TIMEOUT_MINUTES:60}
+    embedding-concurrency: ${ZHIMESH_INDEXING_EMBEDDING_CONCURRENCY:2}
+  openrouter-sync:
+    enabled: ${ZHIMESH_OPENROUTER_SYNC_ENABLED:true}
+    platform-name: ${ZHIMESH_OPENROUTER_PLATFORM_NAME:OpenRouter}
+    cron: "${ZHIMESH_OPENROUTER_SYNC_CRON:0 0 4 * * *}"
+    zone: ${ZHIMESH_OPENROUTER_SYNC_ZONE:Asia/Shanghai}
+    health-check-enabled: ${ZHIMESH_OPENROUTER_HEALTH_CHECK_ENABLED:true}
+    health-check-cron: "${ZHIMESH_OPENROUTER_HEALTH_CHECK_CRON:0 0 16 * * *}"
+    health-check-min-active-models: ${ZHIMESH_OPENROUTER_HEALTH_CHECK_MIN_ACTIVE_MODELS:5}
+    health-check-max-probes-per-run: ${ZHIMESH_OPENROUTER_HEALTH_CHECK_MAX_PROBES_PER_RUN:5}
+    active-run-timeout-minutes: ${ZHIMESH_OPENROUTER_ACTIVE_RUN_TIMEOUT_MINUTES:35}
+    rate-limit-backoff-minutes: ${ZHIMESH_OPENROUTER_RATE_LIMIT_BACKOFF_MINUTES:60}
+    rate-limit-retry-enabled: ${ZHIMESH_OPENROUTER_RATE_LIMIT_RETRY_ENABLED:false}
+    min-context-tokens: ${ZHIMESH_OPENROUTER_MIN_CONTEXT_TOKENS:8192}
+    max-catalog-p50-latency-ms: ${ZHIMESH_OPENROUTER_MAX_CATALOG_P50_LATENCY_MS:4000}
+    min-catalog-throughput-tps: ${ZHIMESH_OPENROUTER_MIN_THROUGHPUT_TPS:12}
+    min-catalog-uptime-1d: ${ZHIMESH_OPENROUTER_MIN_UPTIME_1D:98}
+    max-probe-ttft-ms: ${ZHIMESH_OPENROUTER_MAX_PROBE_TTFT_MS:6000}
+    max-probe-total-ms: ${ZHIMESH_OPENROUTER_MAX_PROBE_TOTAL_MS:15000}
+    connect-timeout-ms: ${ZHIMESH_OPENROUTER_CONNECT_TIMEOUT_MS:5000}
+    request-timeout-ms: ${ZHIMESH_OPENROUTER_REQUEST_TIMEOUT_MS:20000}
+    probe-interval-ms: ${ZHIMESH_OPENROUTER_PROBE_INTERVAL_MS:10000}
+    max-probes-per-run: ${ZHIMESH_OPENROUTER_MAX_PROBES_PER_RUN:20}
+    min-active-models: ${ZHIMESH_OPENROUTER_MIN_ACTIVE_MODELS:10}
+    catch-up-after-hours: ${ZHIMESH_OPENROUTER_CATCH_UP_AFTER_HOURS:26}
+    protected-models: ${ZHIMESH_OPENROUTER_PROTECTED_MODELS:}
+  async:
+    chat:
+      core-pool-size: ${ZHIMESH_CHAT_CORE_POOL_SIZE:4}
+      max-pool-size: ${ZHIMESH_CHAT_MAX_POOL_SIZE:8}
+      queue-capacity: ${ZHIMESH_CHAT_QUEUE_CAPACITY:20}
+    indexing:
+      core-pool-size: ${ZHIMESH_INDEXING_CORE_POOL_SIZE:2}
+      max-pool-size: ${ZHIMESH_INDEXING_MAX_POOL_SIZE:2}
+      queue-capacity: ${ZHIMESH_INDEXING_QUEUE_CAPACITY:50}
+    background:
+      core-pool-size: ${ZHIMESH_BACKGROUND_CORE_POOL_SIZE:1}
+      max-pool-size: ${ZHIMESH_BACKGROUND_MAX_POOL_SIZE:2}
+      queue-capacity: ${ZHIMESH_BACKGROUND_QUEUE_CAPACITY:20}
+    workflow:
+      core-pool-size: ${ZHIMESH_WORKFLOW_CORE_POOL_SIZE:1}
+      max-pool-size: ${ZHIMESH_WORKFLOW_MAX_POOL_SIZE:2}
+      queue-capacity: ${ZHIMESH_WORKFLOW_QUEUE_CAPACITY:10}
+    images:
+      core-pool-size: ${ZHIMESH_IMAGES_CORE_POOL_SIZE:1}
+      max-pool-size: ${ZHIMESH_IMAGES_MAX_POOL_SIZE:2}
+      queue-capacity: ${ZHIMESH_IMAGES_QUEUE_CAPACITY:10}
+    task-scheduler-pool-size: ${ZHIMESH_TASK_SCHEDULER_POOL_SIZE:2}
+    lock-renew-scheduler-pool-size: ${ZHIMESH_LOCK_RENEW_SCHEDULER_POOL_SIZE:2}
+  retrieval:
+    concurrency: ${ZHIMESH_RAG_RETRIEVAL_CONCURRENCY:4}
+    queue-capacity: ${ZHIMESH_RAG_RETRIEVAL_QUEUE_CAPACITY:8}
+    rerank-min-candidates: ${ZHIMESH_RAG_RERANK_MIN_CANDIDATES:0}
+    rerank-absolute-score-threshold: ${ZHIMESH_RAG_RERANK_ABSOLUTE_SCORE_THRESHOLD:0.30}
+    relevance-gate-fail-open: ${ZHIMESH_RAG_RELEVANCE_GATE_FAIL_OPEN:false}
+    fallback-high-confidence-vector-score: ${ZHIMESH_RAG_FALLBACK_HIGH_CONFIDENCE_VECTOR_SCORE:0.82}
+    pre-rerank-gate-enabled: ${ZHIMESH_RAG_PRE_RERANK_GATE_ENABLED:true}
+    pre-rerank-vector-score-floor: ${ZHIMESH_RAG_PRE_RERANK_VECTOR_SCORE_FLOOR:0.70}
+    episodic-recency-weight: ${ZHIMESH_EPISODIC_RECENCY_WEIGHT:0.20}
+    episodic-recency-half-life-days: ${ZHIMESH_EPISODIC_RECENCY_HALF_LIFE_DAYS:30}
+    episodic-importance-weight: ${ZHIMESH_EPISODIC_IMPORTANCE_WEIGHT:0.05}
+    bm25:
+      enabled: ${ZHIMESH_BM25_ENABLED:true}
+      auto-index: ${ZHIMESH_BM25_AUTO_INDEX:false}
+      timeout-ms: ${ZHIMESH_BM25_TIMEOUT_MS:5000}
+      top-k: ${ZHIMESH_BM25_TOP_K:5}
+      k1: ${ZHIMESH_BM25_K1:1.2}
+      b: ${ZHIMESH_BM25_B:0.75}
+      max-query-terms: ${ZHIMESH_BM25_MAX_QUERY_TERMS:128}
+      max-document-frequency-ratio: ${ZHIMESH_BM25_MAX_DOCUMENT_FREQUENCY_RATIO:0.85}
+      document-frequency-filter-min-documents: ${ZHIMESH_BM25_DF_FILTER_MIN_DOCUMENTS:20}
+      analyzer-version: ${ZHIMESH_BM25_ANALYZER_VERSION:cjk-bigram-trigram-ident-v1}
+  memory:
+    retrieve-min-score: ${ZHIMESH_MEMORY_RETRIEVE_MIN_SCORE:0.65}
+    auto-probe-min-score: ${ZHIMESH_MEMORY_AUTO_PROBE_MIN_SCORE:0.72}
+    auto-probe-candidate-results: ${ZHIMESH_MEMORY_AUTO_PROBE_CANDIDATE_RESULTS:5}
+    auto-probe-max-results: ${ZHIMESH_MEMORY_AUTO_PROBE_MAX_RESULTS:2}
+    explicit-candidate-results: ${ZHIMESH_MEMORY_EXPLICIT_CANDIDATE_RESULTS:5}
+    explicit-max-results: ${ZHIMESH_MEMORY_EXPLICIT_MAX_RESULTS:3}
+    episodic-dedup-min-score: ${ZHIMESH_MEMORY_EPISODIC_DEDUP_MIN_SCORE:0.92}
+    update-lock-wait-ms: ${ZHIMESH_MEMORY_UPDATE_LOCK_WAIT_MS:120000}
+    update-lock-lease-ms: ${ZHIMESH_MEMORY_UPDATE_LOCK_LEASE_MS:60000}
+  intent-routing:
+    # Production currently uses rules plus route prototypes.
+    enabled: ${ZHIMESH_INTENT_ROUTING_ENABLED:true}
+    # Keep the trained three-head classifier for a later version; do not enable yet.
+    classifier-enabled: ${ZHIMESH_INTENT_ROUTING_CLASSIFIER_ENABLED:false}
+    classifier-resource: ${ZHIMESH_INTENT_ROUTING_CLASSIFIER_RESOURCE:classpath:rag/retrieval-router-v1.json}
+    classifier-sha256: ${ZHIMESH_INTENT_ROUTING_CLASSIFIER_SHA256:}
+    route-prototype-resource: ${ZHIMESH_INTENT_ROUTING_ROUTE_PROTOTYPE_RESOURCE:classpath:rag/retrieval-route-prototypes.zh-CN.json}
+    min-top-score: ${ZHIMESH_INTENT_ROUTING_MIN_TOP_SCORE:0.78}
+    min-score-margin: ${ZHIMESH_INTENT_ROUTING_MIN_SCORE_MARGIN:0.05}
+  knowledge-scope-gate:
+    enabled: ${ZHIMESH_KB_SCOPE_GATE_ENABLED:true}
+    profile-limit: ${ZHIMESH_KB_SCOPE_GATE_PROFILE_LIMIT:24}
+    candidate-pool-limit: ${ZHIMESH_KB_SCOPE_GATE_CANDIDATE_POOL_LIMIT:256}
+    profile-text-max-chars: ${ZHIMESH_KB_SCOPE_GATE_PROFILE_TEXT_MAX_CHARS:1000}
+    redis-timeout-ms: ${ZHIMESH_KB_SCOPE_GATE_REDIS_TIMEOUT_MS:50}
+    redis-ttl-hours: ${ZHIMESH_KB_SCOPE_GATE_REDIS_TTL_HOURS:24}
+    rebuild-debounce-ms: ${ZHIMESH_KB_SCOPE_GATE_REBUILD_DEBOUNCE_MS:5000}
+    build-lock-seconds: ${ZHIMESH_KB_SCOPE_GATE_BUILD_LOCK_SECONDS:300}
+    generator-version: ${ZHIMESH_KB_SCOPE_GATE_GENERATOR_VERSION:kb-route-profile-v1}
+    cache-failure-threshold: ${ZHIMESH_KB_SCOPE_GATE_CACHE_FAILURE_THRESHOLD:3}
+    cache-circuit-open-ms: ${ZHIMESH_KB_SCOPE_GATE_CACHE_CIRCUIT_OPEN_MS:30000}
+    unrelated-max-score: ${ZHIMESH_KB_SCOPE_GATE_UNRELATED_MAX_SCORE:0.60}
+    related-min-score: ${ZHIMESH_KB_SCOPE_GATE_RELATED_MIN_SCORE:0.82}
+  proxy:
+    enable: false
+    host: 127.0.0.1
+    http-port: 1087
+  encrypt:
+    # Encryption key for sensitive database fields, do not disclose
+    # 数据库敏感字段加密的密钥，不要泄露
+    # Using the default key will fail on startup, please replace with your own key (16-char string) or pass via environment variable ZHIMESH_ENCRYPT_AES_KEY
+    # 使用默认密钥启动会失败，请先替换为自己的密钥(长度为16的字符串)，或通过环境变量 ZHIMESH_ENCRYPT_AES_KEY 传入
+    aes-key: ${ZHIMESH_ENCRYPT_AES_KEY:Ap9da0CopbjiKGc1}
+  conversation:
+    # Conversations are the mandatory boundary for stateful chat. These legacy
+    # rollout flags remain readable for deployment compatibility, but default on.
+    enabled: ${ZHIMESH_CONVERSATION_ENABLED:true}
+    auto-create-default: ${ZHIMESH_CONVERSATION_AUTO_CREATE_DEFAULT:true}
+    message-dual-write: ${ZHIMESH_CONVERSATION_MESSAGE_DUAL_WRITE:true}
+    # Short-term history gets an independent budget. System/current RAG prompt,
+    # MCP tool schemas, output tokens and a safety margin are accounted separately.
+    short-memory-max-history-tokens: ${ZHIMESH_CONVERSATION_SHORT_MEMORY_MAX_HISTORY_TOKENS:8192}
+    short-memory-reserved-output-tokens: ${ZHIMESH_CONVERSATION_SHORT_MEMORY_RESERVED_OUTPUT_TOKENS:2048}
+    short-memory-safety-ratio: ${ZHIMESH_CONVERSATION_SHORT_MEMORY_SAFETY_RATIO:0.08}
+    # Short-term memory is permanently Redis-backed.
+    short-memory-ttl: ${ZHIMESH_SHORT_MEMORY_TTL:0s}
+    short-memory-max-value-bytes: ${ZHIMESH_SHORT_MEMORY_MAX_VALUE_BYTES:1048576}
+    short-memory-turn-lock-wait: ${ZHIMESH_SHORT_MEMORY_TURN_LOCK_WAIT:2s}
+    short-memory-turn-lock-lease: ${ZHIMESH_SHORT_MEMORY_TURN_LOCK_LEASE:30s}
+
+local:
+  base-data-path: ${ZHIMESH_LOCAL_BASE_DATA_PATH:/data/zhimesh}
+  files: ${local.base-data-path}/files/
+  images: ${local.base-data-path}/images/
+  watermark-images: ${local.base-data-path}/mark-images/
+  thumbnails: ${local.base-data-path}/thumbnails/
+  watermark-thumbnails: ${local.base-data-path}/watermark-thumbnails/
+  tmp-images: ${local.base-data-path}/tmp-images/

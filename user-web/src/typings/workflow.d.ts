@@ -1,0 +1,449 @@
+declare namespace Workflow {
+  import type { Node, Edge } from '@vue-flow/core'
+
+  interface WorkflowComponent {
+    id: string
+    uuid: string
+    name: string
+    title: string
+    remark: string
+    displayOrder: number
+    isEnable: boolean
+  }
+
+  interface WorkflowNode {
+    id: string
+    uuid: string
+    workflowId: string
+    workflowComponentId: string
+    title: string
+    remark: string
+    inputConfig: { user_inputs: NodeIODefinition[], ref_inputs: NodeIORefDinition[] }
+    nodeConfig: NodeConfig
+    outputConfig: object
+    positionX: number
+    positionY: number
+
+    workflowUuid: string
+    wfComponent: WorkflowComponent
+    sourceHandleIds: string[]
+    targetHandleIds: string[]
+  }
+
+  interface WorkflowEdge {
+    id: string
+    uuid: string
+    workflowId: string
+    sourceNodeUuid: string
+    sourceHandle: string
+    targetNodeUuid: string
+
+    workflowUuid: string
+  }
+
+  // 工作流信息
+  interface WorkflowInfo {
+    id: string
+    uuid: string
+    title: string
+    remark: string
+    isPublic: boolean
+    nodes: WorkflowNode[]
+    edges: WorkflowEdge[]
+    userId: string
+    userUuid: string
+    userName: string
+    createTime: string
+
+    deleteNodes: string[]
+    deleteEdges: string[]
+  }
+
+  interface WorkflowUpdateReq {
+    uuid: string
+    nodes: WorkflowNode[]
+    edges: WorkflowEdge[]
+    deleteNodes: string[]
+    deleteEdges: string[]
+  }
+
+  // 工作流运行时信息
+  interface WorkflowRuntime {
+    id: string
+    uuid: string
+    workflowId: string
+    input: any
+    output: any
+    status: number
+    statusRemark: string
+    createTime: string
+    updateTime?: string
+    loading: boolean
+    detailLoaded?: boolean
+    detailLoading?: boolean
+    detailError?: string
+    nodesLoaded?: boolean
+
+    // Aggregated metrics across all nodes of this run (input/output tokens from LLM-typed nodes, total duration in ms)
+    inputTokens?: number
+    outputTokens?: number
+    duration?: number
+
+    wfUuid: string
+    nodes: WfRuntimeNode[]
+  }
+
+  interface WfRuntimeNode {
+    id: string
+    uuid: string
+    workflowRuntimeId: string
+    nodeId: string
+    //json object
+    input: any
+    //json object
+    output: any
+    status: number
+    statusRemark: string
+    createTime: string
+    duration: number | null
+    metadata: AnyNodeMetrics | null
+    updateTime?: string
+    detailLoaded?: boolean
+    detailLoading?: boolean
+    detailError?: string
+
+    wfComponent: WorkflowComponent
+    wfRuntimeUuid: string
+    nodeUuid: string
+    nodeTitle: string
+  }
+
+  // Runtime-level aggregated metrics snapshot (terminal): tokens from LLM-typed nodes, total duration
+  interface RuntimeMetrics {
+    inputTokens?: number
+    outputTokens?: number
+    duration?: number
+  }
+
+  // 节点执行可观测指标（基类） | Node execution observability metrics (base)
+  interface NodeExecutionMetrics {
+    type?: string
+    durationMs?: number
+  }
+
+  // LLM 节点指标 | LLM node metrics
+  interface LLMMetrics extends NodeExecutionMetrics {
+    type: 'llm'
+    inputTokens?: number
+    outputTokens?: number
+    modelName?: string
+    modelPlatform?: string
+  }
+
+  // 图片生成节点指标 | Image generation node metrics
+  interface ImageMetrics extends NodeExecutionMetrics {
+    type: 'image'
+    imageModelName?: string
+    imageSize?: string
+  }
+
+  // HTTP 请求节点指标 | HTTP request node metrics
+  interface HttpRequestMetrics extends NodeExecutionMetrics {
+    type: 'http_request'
+    httpStatusCode?: number
+    httpMethod?: string
+  }
+
+  // 搜索节点指标 | Search node metrics
+  interface SearchMetrics extends NodeExecutionMetrics {
+    type: 'search'
+    searchResultCount?: number
+  }
+
+  // 知识检索节点指标 | Knowledge retrieval node metrics
+  interface KnowledgeRetrievalMetrics extends NodeExecutionMetrics {
+    type: 'knowledge_retrieval'
+    retrievalCount?: number
+  }
+
+  // 邮件发送节点指标 | Mail send node metrics
+  interface MailMetrics extends NodeExecutionMetrics {
+    type: 'mail'
+    recipientCount?: number
+    sendSuccess?: boolean
+  }
+
+  // 文档提取节点指标 | Document extractor node metrics
+  interface DocumentMetrics extends NodeExecutionMetrics {
+    type: 'document'
+    fileCount?: number
+    extractedCharCount?: number
+  }
+
+  // Agent 节点指标（在 LLMMetrics 字段之上扩展 RAG / Character 信息） | Agent node metrics
+  interface AgentMetrics extends Omit<LLMMetrics, 'type'> {
+    type: 'agent'
+    retrievalCount?: number
+    characterUuid?: string
+  }
+
+  type AnyNodeMetrics = LLMMetrics | AgentMetrics | ImageMetrics | HttpRequestMetrics
+    | SearchMetrics | KnowledgeRetrievalMetrics | MailMetrics | DocumentMetrics
+
+  interface WorkflowState {
+    showCreateOrEditView: boolean
+    createOrEditWfUuid: string
+    selectedType: string
+    activeWorkflowInfo: WorkflowInfo
+    wfUuidToUIWorkflow: Map<string, UIWorkflow>
+    activeUuid: string
+    wfComponents: WorkflowComponent[]
+    myWorkflows: WorkflowInfo[]
+    publicWorkflows: WorkflowInfo[]
+    loadingMyWorkflows: boolean,
+    loadingPublicWorkflows: boolean,
+    wfUuidToWfRuntimePageMeta: Map<string, WfRuntimePageMeta>
+    wfUuidToWfRuntimes: Map<string, WorkflowRuntime[]>
+    operators: Operator[]
+    submitting: boolean
+  }
+
+  interface InfoListResp {
+    total: number,
+    records: WorkflowInfo[]
+  }
+
+  interface WfRuntimesResp {
+    total: number,
+    records: WorkflowRuntime[]
+  }
+
+  interface WfRuntimePageMeta {
+    total: number
+    nextPage: number
+    loadedAll: boolean
+    loading: boolean
+    error: string
+    loadedAt: number
+  }
+
+  interface NodeIODefinition {
+    uuid: string
+    type: number
+    name: string
+    title: string
+    required: boolean
+
+    //type === files
+    limit: number
+    //type === options
+    multiple: boolean
+    options: string[]
+  }
+
+  //引用类型的输入输出定义
+  interface NodeIORefDinition {
+    uuid: string
+    name: string
+    node_param_name: string
+    node_uuid: string
+  }
+
+  interface UserInput {
+    uuid: string
+    name: string
+    content: UserInputContent
+
+    required: boolean
+  }
+
+  interface UserInputContent {
+    type: number
+    value: any
+    title: string
+  }
+
+  interface NodeIOData {
+    title: string
+    type: number
+    value: any
+  }
+
+  interface NodeConfig {
+  }
+
+  interface NodeConfigStart implements NodeConfig {
+  }
+
+  interface NodeConfigAnswer implements NodeConfig {
+    model_platform: string
+    model_name: string
+    prompt: string
+  }
+
+  //Classifier node
+  interface NodeConfigClassifier implements NodeConfig {
+    model_platform: string
+    model_name: string
+    categories: NodeConfigClassifierCategory[]
+  }
+
+  interface NodeConfigClassifierCategory {
+    target_node_uuid: string
+    category_uuid: string
+    category_name: string
+  }
+
+  //Switcher node
+  interface NodeConfigSwitcher implements NodeConfig {
+    cases: NodeConfigSwitcherCase[]
+  }
+
+  interface NodeConfigTemplate implements NodeConfig {
+    template: string
+  }
+
+  interface NodeConfigTextTransform implements NodeConfig {
+    operation: 'trim' | 'uppercase' | 'lowercase' | 'replace'
+    find_text: string
+    replace_text: string
+  }
+
+  interface NodeConfigVariableAggregator implements NodeConfig {
+    separator: string
+  }
+
+  interface NodeConfigEnd implements NodeConfig {
+    result: string
+  }
+
+  interface NodeConfigKnowledgeRetrieval implements NodeConfig {
+    knowledge_base_uuid: string
+    knowledge_base_name: string
+    score: number
+    top_n: number
+    is_strict: boolean
+    default_response: string
+  }
+
+  interface NodeConfigSwitcherCase {
+    uuid: string
+    name?: string
+    operator: string
+    target_node_uuid: string
+    conditions: NOdeConfigCaseCondition[]
+  }
+
+  interface NodeConfigSwitcherCaseCondition {
+    uuid: string
+    node_uuid: string
+    node_param_name: string
+    operator: string
+    value: string
+  }
+
+  interface NodeConfigKeywordExtractor implements NodeConfig {
+    model_platform: string
+    model_name: string
+    top_n: number
+  }
+
+  interface NodeConfigFaqExtractor implements NodeConfig {
+    model_platform: string
+    model_name: string
+    top_n: number
+  }
+
+  interface NodeConfigGoogleSearch implements NodeConfig {
+    query: string
+    country: string
+    language: string
+    top_n: number
+  }
+
+  interface NodeConfigOpenAiImage implements NodeConfig {
+    prompt: string
+    size: string
+    quality: string
+  }
+
+  interface NodeConfigTongyiwanx implements NodeConfig {
+    model_name: string
+    prompt: string
+    size: string
+    seed: number
+  }
+
+  interface NodeConfigHumanFeedback implements NodeConfig {
+    tip: string
+  }
+
+  interface NodeConfigMailSend implements NodeConfig {
+    sender_type: number
+    cc_mails: string
+    to_mails: string
+    subject: string
+    content: string
+    smtp: {
+      host: string
+      port: number
+    }
+    sender: {
+      name: string
+      mail: string
+      password: string
+    }
+  }
+
+  interface NodeConfigHttpRequestParam {
+    name: string
+    value: string
+  }
+
+  interface NodeConfigHttpRequest implements NodeConfig {
+    method: string
+    url: string
+    headers: NodeConfigHttpRequestParam[]
+    params: NodeConfigHttpRequestParam[]
+    text_body: string
+    json_body: object
+    form_data_body: NodeConfigHttpRequestParam[]
+    form_urlencoded_body: NodeConfigHttpRequestParam[]
+    content_type: string
+    timeout: number
+    retry_times: number
+    clear_html: boolean
+  }
+
+  // Agent node
+  interface NodeConfigAgent implements NodeConfig {
+    character_uuid: string
+    conversation_uuid?: string
+    model_platform?: string
+    model_name?: string
+    prompt?: string
+    enable_rag?: boolean
+    enable_mcp?: boolean
+    enable_web_search?: boolean
+  }
+
+  interface NodeIOData {
+    name: string
+    value: any
+  }
+
+  interface Operator {
+    name: string
+    desc: string
+  }
+
+  interface UIWorkflow {
+    nodes: Node[]
+    edges: Edge[]
+  }
+
+  interface InputLabel {
+    label: string
+    value: string
+  }
+}

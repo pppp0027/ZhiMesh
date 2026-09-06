@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pppp.zhimesh.common.mapper.KnowledgeBaseMapper">
+    <select id="searchByAdmin" resultType="com.pppp.zhimesh.common.entity.KnowledgeBase">
+        select *
+        from adi_knowledge_base
+        <where>
+        <if test="keyword != null and keyword != ''">
+            title like CONCAT('%', #{keyword}, '%')
+        </if>
+        </where>
+        order by update_time desc
+    </select>
+
+    <select id="searchByUser" resultType="com.pppp.zhimesh.common.entity.KnowledgeBase">
+        select *
+        from adi_knowledge_base
+        <where>
+        <!-- Legacy user knowledge bases can have a NULL system flag. Treat NULL
+             as a normal user workspace record so existing libraries remain visible. -->
+        COALESCE(is_system, false) = false
+        <choose>
+            <when test="includeOthersPublic">
+                and (is_public = true or owner_id = #{ownerId})
+            </when>
+            <otherwise>
+                and owner_id = #{ownerId}
+            </otherwise>
+        </choose>
+        <if test="keyword != null and keyword != ''">
+            and title like CONCAT('%', #{keyword}, '%')
+        </if>
+        </where>
+        order by star_count desc,update_time desc
+    </select>
+
+    <select id="countCreatedByTimePeriod" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base
+        where create_time between #{beginTime} and #{endTime}
+    </select>
+
+    <select id="countAllCreated" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base
+    </select>
+
+    <update id="updateStatByUuid">
+        update adi_knowledge_base
+        set item_count      = (select count(1)
+                               from adi_knowledge_base_item
+                               where kb_uuid = #{uuid}),
+            embedding_count = #{embeddingCount}
+        where uuid = #{uuid}
+    </update>
+
+    <select id="getByItemUuid" resultType="com.pppp.zhimesh.common.entity.KnowledgeBase">
+        select a.*
+        from adi_knowledge_base a
+                 inner join adi_knowledge_base_item b on a.id = b.kb_id
+        where b.uuid = #{itemUuid}
+    </select>
+
+    <update id="markRouteProfileStale">
+        update adi_knowledge_base
+        set route_profile_generation = route_profile_generation + 1,
+            route_profile_status = 'STALE',
+            route_profile_source_hash = '',
+            route_profile_status_change_time = current_timestamp
+        where uuid = #{kbUuid}
+    </update>
+
+    <update id="markRouteProfileBuilding">
+        update adi_knowledge_base
+        set route_profile_status = 'BUILDING',
+            route_profile_status_change_time = current_timestamp
+        where uuid = #{kbUuid}
+          and route_profile_generation = #{generation}
+          and route_profile_status in ('NONE', 'STALE', 'FAILED', 'BUILDING')
+    </update>
+
+    <update id="markRouteProfileFailed">
+        update adi_knowledge_base
+        set route_profile_status = 'FAILED',
+            route_profile_status_change_time = current_timestamp
+        where uuid = #{kbUuid}
+          and route_profile_generation = #{generation}
+    </update>
+
+    <update id="activateRouteProfile">
+        update adi_knowledge_base
+        set route_profile_status = 'READY',
+            route_profile_active_generation = #{generation},
+            route_profile_set_uuid = #{profileSetUuid},
+            route_profile_source_hash = #{sourceHash},
+            route_profile_model_id = #{modelId},
+            route_profile_model_identity = #{modelIdentity},
+            route_profile_status_change_time = current_timestamp
+        where uuid = #{kbUuid}
+          and route_profile_generation = #{generation}
+    </update>
+</mapper>

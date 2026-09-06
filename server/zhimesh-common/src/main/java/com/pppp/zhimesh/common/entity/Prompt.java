@@ -1,0 +1,27 @@
+package com.pppp.zhimesh.common.entity;
+
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+
+@EqualsAndHashCode(callSuper = true)
+@Data
+@TableName("adi_prompt")
+@Schema(title = "提示词实体 | Prompt Entity")
+public class Prompt extends BaseEntity {
+
+    @Schema(title = "用户id | User ID")
+    @TableField(value = "user_id")
+    private Long userId;
+
+    @Schema(title = "标题 | Title")
+    @TableField(value = "act")
+    private String act;
+
+    @Schema(title = "内容 | Content")
+    @TableField(value = "prompt")
+    private String prompt;
+
+}

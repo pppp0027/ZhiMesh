@@ -1,0 +1,77 @@
+package com.pppp.zhimesh.chat.controller;
+
+import com.aliyun.core.utils.StringUtils;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.pppp.zhimesh.common.cosntant.ZhiMeshConstant;
+import com.pppp.zhimesh.common.entity.AiModel;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.service.AiModelService;
+import com.pppp.zhimesh.common.util.JsonUtil;
+import com.pppp.zhimesh.common.util.LocalCache;
+import com.pppp.zhimesh.common.vo.AsrSetting;
+import com.pppp.zhimesh.common.languagemodel.data.ModelVoice;
+import com.pppp.zhimesh.common.vo.SysConfigResp;
+import com.pppp.zhimesh.common.vo.TtsSetting;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import static com.pppp.zhimesh.common.enums.ErrorEnum.*;
+
+@Slf4j
+@RestController
+@RequestMapping("/sys/config")
+@Validated
+public class SysConfigController {
+
+    @Resource
+    private AiModelService aiModelService;
+
+    @GetMapping(value = "/public/info")
+    public SysConfigResp info() {
+        String asrSetting = LocalCache.CONFIGS.get(ZhiMeshConstant.SysConfigKey.ASR_SETTING);
+        String ttsSetting = LocalCache.CONFIGS.get(ZhiMeshConstant.SysConfigKey.TTS_SETTING);
+        if (StringUtils.isBlank(asrSetting)) {
+            throw new BaseException(B_ASR_SETTING_NOT_FOUND);
+        }
+        if (StringUtils.isBlank(ttsSetting)) {
+            throw new BaseException(B_TTS_SETTING_NOT_FOUND);
+        }
+        TtsSetting tts = JsonUtil.fromJson(ttsSetting, TtsSetting.class);
+        if (null == tts) {
+            throw new BaseException(B_TTS_SETTING_NOT_FOUND);
+        }
+
+        SysConfigResp sysConfigResp = new SysConfigResp();
+        sysConfigResp.setAsrSetting(JsonUtil.fromJson(asrSetting, AsrSetting.class));
+        sysConfigResp.setTtsSetting(JsonUtil.fromJson(ttsSetting, TtsSetting.class));
+
+        //Available voices depend on the modelName in ttsSetting
+        List<ModelVoice> voices = new ArrayList<>();
+        if (tts.getSynthesizerSide().equalsIgnoreCase(ZhiMeshConstant.TtsConstant.SYNTHESIZER_SERVER)) {
+            AiModel aiModel = aiModelService.getByName(tts.getModelName());
+            if (null == aiModel) {
+                log.error("Synthesizer side is server, but model {} not found", tts.getModelName());
+                throw new BaseException(B_TTS_MODEL_NOT_FOUND);
+            }
+            JsonNode modelVoices = aiModel.getProperties() == null ? null : aiModel.getProperties().get("voices");
+            if (modelVoices == null || !modelVoices.isArray()) {
+                log.error("Synthesizer side is server, but voices not found in model {} properties", tts.getModelName());
+                throw new BaseException(B_TTS_MODEL_NOT_FOUND);
+            }
+            for (JsonNode voice : modelVoices) {
+                voices.add(JsonUtil.fromJson(voice, ModelVoice.class));
+            }
+        }
+        sysConfigResp.setAvailableVoices(voices);
+        sysConfigResp.setDefaultLocale(LocalCache.CONFIGS.getOrDefault(ZhiMeshConstant.SysConfigKey.DEFAULT_LOCALE, "zh-CN"));
+        sysConfigResp.setConversationEnabled(true);
+        return sysConfigResp;
+    }
+}

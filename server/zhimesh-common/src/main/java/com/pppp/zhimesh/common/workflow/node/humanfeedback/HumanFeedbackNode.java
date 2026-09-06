@@ -1,0 +1,62 @@
+package com.pppp.zhimesh.common.workflow.node.humanfeedback;
+
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.pppp.zhimesh.common.entity.WorkflowComponent;
+import com.pppp.zhimesh.common.entity.WorkflowNode;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.util.JsonUtil;
+import com.pppp.zhimesh.common.workflow.NodeProcessResult;
+import com.pppp.zhimesh.common.workflow.WfNodeState;
+import com.pppp.zhimesh.common.workflow.WfState;
+import com.pppp.zhimesh.common.workflow.data.NodeIOData;
+import com.pppp.zhimesh.common.workflow.node.AbstractWfNode;
+import lombok.extern.slf4j.Slf4j;
+
+import java.util.List;
+
+import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.WorkflowConstant.DEFAULT_OUTPUT_PARAM_NAME;
+import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.WorkflowConstant.HUMAN_FEEDBACK_KEY;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_WF_NODE_CONFIG_ERROR;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_WF_NODE_CONFIG_NOT_FOUND;
+
+/**
+ * 人机交互节点
+ */
+@Slf4j
+public class HumanFeedbackNode extends AbstractWfNode {
+
+    public HumanFeedbackNode(WorkflowComponent wfComponent, WorkflowNode node, WfState wfState, WfNodeState nodeState) {
+        super(wfComponent, node, wfState, nodeState);
+    }
+
+    @Override
+    protected NodeProcessResult onProcess() {
+        ObjectNode configObj = node.getNodeConfig();
+        if (configObj.isEmpty()) {
+            log.error("HumanFeedbackNode config is empty");
+            throw new BaseException(A_WF_NODE_CONFIG_NOT_FOUND);
+        }
+        log.info("HumanFeedbackNode config:{}", configObj);
+        HumanFeedbackNodeConfig nodeConfig = JsonUtil.fromJson(configObj, HumanFeedbackNodeConfig.class);
+        if (null == nodeConfig) {
+            log.warn("Human feedback node configuration not found, {}", state.getUuid());
+            throw new BaseException(A_WF_NODE_CONFIG_ERROR);
+        }
+        String userInput = state.data().get(HUMAN_FEEDBACK_KEY).toString();
+        log.info("User input: {}", userInput);
+        List<NodeIOData> result = List.of(NodeIOData.createByText(DEFAULT_OUTPUT_PARAM_NAME, "default", userInput));
+        return NodeProcessResult.builder().content(result).build();
+    }
+
+    public static String getTip(WorkflowNode feedbackNode) {
+        ObjectNode configObj = feedbackNode.getNodeConfig();
+        if (null == configObj) {
+            return "";
+        }
+        HumanFeedbackNodeConfig nodeConfig = JsonUtil.fromJson(configObj, HumanFeedbackNodeConfig.class);
+        if (null == nodeConfig) {
+            return "";
+        }
+        return nodeConfig.getTip();
+    }
+}

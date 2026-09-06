@@ -1,0 +1,61 @@
+package com.pppp.zhimesh.common.entity;
+
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.pppp.zhimesh.common.base.JsonNodeTypeHandler;
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import org.apache.ibatis.type.JdbcType;
+
+import java.io.Serial;
+
+@Data
+@EqualsAndHashCode(callSuper = true)
+@TableName(value = "adi_workflow_runtime", autoResultMap = true)
+@Schema(title = "工作流运行时 | Workflow runtime")
+public class WorkflowRuntime extends BaseEntity {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    @TableField("uuid")
+    private String uuid;
+
+    @TableField("user_id")
+    private Long userId;
+
+    @TableField("workflow_id")
+    private Long workflowId;
+
+    @TableField(value = "input", jdbcType = JdbcType.JAVA_OBJECT, typeHandler = JsonNodeTypeHandler.class)
+    private ObjectNode input;
+
+    @TableField(value = "\"output\"", jdbcType = JdbcType.JAVA_OBJECT, typeHandler = JsonNodeTypeHandler.class)
+    private ObjectNode output;
+
+    @TableField("status")
+    private Integer status;
+
+    @TableField("status_remark")
+    private String statusRemark;
+
+    /**
+     * Total input tokens aggregated from LLM-typed nodes. Written at terminal status (success / fail / waiting_input).
+     */
+    @TableField("input_tokens")
+    private Integer inputTokens;
+
+    /**
+     * Total output tokens aggregated from LLM-typed nodes. Written at terminal status.
+     */
+    @TableField("output_tokens")
+    private Integer outputTokens;
+
+    /**
+     * Total run duration in milliseconds aggregated from all nodes. Written at terminal status.
+     */
+    @TableField("duration")
+    private Integer duration;
+}

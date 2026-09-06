@@ -1,0 +1,279 @@
+package com.pppp.zhimesh.common.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.pppp.zhimesh.common.base.ThreadContext;
+import com.pppp.zhimesh.common.entity.ZhiMeshFile;
+import com.pppp.zhimesh.common.entity.User;
+import com.pppp.zhimesh.common.enums.ErrorEnum;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.file.FileOperatorContext;
+import com.pppp.zhimesh.common.file.LocalFileUtil;
+import com.pppp.zhimesh.common.cosntant.ZhiMeshConstant;
+import com.pppp.zhimesh.common.mapper.FileMapper;
+import com.pppp.zhimesh.common.util.HashUtil;
+import com.pppp.zhimesh.common.util.UuidUtil;
+import com.pppp.zhimesh.common.vo.SaveRemoteImageResult;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.awt.image.BufferedImage;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_AI_IMAGE_NO_AUTH;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_FILE_NOT_EXIST;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_UPLOAD_FILE_TYPE_NOT_ALLOWED;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_UPLOAD_IMAGE_TYPE_NOT_ALLOWED;
+
+@Slf4j
+@Service
+public class FileService extends ServiceImpl<FileMapper, ZhiMeshFile> {
+
+    @Value("${local.images}")
+    private String imagePath;
+
+    @Value("${local.watermark-images}")
+    private String watermarkImagesPath;
+
+    @Value("${local.thumbnails}")
+    private String thumbnailsPath;
+
+    @Value("${local.watermark-thumbnails}")
+    private String watermarkThumbnailsPath;
+
+    @Value("${local.files}")
+    private String filePath;
+
+    @Value("${local.tmp-images}")
+    private String tmpImagesPath;
+
+    private static final List<String> BINARY_EXTENSIONS = List.of(
+// Executable/Binary
+            // 可执行/二进制
+            "exe", "dll", "so", "dylib", "com", "msi",
+            "jar", "war", "ear", "class",
+            "iso", "dmg", "bin", "apk", "ipa", "deb", "rpm",
+// Archive file
+            // 压缩包
+            "zip", "rar", "7z", "tar", "gz", "bz2",
+            // 视频
+            "mp4", "avi", "mov", "wmv", "flv", "mkv", "webm", "m4v", "mpeg", "3gp"
+    );
+
+    public ZhiMeshFile saveFile(MultipartFile file, boolean image) {
+        String originalFilename = file.getOriginalFilename();
+        if (StringUtils.isBlank(originalFilename) || !originalFilename.contains(".")) {
+            throw new BaseException(A_UPLOAD_FILE_TYPE_NOT_ALLOWED);
+        }
+        String ext = originalFilename.substring(originalFilename.lastIndexOf('.') + 1).toLowerCase();
+        if (BINARY_EXTENSIONS.contains(ext)) {
+            throw new BaseException(A_UPLOAD_FILE_TYPE_NOT_ALLOWED);
+        }
+        if (image && !ZhiMeshConstant.IMAGE_EXTENSIONS.contains(ext)) {
+            throw new BaseException(A_UPLOAD_IMAGE_TYPE_NOT_ALLOWED);
+        }
+        String sha256 = HashUtil.sha256(file);
+        Optional<ZhiMeshFile> existFile = this.lambdaQuery()
+                .eq(ZhiMeshFile::getSha256, sha256)
+                
+                .last("limit 1")
+                .oneOpt();
+        if (existFile.isPresent()) {
+            ZhiMeshFile adiFile = existFile.get();
+            boolean exist = FileOperatorContext.checkIfExist(adiFile);
+            if (exist) {
+                return adiFile;
+            } else {
+                log.warn("File not found, deleting record for regeneration, fileId:{}, uuid:{}, sha256:{}", adiFile.getId(), adiFile.getUuid(), adiFile.getSha256());
+                this.removeById(adiFile.getId());
+            }
+        }
+        String uuid = UuidUtil.createShort();
+        Pair<String, String> originalFile = new FileOperatorContext().save(file, image, uuid);
+        ZhiMeshFile adiFile = new ZhiMeshFile();
+        adiFile.setName(file.getOriginalFilename());
+        adiFile.setUuid(uuid);
+        adiFile.setSha256(sha256);
+        adiFile.setPath(originalFile.getLeft());
+        adiFile.setExt(originalFile.getRight());
+        adiFile.setUserId(ThreadContext.getCurrentUserId());
+        adiFile.setStorageLocation(FileOperatorContext.getStorageLocation());
+        this.getBaseMapper().insert(adiFile);
+        return adiFile;
+    }
+
+    public ZhiMeshFile saveImageFromUrl(User user, String sourceImageUrl) {
+        log.info("saveImageFromUrl,sourceImageUrl:{}", sourceImageUrl);
+        String uuid = UuidUtil.createShort();
+        SaveRemoteImageResult saveResult = new FileOperatorContext().saveImageFromUrl(sourceImageUrl, uuid);
+        ZhiMeshFile adiFile = new ZhiMeshFile();
+        adiFile.setName(saveResult.getOriginalName());
+        adiFile.setUuid(uuid);
+        adiFile.setSha256(HashUtil.sha256(saveResult.getPathOrUrl()));
+        adiFile.setPath(saveResult.getPathOrUrl());
+        adiFile.setUserId(user.getId());
+        adiFile.setExt(saveResult.getExt());
+        adiFile.setStorageLocation(FileOperatorContext.getStorageLocation());
+        this.getBaseMapper().insert(adiFile);
+        return adiFile;
+    }
+
+    public ZhiMeshFile saveFromPath(User user, String pathOrUrl) {
+        log.info("saveImageFromPath,path:{}", pathOrUrl);
+        Pair<String, String> nameAndExt = LocalFileUtil.getNameAndExt(pathOrUrl);
+        String uuid = UuidUtil.createShort();
+        ZhiMeshFile adiFile = new ZhiMeshFile();
+        adiFile.setName(nameAndExt.getLeft());
+        adiFile.setUuid(uuid);
+        adiFile.setSha256(HashUtil.sha256(pathOrUrl));
+        adiFile.setPath(pathOrUrl);
+        adiFile.setUserId(user.getId());
+        adiFile.setExt(nameAndExt.getRight());
+        adiFile.setStorageLocation(FileOperatorContext.getStorageLocation());
+        this.getBaseMapper().insert(adiFile);
+        return adiFile;
+    }
+
+    public boolean softDel(String uuid) {
+        return this.remove(new LambdaQueryWrapper<ZhiMeshFile>()
+                .eq(ZhiMeshFile::getUserId, ThreadContext.getCurrentUserId())
+                .eq(ZhiMeshFile::getUuid, uuid)
+        );
+    }
+
+    public boolean removeFileAndSoftDel(String uuid) {
+        ZhiMeshFile adiFile = this.lambdaQuery()
+                .eq(ZhiMeshFile::getUserId, ThreadContext.getCurrentUserId())
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .oneOpt()
+                .orElse(null);
+        if (null == adiFile) {
+            return false;
+        }
+        FileOperatorContext.delete(adiFile);
+        return this.softDel(uuid);
+    }
+
+    public ZhiMeshFile getByUuid(String uuid) {
+        return this.lambdaQuery()
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .eq(ZhiMeshFile::getUserId, ThreadContext.getCurrentUserId())
+                .oneOpt().orElse(null);
+    }
+
+    /**
+     * 读取图片到BufferedImage，管理员或图片拥有者才有权限查看
+     *
+     * @param uuid      图片uuid
+     * @param thumbnail 读取的是缩略图
+     * @return 图片内容
+     */
+    public BufferedImage readMyImage(String uuid, boolean thumbnail) {
+        if (StringUtils.isBlank(ThreadContext.getToken())) {
+            throw new BaseException(A_AI_IMAGE_NO_AUTH);
+        }
+        ZhiMeshFile adiFile = this.lambdaQuery()
+                .eq(!ThreadContext.getCurrentUser().getIsAdmin(), ZhiMeshFile::getUserId, ThreadContext.getCurrentUserId())
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .oneOpt().orElse(null);
+        if (null == adiFile) {
+            throw new BaseException(A_FILE_NOT_EXIST);
+        }
+        return LocalFileUtil.readLocalImage(adiFile, thumbnail, thumbnailsPath);
+    }
+
+    public BufferedImage readImage(String uuid, boolean thumbnail) {
+        ZhiMeshFile adiFile = this.lambdaQuery()
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .oneOpt().orElse(null);
+        if (null == adiFile) {
+            throw new BaseException(A_FILE_NOT_EXIST);
+        }
+        return LocalFileUtil.readLocalImage(adiFile, thumbnail, thumbnailsPath);
+    }
+
+    public String getImagePath(String uuid) {
+        ZhiMeshFile adiFile = this.lambdaQuery()
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .oneOpt().orElse(null);
+        if (null == adiFile) {
+            throw new BaseException(ErrorEnum.A_AI_IMAGE_NOT_FOUND);
+        }
+        return adiFile.getPath();
+    }
+
+
+    public ZhiMeshFile getFile(String uuid) {
+        ZhiMeshFile adiFile = this.lambdaQuery()
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .oneOpt().orElse(null);
+        if (null == adiFile) {
+            throw new BaseException(ErrorEnum.A_AI_IMAGE_NOT_FOUND);
+        }
+        return adiFile;
+    }
+
+    public String getTmpImagesPath(String uuid) {
+        ZhiMeshFile adiFile = this.lambdaQuery()
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .oneOpt().orElse(null);
+        if (null == adiFile) {
+            throw new BaseException(ErrorEnum.A_AI_IMAGE_NOT_FOUND);
+        }
+        return tmpImagesPath + uuid + "." + adiFile.getExt();
+    }
+
+    public String getWatermarkImagesPath(String uuid) {
+        ZhiMeshFile adiFile = this.lambdaQuery()
+                .eq(ZhiMeshFile::getUuid, uuid)
+                .oneOpt().orElse(null);
+        if (null == adiFile) {
+            throw new BaseException(ErrorEnum.A_AI_IMAGE_NOT_FOUND);
+        }
+        return watermarkImagesPath + uuid + "." + adiFile.getExt();
+    }
+
+    public String getWatermarkImagesPath(ZhiMeshFile adiFile) {
+        return watermarkImagesPath + adiFile.getUuid() + "." + adiFile.getExt();
+    }
+
+    public String getUrl(String fileUuid) {
+        if (StringUtils.isBlank(fileUuid)) {
+            return null;
+        }
+        List<String> list = getUrls(List.of(fileUuid));
+        if (!list.isEmpty()) {
+            return list.get(0);
+        }
+        return null;
+    }
+
+    /**
+     * 获取文件url
+     *
+     * @param fileUuids 文件uuid
+     * @return 文件url
+     */
+    public List<String> getUrls(List<String> fileUuids) {
+        if (CollectionUtils.isEmpty(fileUuids)) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>();
+        this.lambdaQuery()
+                .in(ZhiMeshFile::getUuid, fileUuids)
+                
+                .list()
+                .forEach(adiFile -> {
+                    result.add(FileOperatorContext.getFileUrl(adiFile));
+                });
+        return result;
+    }
+}

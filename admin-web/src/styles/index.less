@@ -1,0 +1,781 @@
+@import url('./transition/index.less');
+
+:root {
+  --zhimesh-primary: #234a7a;
+  --zhimesh-primary-hover: #1b3c63;
+  --zhimesh-control-primary: #234a7a;
+  --zhimesh-control-primary-hover: #1b3c63;
+  --zhimesh-on-solid: #ffffff;
+  --zhimesh-accent: #137a72;
+  --zhimesh-accent-solid: #126f68;
+  --zhimesh-accent-surface: #e5f3f1;
+  --zhimesh-accent-text: #0f6d65;
+  --zhimesh-text: #172532;
+  --zhimesh-muted: #60717c;
+  --zhimesh-info-surface: #e8f0f5;
+  --zhimesh-info-surface-hover: #dce8ef;
+  --zhimesh-info-text: #234a7a;
+  --zhimesh-info-content: #294d67;
+  --zhimesh-info-border: #abc2d1;
+  --zhimesh-danger-surface: #fff0f3;
+  --zhimesh-danger-text: #9f2940;
+  --zhimesh-danger-solid: #b4233f;
+  --zhimesh-danger-solid-hover: #941c34;
+  --zhimesh-neutral-surface: #edf2f4;
+  --zhimesh-neutral-text: #4d5f6b;
+  --zhimesh-page-bg: #f1f5f7;
+  --zhimesh-glass: #ffffff;
+  --zhimesh-glass-strong: #ffffff;
+  --zhimesh-glass-soft: #f7f9fa;
+  /* Frosted material is limited to navigation, headers and floating layers. */
+  --zhimesh-glass-nav: rgba(255, 255, 255, 0.76);
+  --zhimesh-glass-nav-strong: rgba(255, 255, 255, 0.9);
+  --zhimesh-glass-soft-alpha: rgba(247, 249, 250, 0.74);
+  --zhimesh-glass-edge: rgba(255, 255, 255, 0.78);
+  --zhimesh-glass-highlight: rgba(255, 255, 255, 0.72);
+  --zhimesh-glass-blur: 18px;
+  --zhimesh-glass-shadow: 0 18px 42px rgba(24, 45, 62, 0.12);
+  --zhimesh-border: #d7e0e5;
+  --zhimesh-border-subtle: #e3eaee;
+  --zhimesh-border-hover: #b9cbd3;
+  --zhimesh-shadow: 0 12px 28px rgba(24, 45, 62, 0.1);
+  --zhimesh-table-head: #eaf0f3;
+  --zhimesh-table-cell: #ffffff;
+  --zhimesh-table-cell-hover: #f4f8f9;
+  --zhimesh-table-fixed: #ffffff;
+  --zhimesh-focus-ring: rgba(35, 74, 122, 0.72);
+}
+
+html.dark {
+  --zhimesh-primary: #78a6c9;
+  --zhimesh-primary-hover: #91bad7;
+  --zhimesh-control-primary: #315b86;
+  --zhimesh-control-primary-hover: #3d6b98;
+  --zhimesh-on-solid: #ffffff;
+  --zhimesh-accent: #4bb8ad;
+  --zhimesh-accent-solid: #176f68;
+  --zhimesh-accent-surface: #1e3c3b;
+  --zhimesh-accent-text: #9cddd6;
+  --zhimesh-text: #e6edf1;
+  --zhimesh-muted: #a7b6c0;
+  --zhimesh-info-surface: #223744;
+  --zhimesh-info-surface-hover: #294553;
+  --zhimesh-info-text: #d4e7f4;
+  --zhimesh-info-content: #c1d2dc;
+  --zhimesh-info-border: #476574;
+  --zhimesh-danger-surface: #422832;
+  --zhimesh-danger-text: #ffc0ca;
+  --zhimesh-danger-solid: #9f2f46;
+  --zhimesh-danger-solid-hover: #b83a53;
+  --zhimesh-neutral-surface: #263945;
+  --zhimesh-neutral-text: #c6d1d8;
+  --zhimesh-page-bg: #111b24;
+  --zhimesh-glass: #182631;
+  --zhimesh-glass-strong: #1d2d39;
+  --zhimesh-glass-soft: #20333f;
+  --zhimesh-glass-nav: rgba(24, 38, 49, 0.8);
+  --zhimesh-glass-nav-strong: rgba(29, 45, 57, 0.92);
+  --zhimesh-glass-soft-alpha: rgba(32, 51, 63, 0.76);
+  --zhimesh-glass-edge: rgba(161, 194, 208, 0.2);
+  --zhimesh-glass-highlight: rgba(255, 255, 255, 0.12);
+  --zhimesh-glass-blur: 18px;
+  --zhimesh-glass-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
+  --zhimesh-border: #314653;
+  --zhimesh-border-subtle: #2a3c48;
+  --zhimesh-border-hover: #47616f;
+  --zhimesh-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+  --zhimesh-table-head: #20333f;
+  --zhimesh-table-cell: #182631;
+  --zhimesh-table-cell-hover: #223440;
+  --zhimesh-table-fixed: #1d2d39;
+  --zhimesh-focus-ring: rgba(145, 186, 215, 0.82);
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--zhimesh-text);
+  background: var(--zhimesh-page-bg);
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  position: relative;
+  overflow: hidden;
+  background: var(--zhimesh-page-bg);
+}
+
+.n-config-provider,
+.layout,
+.layout > .n-layout,
+.layout-content,
+.layout-content > .n-layout-scroll-container {
+  background: transparent !important;
+}
+
+/*
+ * Web approximation of a frosted surface. It is opt-in so dense tables and
+ * forms keep an opaque reading plane.
+ */
+.zhimesh-glass-surface {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--zhimesh-glass-edge);
+  background: var(--zhimesh-glass-nav);
+  box-shadow: var(--zhimesh-glass-shadow), inset 0 1px 0 var(--zhimesh-glass-highlight);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .zhimesh-glass-surface {
+    backdrop-filter: blur(var(--zhimesh-glass-blur)) saturate(125%);
+    -webkit-backdrop-filter: blur(var(--zhimesh-glass-blur)) saturate(125%);
+  }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .zhimesh-glass-surface {
+    background: var(--zhimesh-glass-strong);
+  }
+}
+
+.layout .layout-sider {
+  margin: 0;
+  border: 0 !important;
+  border-right: 1px solid var(--zhimesh-border) !important;
+  border-radius: 0;
+  background: var(--zhimesh-glass-nav) !important;
+  box-shadow: inset -1px 0 0 var(--zhimesh-glass-highlight), 10px 0 30px rgba(24, 45, 62, 0.04) !important;
+  backdrop-filter: blur(var(--zhimesh-glass-blur)) saturate(120%);
+  -webkit-backdrop-filter: blur(var(--zhimesh-glass-blur)) saturate(120%);
+}
+
+.layout-side-drawer,
+.layout-side-drawer .layout-sider {
+  background: var(--zhimesh-glass-nav) !important;
+}
+
+.layout .layout-sider > .n-layout-sider-scroll-container,
+.layout-side-drawer .layout-sider > .n-layout-sider-scroll-container {
+  background: transparent !important;
+}
+
+.n-card {
+  border: 1px solid var(--zhimesh-border) !important;
+  border-radius: 10px !important;
+  background: var(--zhimesh-glass) !important;
+  box-shadow: none !important;
+  transition: border-color 0.18s ease;
+}
+
+.n-card:hover {
+  border-color: var(--zhimesh-border-hover) !important;
+}
+
+.n-button,
+.n-input,
+.n-base-selection,
+.n-input-number {
+  border-radius: 7px !important;
+}
+
+.n-button {
+  transition: color 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, transform 0.12s ease !important;
+}
+
+.n-button--primary-type.n-button--secondary,
+.n-button--info-type.n-button--secondary {
+  --n-color: var(--zhimesh-info-surface) !important;
+  --n-color-hover: var(--zhimesh-info-surface-hover) !important;
+  --n-color-pressed: var(--zhimesh-info-surface-hover) !important;
+  --n-color-focus: var(--zhimesh-info-surface-hover) !important;
+  --n-color-disabled: var(--zhimesh-info-surface) !important;
+  --n-text-color: var(--zhimesh-info-text) !important;
+  --n-text-color-hover: var(--zhimesh-info-text) !important;
+  --n-text-color-pressed: var(--zhimesh-info-text) !important;
+  --n-text-color-focus: var(--zhimesh-info-text) !important;
+  --n-text-color-disabled: var(--zhimesh-info-text) !important;
+}
+
+.n-button:not(.n-button--disabled):active,
+.n-base-selection:not(.n-base-selection--disabled):active {
+  transform: scale(0.985);
+}
+
+.n-button--disabled {
+  cursor: not-allowed;
+}
+
+.n-input.n-input--focus,
+.n-base-selection.n-base-selection--active {
+  box-shadow: 0 0 0 3px var(--zhimesh-focus-ring) !important;
+}
+
+.n-input__input-el,
+.n-input__textarea-el {
+  caret-color: var(--zhimesh-primary);
+}
+
+/* Shared, compact filter control for admin list pages. */
+.advanced-toggle-button {
+  min-width: 74px;
+  height: 34px !important;
+  padding: 0 11px !important;
+  border: 1px solid var(--zhimesh-border-subtle) !important;
+  border-radius: 7px !important;
+  color: var(--zhimesh-muted) !important;
+  background: var(--zhimesh-glass) !important;
+  font-size: 13px !important;
+  font-weight: 650 !important;
+}
+
+.advanced-toggle-button:hover {
+  border-color: var(--zhimesh-border-hover) !important;
+  color: var(--zhimesh-primary) !important;
+  background: var(--zhimesh-table-cell-hover) !important;
+}
+
+.advanced-toggle-button .unfold-icon {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  place-items: center;
+  border-radius: 5px;
+  color: inherit;
+  background: var(--zhimesh-table-head);
+}
+
+.n-data-table,
+.n-data-table-table {
+  background: transparent !important;
+}
+
+.n-data-table-th {
+  color: var(--n-text-color);
+  background: var(--zhimesh-table-head) !important;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.n-data-table-td {
+  color: var(--n-text-color);
+  background: var(--zhimesh-table-cell) !important;
+  transition: background-color 0.16s ease;
+}
+
+.n-data-table-tr:not(.n-data-table-tr--summary):hover .n-data-table-td {
+  background: var(--zhimesh-table-cell-hover) !important;
+}
+
+/* Fixed columns stay opaque while horizontally scrolling. */
+.n-data-table-th--fixed-left,
+.n-data-table-th--fixed-right,
+.n-data-table-td--fixed-left,
+.n-data-table-td--fixed-right,
+.n-data-table-tr:not(.n-data-table-tr--summary):hover .n-data-table-td--fixed-left,
+.n-data-table-tr:not(.n-data-table-tr--summary):hover .n-data-table-td--fixed-right {
+  z-index: 4 !important;
+  background: var(--zhimesh-table-fixed) !important;
+}
+
+.n-data-table-th--fixed-right,
+.n-data-table-td--fixed-right {
+  box-shadow: -10px 0 22px -18px rgba(51, 65, 85, 0.72);
+}
+
+.n-data-table-th--fixed-left,
+.n-data-table-td--fixed-left {
+  box-shadow: 10px 0 22px -18px rgba(51, 65, 85, 0.72);
+}
+
+.n-data-table__pagination {
+  color: var(--zhimesh-muted);
+}
+
+.layout-sider .n-menu {
+  padding: 8px 10px 16px;
+}
+
+.layout-sider .menu-motion-wrap {
+  position: relative;
+  flex: 1;
+}
+
+.layout-sider .menu-motion-wrap > .n-menu {
+  position: relative;
+  z-index: 2;
+}
+
+.layout-sider .menu-active-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  border-radius: 7px;
+  background: var(--zhimesh-control-primary);
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, width, height;
+}
+
+.layout-sider .menu-active-indicator.is-ready {
+  transition:
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 120ms ease;
+}
+
+.layout-sider .n-menu-item {
+  margin: 3px 0;
+}
+
+.layout-sider .n-menu-item-content {
+  border-radius: 7px !important;
+  transition: color 0.16s ease, background-color 0.16s ease !important;
+}
+
+.layout-sider .n-menu-item-content:not(.n-menu-item-content--selected) {
+  color: var(--zhimesh-text) !important;
+}
+
+.layout-sider .n-menu-item-content:not(.n-menu-item-content--selected):hover {
+  color: var(--zhimesh-primary) !important;
+  background: var(--zhimesh-table-cell-hover) !important;
+}
+
+html.dark .layout-sider .n-menu-item-content:not(.n-menu-item-content--selected):hover {
+  background: var(--zhimesh-table-cell-hover) !important;
+}
+
+.layout-sider .n-menu-item-content-header {
+  color: inherit !important;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.layout-sider .n-menu-item-content__icon,
+.layout-sider .n-menu-item-content__arrow {
+  color: inherit !important;
+  opacity: 1 !important;
+}
+
+.layout-sider .n-submenu-children {
+  margin: 4px 8px 9px 20px !important;
+  padding: 6px 5px 6px 7px !important;
+  border: 0;
+  border-radius: 7px;
+  background: var(--zhimesh-table-cell-hover);
+  box-shadow: none;
+}
+
+html.dark .layout-sider .n-submenu-children {
+  background: var(--zhimesh-table-cell-hover);
+}
+
+.layout-sider .n-submenu-children .n-menu-item {
+  margin: 2px 0;
+}
+
+.layout-sider .n-submenu-children .n-menu-item-content {
+  min-height: 36px;
+  border-radius: 6px !important;
+  color: var(--zhimesh-muted) !important;
+}
+
+.layout-sider .n-submenu-children .n-menu-item-content-header {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.layout-sider .n-submenu-children .n-menu-item-content:not(.n-menu-item-content--selected):hover {
+  color: var(--zhimesh-primary) !important;
+  background: var(--zhimesh-table-cell-hover) !important;
+}
+
+.layout-sider .n-menu-item-content__arrow {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-right: 2px;
+  place-items: center;
+  border-radius: 6px;
+  transition: color 0.16s ease, background-color 0.16s ease, transform 0.2s ease;
+}
+
+.layout-sider .n-menu-item-content:hover .n-menu-item-content__arrow {
+  color: var(--zhimesh-primary) !important;
+  background: var(--zhimesh-table-head);
+}
+
+.layout-sider .n-menu-item-content--selected {
+	color: var(--zhimesh-on-solid) !important;
+	background: var(--zhimesh-control-primary) !important;
+	box-shadow: none;
+}
+
+.layout-sider .n-menu-item-content--selected .n-menu-item-content-header,
+.layout-sider .n-menu-item-content--selected .n-menu-item-content__icon,
+.layout-sider .n-menu-item-content--selected .n-menu-item-content__arrow {
+	color: var(--zhimesh-on-solid) !important;
+}
+
+.n-modal,
+.n-dialog,
+.n-drawer,
+.n-popover:not(.n-popover--raw):not(.n-tooltip) {
+  border: 1px solid var(--zhimesh-border) !important;
+  border-radius: 10px !important;
+  background: var(--zhimesh-glass-strong) !important;
+  box-shadow: var(--zhimesh-shadow) !important;
+}
+
+/* Floating layers can show the surface behind them without making data cards translucent. */
+.n-modal,
+.n-dialog,
+.n-drawer,
+.n-popover:not(.n-popover--raw):not(.n-tooltip) {
+  background: var(--zhimesh-glass-nav-strong) !important;
+  box-shadow: var(--zhimesh-glass-shadow) !important;
+  backdrop-filter: blur(20px) saturate(125%);
+  -webkit-backdrop-filter: blur(20px) saturate(125%);
+}
+
+.n-dialog {
+  border-radius: 14px !important;
+}
+
+.n-dialog .n-dialog__title {
+  letter-spacing: -0.01em;
+}
+
+.n-dialog .n-dialog__content {
+  overflow-wrap: anywhere;
+  color: var(--zhimesh-text);
+  line-height: 1.65;
+}
+
+.n-dialog .n-dialog__icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+}
+
+@supports (background: color-mix(in srgb, red 10%, transparent)) {
+  .n-dialog .n-dialog__icon {
+    background: color-mix(in srgb, var(--n-icon-color) 12%, transparent);
+  }
+}
+
+.n-dialog .n-dialog__action .n-button {
+  min-width: 76px;
+  min-height: 40px;
+  font-weight: 650;
+}
+
+.ai-config-modal .n-dialog__content {
+  padding: 8px 18px 4px !important;
+}
+
+.ai-config-form {
+  padding: 8px 4px 2px;
+}
+
+.ai-config-form .n-form-item {
+  margin-bottom: 18px;
+}
+
+.ai-config-form .n-form-item-label__text {
+  color: var(--zhimesh-text);
+  font-weight: 650;
+}
+
+.ai-config-form .n-form-item-feedback-wrapper {
+  min-height: 18px;
+}
+
+.ai-config-form .n-form-item-feedback {
+  color: var(--zhimesh-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-config-form .n-input-number {
+  width: 100%;
+}
+
+.advanced-settings {
+  margin-top: 5px;
+  padding: 0 12px;
+  border: 1px solid var(--zhimesh-border-subtle);
+  border-radius: 8px;
+  background: var(--zhimesh-table-cell-hover);
+}
+
+.advanced-settings-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.advanced-settings-heading strong {
+  color: var(--zhimesh-text);
+  font-size: 13px;
+}
+
+.advanced-settings-heading span {
+  color: var(--zhimesh-muted);
+  font-size: 11px;
+}
+
+.advanced-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.advanced-field-wide {
+  grid-column: 1 / -1;
+}
+
+.layout-content-main {
+  margin: 0 22px 22px;
+}
+
+.main-view {
+  animation: none !important;
+}
+
+::selection {
+  color: var(--zhimesh-on-solid);
+  background: var(--zhimesh-control-primary);
+}
+
+:focus-visible {
+  outline: 3px solid var(--zhimesh-focus-ring) !important;
+  outline-offset: 3px;
+}
+
+.n-scrollbar-rail .n-scrollbar-rail__scrollbar {
+  background: rgba(35, 74, 122, 0.3) !important;
+}
+
+.n-scrollbar-rail .n-scrollbar-rail__scrollbar:hover {
+  background: rgba(35, 74, 122, 0.5) !important;
+}
+
+/* Legacy utility classes are used by a few views; map them to the shared dark palette. */
+html.dark {
+  .text-gray-400,
+  .text-neutral-300,
+  .text-neutral-400 {
+    color: var(--zhimesh-muted) !important;
+  }
+
+  .text-gray-500 {
+    color: var(--zhimesh-muted) !important;
+  }
+
+  .text-gray-600,
+  .text-neutral-500 {
+    color: var(--zhimesh-text) !important;
+  }
+
+  .hover\:text-gray-800:hover,
+  .hover\:text-neutral-800:hover {
+    color: var(--zhimesh-text) !important;
+  }
+}
+
+@media (max-width: 1100px) {
+  .n-data-table-th,
+  .n-data-table-td {
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 800px) {
+  html,
+  body,
+  #app {
+    width: 100%;
+    min-width: 320px;
+    min-height: 100dvh;
+  }
+
+  body {
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
+  }
+
+  .layout-content-main {
+    margin: 0 8px 8px;
+  }
+
+  .main-view {
+    min-width: 0;
+  }
+
+  .proCard {
+    border: 0 !important;
+    border-radius: 12px !important;
+  }
+
+  .proCard > .n-card__content {
+    padding: 14px !important;
+  }
+
+  .n-modal,
+  .n-dialog {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    min-height: 0 !important;
+    max-height: calc(100dvh - 16px) !important;
+    margin: 8px !important;
+    border-radius: 16px !important;
+  }
+
+  .n-modal .n-card__content,
+  .n-dialog .n-dialog__content {
+    max-height: calc(100dvh - 132px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .n-modal .n-card-header {
+    padding: 16px 16px 12px !important;
+  }
+
+  .n-modal .n-card__content {
+    padding: 14px 16px !important;
+  }
+
+  .n-modal .n-card__footer {
+    padding: 12px 16px 16px !important;
+  }
+
+  .n-input,
+  .n-base-selection,
+  .n-input-number,
+  .n-date-picker {
+    font-size: 16px !important;
+  }
+
+  .n-button:not(.n-button--tiny-type),
+  .n-radio,
+  .n-checkbox {
+    min-height: 44px;
+  }
+
+  .n-form-item {
+    margin-bottom: 14px;
+  }
+
+  .n-card-header__main {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .n-data-table {
+    font-size: 13px;
+  }
+
+  .n-data-table-th,
+  .n-data-table-td {
+    padding-right: 12px !important;
+    padding-left: 12px !important;
+    white-space: nowrap;
+  }
+
+  .n-data-table-base-table-body {
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .n-pagination {
+    max-width: 100%;
+  }
+
+  .n-drawer-content .n-drawer-header {
+    padding-top: max(16px, env(safe-area-inset-top));
+  }
+
+  .n-drawer-content .n-drawer-body-content-wrapper {
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .layout .layout-sider,
+  .layout-side-drawer,
+  .layout-side-drawer .layout-sider,
+  .layout-header,
+  .view-account-container,
+  .n-modal,
+  .n-dialog,
+  .n-drawer,
+  .n-popover:not(.n-popover--raw):not(.n-tooltip) {
+    background: var(--zhimesh-glass-strong) !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .zhimesh-glass-surface,
+  .layout .layout-sider,
+  .layout-side-drawer,
+  .layout-side-drawer .layout-sider,
+  .layout-header,
+  .view-account-container,
+  .n-modal,
+  .n-dialog,
+  .n-drawer,
+  .n-popover:not(.n-popover--raw):not(.n-tooltip) {
+    background: var(--zhimesh-glass-strong) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+
+  .layout-sider .menu-active-indicator,
+  .fade-enter-active,
+  .fade-leave-active,
+  .fade-slide-enter-active,
+  .fade-slide-leave-active,
+  .zoom-fade-enter-active,
+  .zoom-fade-leave-active {
+    transition: none !important;
+  }
+
+  .fade-slide-enter-from,
+  .fade-slide-leave-to,
+  .zoom-fade-enter-from,
+  .zoom-fade-leave-to {
+    transform: none !important;
+  }
+
+  .n-spin-body,
+  .n-base-loading__container,
+  .n-progress__line-fill {
+    animation: none !important;
+  }
+}

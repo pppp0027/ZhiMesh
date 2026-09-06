@@ -1,0 +1,234 @@
+<template>
+  <n-card :bordered="false" class="proCard">
+    <n-alert type="info" :show-icon="false" closable>
+      {{ t('character.characterIsRole') }}
+    </n-alert>
+
+    <BasicForm class="mt-3" @register="register" @submit="handleSubmit" @reset="handleReset" />
+
+    <BasicTable
+      :columns="columns"
+      :request="loadDataTable"
+      :row-key="(row: Character) => row.id"
+      ref="actionRef"
+      :actionColumn="actionColumn"
+      @update:checked-row-keys="onCheckedRow"
+      :scroll-x="1300"
+    />
+
+    <n-modal
+      v-model:show="showEditModal"
+      :show-icon="false"
+      preset="dialog"
+      :title="editFormParams.label"
+    >
+      <n-form
+        :model="editFormParams"
+        :rules="newUserRules"
+        ref="formRef"
+        label-placement="left"
+        :label-width="80"
+        class="py-4"
+      >
+        <n-form-item :label="t('common.title')" path="title">
+          <n-input
+            :placeholder="t('character.titlePlaceholder')"
+            v-model:value="editFormParams.title"
+            maxlength="45"
+            show-count
+          />
+        </n-form-item>
+        <n-form-item :label="t('common.description')" path="password">
+          <n-input
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 10 }"
+            :placeholder="t('character.descriptionPlaceholder')"
+            v-model:value="editFormParams.aiSystemMessage"
+          />
+        </n-form-item>
+      </n-form>
+      <template #action>
+        <n-space>
+          <n-button @click="() => (showEditModal = false)">{{ t('common.cancel') }}</n-button>
+          <n-button type="info" :loading="formBtnLoading" @click="confirmEditForm">{{
+            t('common.confirm')
+          }}</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+  </n-card>
+</template>
+
+<script lang="ts" setup>
+  import { h, reactive, ref } from 'vue'
+  import { BasicTable, TableAction } from '@/components/Table'
+  import { BasicForm, FormSchema, useForm } from '@/components/Form/index'
+  import characterApi from '@/api/conversation'
+  import { getColumns } from './columns'
+  const columns = getColumns()
+  import { type FormRules } from 'naive-ui'
+  import { useDialog } from 'naive-ui'
+  import { Character } from '/#/conversation'
+  import { t } from '@/locales'
+  import { openDeleteDialog } from '@/utils/dialog'
+
+  const newUserRules: FormRules = {
+    name: {
+      required: false,
+      trigger: ['blur', 'input'],
+      message: () => t('common.name'),
+    },
+  }
+
+  const schemas: FormSchema[] = [
+    {
+      field: 'title',
+      component: 'NInput',
+      label: t('common.title'),
+      componentProps: {
+        placeholder: t('character.titlePlaceholder'),
+        onInput: (e: any) => {
+          console.log(e)
+        },
+      },
+    },
+    {
+      field: 'createTime',
+      component: 'NDatePicker',
+      label: t('common.createTime'),
+      componentProps: {
+        type: 'datetimerange',
+        clearable: true,
+      },
+    },
+    {
+      field: 'updateTime',
+      component: 'NDatePicker',
+      label: t('common.updateTime'),
+      componentProps: {
+        type: 'datetimerange',
+        clearable: true,
+      },
+    },
+  ]
+
+  const dialog = useDialog()
+  const formRef: any = ref(null)
+  const actionRef = ref()
+
+  const showEditModal = ref(false)
+  const formBtnLoading = ref(false)
+  const editFormParams = reactive({
+    label: t('common.create'),
+    uuid: '',
+    title: '',
+    aiSystemMessage: '',
+    understandContextEnable: false,
+  })
+
+  const actionColumn = reactive({
+    width: 200,
+    title: t('common.action'),
+    key: 'action',
+    fixed: 'right',
+    render(record) {
+      return h(TableAction as any, {
+        style: 'button',
+        actions: [
+          {
+            label: t('common.edit'),
+            onClick: handleEdit.bind(null, record),
+          },
+        ],
+        dropDownActions: [
+          {
+            label: t('common.delete'),
+            key: 'deleteCharacter',
+          },
+        ],
+        select: (key) => {
+          if (key === 'deleteCharacter') {
+            openDeleteDialog(dialog, {
+              title: t('common.deleteConfirmTitle'),
+              content: `${t('common.deleteConfirmPrefix')} ${record.title} ${t(
+                'common.deleteConfirmSuffix'
+              )}`,
+              positiveText: t('common.delete'),
+              negativeText: t('common.cancel'),
+              onPositiveClick: () => handleDelete(record),
+            })
+          }
+        },
+      })
+    },
+  })
+
+  const [register, { getFieldsValue }] = useForm({
+    gridProps: { cols: '1 s:1 m:2 l:3 xl:4 2xl:4' },
+    labelWidth: 120,
+    schemas,
+  })
+
+  const loadDataTable = async (res) => {
+    const resp = await characterApi.searchCharacters({ ...getFieldsValue() }, res)
+    return resp.data
+  }
+
+  function onCheckedRow(rowKeys) {
+    console.log(rowKeys)
+  }
+
+  function reloadTable() {
+    actionRef.value.reload()
+  }
+
+  function confirmEditForm(e) {
+    e.preventDefault()
+    formBtnLoading.value = true
+    formRef.value.validate(async (errors) => {
+      try {
+        if (errors) {
+          window['$message'].error(t('common.fillCompleteInfo'))
+          return
+        }
+        await characterApi.editCharacter(editFormParams.uuid, editFormParams)
+        window['$message'].success(t('common.editSuccess'))
+        showEditModal.value = false
+        reloadTable()
+      } catch (error: any) {
+        if (!error?.isBusinessError)
+          window['$message'].error(error?.message || t('common.operationFailed'))
+      } finally {
+        formBtnLoading.value = false
+      }
+    })
+  }
+
+  function handleEdit(record: Recordable) {
+    showEditModal.value = true
+    Object.assign(editFormParams, record)
+    editFormParams.label = t('common.edit')
+  }
+
+  async function handleDelete(record: Recordable) {
+    try {
+      await characterApi.deleteCharacter(record.uuid)
+      window['$message'].success(t('common.deleteSuccess'))
+      reloadTable()
+    } catch (error: any) {
+      window['$message'].error(error?.message || t('common.operationFailed'))
+      return false
+    }
+  }
+
+  function handleSubmit(values: Recordable) {
+    console.log(values)
+    reloadTable()
+  }
+
+  function handleReset(values: Recordable) {
+    console.log(values)
+  }
+</script>
+
+<style lang="less" scoped></style>

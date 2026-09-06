@@ -1,0 +1,666 @@
+package com.pppp.zhimesh.common.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.extension.toolkit.ChainWrappers;
+import com.pppp.zhimesh.common.base.ThreadContext;
+import com.pppp.zhimesh.common.config.ZhiMeshProperties;
+import com.pppp.zhimesh.common.cosntant.ZhiMeshConstant;
+import com.pppp.zhimesh.common.cosntant.RedisKeyConstant;
+import com.pppp.zhimesh.common.dto.*;
+import com.pppp.zhimesh.common.entity.User;
+import com.pppp.zhimesh.common.enums.ErrorEnum;
+import com.pppp.zhimesh.common.enums.UserStatusEnum;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.helper.ZhiMeshMailSender;
+import com.pppp.zhimesh.common.mapper.UserMapper;
+import com.pppp.zhimesh.common.util.*;
+import com.pppp.zhimesh.common.vo.CostStat;
+import com.pppp.zhimesh.common.vo.TokenCostStatistic;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
+import org.jetbrains.annotations.NotNull;
+import org.mindrot.jbcrypt.BCrypt;
+import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+import jakarta.servlet.http.HttpServletRequest;
+
+import java.text.MessageFormat;
+import java.time.LocalDateTime;
+import java.util.concurrent.TimeUnit;
+
+import static com.pppp.zhimesh.common.cosntant.RedisKeyConstant.*;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.*;
+
+/**
+ * <p>
+ * User service implementation class
+ * </p>
+ *
+ * @author moyz
+ * @since 2023-04-11
+ */
+@Slf4j
+@Service
+public class UserService extends ServiceImpl<UserMapper, User> {
+
+    @Resource
+    private UserDayCostService userDayCostService;
+
+    @Resource
+    private ZhiMeshMailSender adiMailSender;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private CharacterService characterService;
+
+    @Resource
+    private ZhiMeshProperties adiProperties;
+
+    @Value("${spring.application.name}")
+    private String appName;
+
+    /**
+     * 通过邮箱获取用户|Get user by email
+     *
+     * @param email 邮箱|email
+     * @return 用户|user
+     */
+    public User getByEmail(String email) {
+        if (StringUtils.isBlank(email)) {
+            throw new BaseException(ErrorEnum.A_PARAMS_ERROR);
+        }
+        return this.lambdaQuery().eq(User::getEmail, email).oneOpt().orElseThrow(() -> new BaseException(A_USER_NOT_EXIST));
+    }
+
+    /**
+     * 通过邮箱找回密码|Forgot password by email
+     *
+     * @param email 邮箱|email
+     */
+    public void forgotPassword(String email) {
+        User user = getByEmail(email);
+        String code = UuidUtil.createShort();
+        String key = MessageFormat.format(FIND_MY_PASSWORD, code);
+        stringRedisTemplate.opsForValue().set(key, user.getId().toString(), 8, TimeUnit.HOURS);
+        String resetLink = adiProperties.getBackendUrl() + "/auth/password/reset?code=" + code;
+        String subject = SpringUtil.getMessage("mail.resetPasswordSubject");
+        String body = MessageFormat.format(SpringUtil.getMessage("mail.resetPasswordBody"), ZhiMeshConstant.DEFAULT_PASSWORD, ZhiMeshConstant.AUTH_ACTIVE_CODE_EXPIRE, resetLink);
+        adiMailSender.send(subject, body, email);
+    }
+
+    /**
+     * 注册|Register
+     *
+     * @param email     邮箱|email
+     * @param password  密码|password
+     * @param captchaId 验证码ID|captcha ID
+     * @param captcha   验证码|captcha
+     */
+    public RegisterResp register(String email, String password, String captchaId, String captcha) {
+        //验证码
+        String captchaIdKey = MessageFormat.format(AUTH_REGISTER_CAPTCHA_ID, captchaId);
+        String captchaInCache = stringRedisTemplate.opsForValue().get(captchaIdKey);
+        if (StringUtils.isBlank(captchaInCache) || !captchaInCache.equalsIgnoreCase(captcha)) {
+            throw new BaseException(A_LOGIN_CAPTCHA_ERROR);
+        }
+        stringRedisTemplate.delete(captchaIdKey);
+
+        User user = ChainWrappers.lambdaQueryChain(baseMapper).eq(User::getEmail, email).one();
+        if (null != user && (user.getUserStatus() == UserStatusEnum.NORMAL || adiProperties.getAuth().isDemoRegisterEnabled())) {
+            throw new BaseException(A_USER_EXIST);
+        }
+        if (null != user) {
+            sendActiveEmail(email);
+            return activationRequiredResult();
+        }
+
+//Send activation link
+        //发送激活链接
+        String hashed = BCrypt.hashpw(password, BCrypt.gensalt());
+
+//Create user
+        //创建用户
+        User newOne = new User();
+        newOne.setName(StringUtils.substringBefore(email, "@"));
+        newOne.setUuid(UuidUtil.createShort());
+        newOne.setEmail(email);
+        newOne.setPassword(hashed);
+        newOne.setAvatar(UserAvatarPool.randomAvatar());
+        newOne.setQuotaByTokenDaily(0);
+        newOne.setQuotaByTokenMonthly(0);
+        newOne.setQuotaByRequestDaily(0);
+        newOne.setQuotaByRequestMonthly(0);
+        newOne.setQuotaByImageDaily(0);
+        newOne.setQuotaByImageMonthly(0);
+        newOne.setIsAdmin(false);
+        boolean demoRegisterEnabled = adiProperties.getAuth().isDemoRegisterEnabled();
+        newOne.setUserStatus(demoRegisterEnabled ? UserStatusEnum.NORMAL : UserStatusEnum.WAIT_CONFIRM);
+        if (demoRegisterEnabled) {
+            newOne.setActiveTime(LocalDateTime.now());
+        }
+        baseMapper.insert(newOne);
+
+        //Create default character
+        characterService.createDefault(newOne.getId());
+
+        if (demoRegisterEnabled) {
+            LoginResp loginResp = new LoginResp();
+            loginResp.setToken(setLoginToken(newOne));
+            BeanUtils.copyProperties(newOne, loginResp);
+
+            RegisterResp result = new RegisterResp();
+            result.setAutoLogin(true);
+            result.setLogin(loginResp);
+            result.setMessage("Registration successful. You are now signed in.");
+            return result;
+        }
+
+        // Send the link only after the pending account exists. If sending fails,
+        // retrying registration safely resends it for the same pending account.
+        sendActiveEmail(email);
+        return activationRequiredResult();
+    }
+
+    private RegisterResp activationRequiredResult() {
+        RegisterResp result = new RegisterResp();
+        result.setAutoLogin(false);
+        result.setMessage("Activation link sent to your email, please check and activate");
+        return result;
+    }
+
+    /**
+     * 重置密码|Reset password
+     *
+     * @param code 重置密码code|reset password code
+     */
+    public void resetPassword(String code) {
+        String key = MessageFormat.format(FIND_MY_PASSWORD, code);
+        String userId = stringRedisTemplate.opsForValue().get(key);
+        if (StringUtils.isBlank(userId)) {
+            throw new BaseException(A_FIND_PASSWORD_CODE_ERROR);
+        }
+        User updateUser = new User();
+        updateUser.setId(Long.parseLong(userId));
+        updateUser.setPassword(BCrypt.hashpw(ZhiMeshConstant.DEFAULT_PASSWORD, BCrypt.gensalt()));
+        baseMapper.updateById(updateUser);
+        stringRedisTemplate.delete(key);
+    }
+
+    /**
+     * 修改密码|Modify password
+     *
+     * @param oldPassword 旧密码|old password
+     * @param newPassword 新密码|new password
+     */
+    public void modifyPassword(String oldPassword, String newPassword) {
+        User user = ThreadContext.getExistCurrentUser();
+
+        if (!BCrypt.checkpw(oldPassword, user.getPassword())) {
+            throw new BaseException(A_OLD_PASSWORD_INVALID);
+        }
+
+        String hashed = BCrypt.hashpw(newPassword, BCrypt.gensalt());
+        User updateUser = new User();
+        updateUser.setId(user.getId());
+        updateUser.setPassword(hashed);
+        baseMapper.updateById(updateUser);
+    }
+
+    /**
+     * 激活|Activate
+     *
+     * @param activeCode 激活码|activation code
+     */
+    public void active(String activeCode) {
+        String activeCodeKey = MessageFormat.format(AUTH_ACTIVE_CODE, activeCode);
+        String email = stringRedisTemplate.opsForValue().get(activeCodeKey);
+        if (StringUtils.isBlank(email)) {
+            throw new BaseException(A_ACTIVE_CODE_INVALID);
+        }
+
+        User user = this.lambdaQuery().eq(User::getEmail, email).oneOpt().orElse(null);
+        if (null == user) {
+            throw new BaseException(A_USER_NOT_EXIST);
+        }
+
+        stringRedisTemplate.delete(activeCodeKey);
+
+        User updateUser = new User();
+        updateUser.setId(user.getId());
+        updateUser.setUserStatus(UserStatusEnum.NORMAL);
+        updateUser.setActiveTime(LocalDateTime.now());
+        baseMapper.updateById(updateUser);
+
+        setLoginToken(user);
+    }
+
+    /**
+     * 通过UUID激活|Activate by UUID
+     *
+     * @param uuid 用户UUID|user UUID
+     */
+    public void activeByUuid(String uuid) {
+        User user = this.getByUuidOrThrow(uuid);
+        User updateUser = new User();
+        updateUser.setId(user.getId());
+        updateUser.setUserStatus(UserStatusEnum.NORMAL);
+        updateUser.setActiveTime(LocalDateTime.now());
+        baseMapper.updateById(updateUser);
+    }
+
+    /**
+     * 冻结用户|Freeze user
+     *
+     * @param uuid 用户UUID|user UUID
+     */
+    public void freeze(String uuid) {
+        User user = this.getByUuidOrThrow(uuid);
+        User updateUser = new User();
+        updateUser.setId(user.getId());
+        updateUser.setUserStatus(UserStatusEnum.FREEZE);
+        baseMapper.updateById(updateUser);
+    }
+
+    /**
+     * 编辑用户|Edit user
+     *
+     * @param userEditReq 用户编辑请求|user edit request
+     */
+    public void editUser(UserEditReq userEditReq) {
+        User user = this.getByUuidOrThrow(userEditReq.getUuid());
+        User editUser = new User();
+        editUser.setId(user.getId());
+        BeanUtils.copyProperties(userEditReq, editUser);
+        if (StringUtils.isNotBlank(userEditReq.getPassword())) {
+            String hashed = BCrypt.hashpw(userEditReq.getPassword(), BCrypt.gensalt());
+            editUser.setPassword(hashed);
+        } else {
+            editUser.setPassword(null);
+        }
+        baseMapper.updateById(editUser);
+    }
+
+    /**
+     * 登录|Login
+     *
+     * @param loginReq 登录请求|login request
+     * @return 登录响应|login response
+     */
+    public LoginResp login(LoginReq loginReq) {
+        //captcha check
+        String failCountKey = MessageFormat.format(RedisKeyConstant.LOGIN_FAIL_COUNT, loginReq.getEmail());
+        int passwordFailCount = 0;
+        String failCountVal = stringRedisTemplate.opsForValue().get(failCountKey);
+        if (StringUtils.isNotBlank(failCountVal)) {
+            passwordFailCount = Integer.parseInt(failCountVal);
+        }
+        if (passwordFailCount >= ZhiMeshConstant.LOGIN_MAX_FAIL_TIMES) {
+            if (StringUtils.isAnyBlank(loginReq.getCaptchaCode(), loginReq.getCaptchaId())) {
+                String captchaId = setAndGetLoginCaptchaId();
+                LoginResp loginResp = new LoginResp();
+                loginResp.setCaptchaId(captchaId);
+                throw new BaseException(ErrorEnum.A_LOGIN_ERROR_MAX).setData(loginResp);
+            }
+            String captchaIdKey = MessageFormat.format(AUTH_LOGIN_CAPTCHA_ID, loginReq.getCaptchaId());
+            String captcha = stringRedisTemplate.opsForValue().get(captchaIdKey);
+            if (StringUtils.isBlank(captcha) || !captcha.equalsIgnoreCase(loginReq.getCaptchaCode())) {
+                throw new BaseException(A_LOGIN_CAPTCHA_ERROR);
+            }
+        }
+        //captcha check end
+
+        User user = getByEmail(loginReq.getEmail());
+        if (user.getUserStatus() == UserStatusEnum.WAIT_CONFIRM) {
+            throw new BaseException(ErrorEnum.A_USER_WAIT_CONFIRM);
+        }
+        if (!BCrypt.checkpw(loginReq.getPassword(), user.getPassword())) {
+
+            //计算错误次数并判断下次登录是否要输入验证码
+            passwordFailCount = passwordFailCount + 1;
+            stringRedisTemplate.opsForValue().set(failCountKey, String.valueOf(passwordFailCount), ZhiMeshConstant.USER_TOKEN_EXPIRE, TimeUnit.HOURS);
+
+            throw new BaseException(ErrorEnum.A_LOGIN_ERROR);
+        }
+
+        //login success
+        stringRedisTemplate.delete(failCountKey);
+        String token = setLoginToken(user);
+        LoginResp loginResp = new LoginResp();
+        loginResp.setToken(token);
+        BeanUtils.copyProperties(user, loginResp);
+        return loginResp;
+    }
+
+    /**
+     * 设置并获取登录验证码ID|Set and get login captcha ID
+     *
+     * @return 登录验证码ID|login captcha ID
+     */
+    public String setAndGetLoginCaptchaId() {
+        String captchaId = UuidUtil.createShort();
+        String captchaIdKey = MessageFormat.format(AUTH_LOGIN_CAPTCHA_ID, captchaId);
+        stringRedisTemplate.opsForValue().set(captchaIdKey, captchaId, ZhiMeshConstant.AUTH_CAPTCHA_ID_EXPIRE, TimeUnit.HOURS);
+        return captchaId;
+    }
+
+    /**
+     * 缓存登录验证码|Cache login captcha
+     *
+     * @param captchaId 验证码ID|captcha ID
+     * @param captcha   验证码|captcha
+     */
+    public void cacheLoginCaptcha(String captchaId, String captcha) {
+        String captchaIdKey = MessageFormat.format(AUTH_LOGIN_CAPTCHA_ID, captchaId);
+        stringRedisTemplate.opsForValue().set(captchaIdKey, captcha, ZhiMeshConstant.AUTH_CAPTCHA_ID_EXPIRE, TimeUnit.HOURS);
+    }
+
+    /**
+     * 缓存注册验证码|Cache register captcha
+     *
+     * @param captchaId 验证码ID|captcha ID
+     * @param captcha   验证码|captcha
+     */
+    public void cacheRegisterCaptcha(String captchaId, String captcha) {
+        String captchaIdKey = MessageFormat.format(AUTH_REGISTER_CAPTCHA_ID, captchaId);
+        stringRedisTemplate.opsForValue().set(captchaIdKey, captcha, ZhiMeshConstant.AUTH_CAPTCHA_ID_EXPIRE, TimeUnit.HOURS);
+    }
+
+    /**
+     * 获取配置|Get config
+     *
+     * @return 配置响应|config response
+     */
+    public ConfigResp getConfig(HttpServletRequest request) {
+        ConfigResp result = new ConfigResp();
+        User user = ThreadContext.getCurrentUser();
+
+        //User quota
+        result.setUserQuota(UserQuota.builder().requestTimesByDay(user.getQuotaByRequestDaily()).requestTimesByMonth(user.getQuotaByRequestMonthly()).drawByDay(user.getQuotaByImageDaily()).drawByMonth(user.getQuotaByImageMonthly()).tokenByDay(user.getQuotaByTokenDaily()).tokenByMonth(user.getQuotaByTokenMonthly()).build());
+        //User cost
+        CostStatResp quotaCostResp = new CostStatResp();
+        setPaidCostStat(user, quotaCostResp);
+        setFreeCostStat(user, quotaCostResp);
+        result.setQuotaCost(quotaCostResp);
+        String acceptLanguage = request != null ? request.getHeader("Accept-Language") : null;
+        String effectiveLocale = resolveLocale(user, acceptLanguage);
+        result.setLocale(effectiveLocale);
+        return result;
+    }
+
+    /**
+     * Resolve effective locale: User locale > Accept-Language > Config default
+     */
+    private String resolveLocale(User user, String acceptLanguage) {
+        if (StringUtils.isNotBlank(user.getLocale())) {
+            return user.getLocale();
+        }
+        if (StringUtils.isNotBlank(acceptLanguage)) {
+            String lang = acceptLanguage.split(",")[0].trim().toLowerCase();
+            if (lang.startsWith("zh")) {
+                return "zh-CN";
+            }
+            if (lang.startsWith("en")) {
+                return "en-US";
+            }
+        }
+        String configLocale = SysConfigService.getByKey(ZhiMeshConstant.SysConfigKey.DEFAULT_LOCALE);
+        if (StringUtils.isNotBlank(configLocale)) {
+            return configLocale;
+        }
+        return "zh-CN";
+    }
+
+    /**
+     * 设置付费费用统计|Set paid cost statistics
+     *
+     * @param user          用户|user
+     * @param quotaCostResp 配额费用响应|quota cost response
+     */
+    private void setPaidCostStat(User user, CostStatResp quotaCostResp) {
+        CostStat cost = userDayCostService.costStatByUser(user.getId(), false);
+        quotaCostResp.setPaidTokenCost(TokenCostStatistic.builder().todayTokenCost(cost.getTextTokenCostByDay()).monthTokenCost(cost.getTextTokenCostByMonth()).build());
+        quotaCostResp.setPaidRequestTimes(RequestTimesStatistic.builder().todayRequestTimes(cost.getTextRequestTimesByDay()).monthRequestTimes(cost.getTextRequestTimesByMonth()).build());
+        quotaCostResp.setPaidDrawTimes(DrawTimesStatistic.builder().todayDrawTimes(cost.getDrawTimesByDay()).monthDrawTimes(cost.getDrawTimesByMonth()).build());
+    }
+
+    /**
+     * 设置免费费用统计|Set free cost statistics
+     *
+     * @param user          用户|user
+     * @param quotaCostResp 配额费用响应|quota cost response
+     */
+    private void setFreeCostStat(@NotNull User user, CostStatResp quotaCostResp) {
+        CostStat cost = userDayCostService.costStatByUser(user.getId(), true);
+        quotaCostResp.setFreeTokenCost(TokenCostStatistic.builder().todayTokenCost(cost.getTextTokenCostByDay()).monthTokenCost(cost.getTextTokenCostByMonth()).build());
+        quotaCostResp.setFreeRequestTimes(RequestTimesStatistic.builder().todayRequestTimes(cost.getTextRequestTimesByDay()).monthRequestTimes(cost.getTextRequestTimesByMonth()).build());
+        quotaCostResp.setFreeDrawTimes(DrawTimesStatistic.builder().todayDrawTimes(cost.getDrawTimesByDay()).monthDrawTimes(cost.getDrawTimesByMonth()).build());
+    }
+
+    /**
+     * 更新配置|Update config
+     *
+     * @param userUpdateReq 用户更新请求|user update request
+     */
+    public void updateConfig(UserUpdateReq userUpdateReq) {
+        Long userId = ThreadContext.getCurrentUserId();
+        User user = new User();
+        user.setId(userId);
+        BeanUtils.copyProperties(userUpdateReq, user);
+        baseMapper.updateById(user);
+
+        // Refresh Redis cache with latest data from DB
+        User updatedUser = baseMapper.selectById(userId);
+        String token = ThreadContext.getToken();
+        String tokenKey = MessageFormat.format(USER_TOKEN, token);
+        stringRedisTemplate.opsForValue().set(tokenKey, JsonUtil.toJson(updatedUser), ZhiMeshConstant.USER_TOKEN_EXPIRE, TimeUnit.HOURS);
+    }
+
+    /**
+     * 注销|Logout
+     */
+    public void logout() {
+        String token = ThreadContext.getToken();
+        if (null == token) {
+            log.warn("logout token is null");
+            return;
+        }
+        String tokenKey = MessageFormat.format(USER_TOKEN, token);
+        stringRedisTemplate.delete(tokenKey);
+    }
+
+    /**
+     * 设置用户的登录令牌|Set the login token for the user
+     *
+     * @param user 要设置登录令牌的用户|the user for whom the login token is being set
+     * @return 生成的登录令牌|the generated login token
+     */
+    private int parseIntConfig(String key) {
+        String value = LocalCache.CONFIGS.get(key);
+        if (value == null) {
+            throw new IllegalStateException("System config missing: " + key);
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalStateException("System config format error: " + key + "=" + value, e);
+        }
+    }
+
+    private String setLoginToken(User user) {
+        if (user.getQuotaByTokenDaily() == null || user.getQuotaByTokenDaily() == 0) {
+            user.setQuotaByTokenDaily(parseIntConfig(ZhiMeshConstant.SysConfigKey.QUOTA_BY_TOKEN_DAILY));
+        }
+        if (user.getQuotaByTokenMonthly() == null || user.getQuotaByTokenMonthly() == 0) {
+            user.setQuotaByTokenMonthly(parseIntConfig(ZhiMeshConstant.SysConfigKey.QUOTA_BY_TOKEN_MONTHLY));
+        }
+        if (user.getQuotaByRequestDaily() == null || user.getQuotaByRequestDaily() == 0) {
+            user.setQuotaByRequestDaily(parseIntConfig(ZhiMeshConstant.SysConfigKey.QUOTA_BY_REQUEST_DAILY));
+        }
+        if (user.getQuotaByRequestMonthly() == null || user.getQuotaByRequestMonthly() == 0) {
+            user.setQuotaByRequestMonthly(parseIntConfig(ZhiMeshConstant.SysConfigKey.QUOTA_BY_REQUEST_MONTHLY));
+        }
+        if (user.getQuotaByImageDaily() == null || user.getQuotaByImageDaily() == 0) {
+            user.setQuotaByImageDaily(parseIntConfig(ZhiMeshConstant.SysConfigKey.QUOTA_BY_IMAGE_DAILY));
+        }
+        if (user.getQuotaByImageMonthly() == null || user.getQuotaByImageMonthly() == 0) {
+            user.setQuotaByImageMonthly(parseIntConfig(ZhiMeshConstant.SysConfigKey.QUOTA_BY_IMAGE_MONTHLY));
+        }
+        String token = UuidUtil.createShort();
+        String tokenKey = MessageFormat.format(USER_TOKEN, token);
+        String jsonUser = JsonUtil.toJson(user);
+//        log.info("jsonUser:{}", jsonUser);
+        stringRedisTemplate.opsForValue().set(tokenKey, jsonUser, ZhiMeshConstant.USER_TOKEN_EXPIRE, TimeUnit.HOURS);
+        return token;
+    }
+
+    /**
+     * 发送激活链接|Send activation email
+     *
+     * @param email 用户邮箱|user email
+     */
+    public void sendActiveEmail(String email) {
+        String activeCode = UuidUtil.createShort();
+        String activeCodeKey = MessageFormat.format(AUTH_ACTIVE_CODE, activeCode);
+        stringRedisTemplate.opsForValue().set(activeCodeKey, email, ZhiMeshConstant.AUTH_ACTIVE_CODE_EXPIRE, TimeUnit.HOURS);
+        String activeLink = adiProperties.getBackendUrl() + "/auth/active?code=" + activeCode;
+        String subject = SpringUtil.getMessage("mail.welcomeSubject");
+        String body = MessageFormat.format(SpringUtil.getMessage("mail.welcomeBody"), ZhiMeshConstant.AUTH_ACTIVE_CODE_EXPIRE, activeLink);
+        adiMailSender.send(subject, body, email);
+    }
+
+    /**
+     * 通过用户ID获取用户|Get user by user ID
+     *
+     * @param id 用户ID|user ID
+     * @return 用户|user
+     */
+    @Cacheable(cacheNames = USER_INFO, condition = "#id>0", key = "#p0")
+    public User getByUserId(Long id) {
+        return ChainWrappers.lambdaQueryChain(baseMapper).eq(User::getId, id).one();
+    }
+
+    /**
+     * 通过UUID获取用户|Get user by UUID
+     *
+     * @param uuid 用户UUID|user UUID
+     * @return 用户|user
+     */
+    public User getByUuid(String uuid) {
+        return ChainWrappers.lambdaQueryChain(baseMapper).eq(User::getUuid, uuid).one();
+    }
+
+    /**
+     * 通过UUID获取用户，如果不存在则抛出异常|Get user by UUID or throw exception if not exist
+     *
+     * @param uuid 用户UUID|user UUID
+     * @return 用户|user
+     */
+    public User getByUuidOrThrow(String uuid) {
+        User user = this.getByUuid(uuid);
+        if (null == user) {
+            throw new BaseException(A_USER_NOT_EXIST);
+        }
+        return user;
+    }
+
+    /**
+     * 搜索用户|Search users
+     *
+     * @param req         用户搜索请求|user search request
+     * @param currentPage 当前页码|current page number
+     * @param pageSize    每页大小|page size
+     * @return 用户信息分页|page of user information
+     */
+    public Page<UserInfoDto> search(UserSearchReq req, Integer currentPage, Integer pageSize) {
+        LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<>();
+        if (StringUtils.isNotBlank(req.getName())) {
+            wrapper.like(User::getName, req.getName());
+        }
+        if (StringUtils.isNotBlank(req.getUuid())) {
+            wrapper.eq(User::getUuid, req.getUuid());
+        }
+        if (StringUtils.isNotBlank(req.getEmail())) {
+            wrapper.eq(User::getEmail, req.getEmail());
+        }
+        if (null != req.getUserStatus()) {
+            wrapper.eq(User::getUserStatus, UserStatusEnum.getByValue(req.getUserStatus()));
+        }
+        if (null != req.getCreateTime() && req.getCreateTime().length == 2) {
+            wrapper.between(User::getCreateTime, LocalDateTimeUtil.parse(req.getCreateTime()[0]), LocalDateTimeUtil.parse(req.getCreateTime()[1]));
+        }
+        if (null != req.getUpdateTime() && req.getUpdateTime().length == 2) {
+            wrapper.between(User::getUpdateTime, LocalDateTimeUtil.parse(req.getUpdateTime()[0]), LocalDateTimeUtil.parse(req.getUpdateTime()[1]));
+        }
+        if (null != req.getIsAdmin()) {
+            wrapper.eq(User::getIsAdmin, req.getIsAdmin());
+        }
+        wrapper.orderByDesc(User::getUpdateTime);
+        Page<User> page = baseMapper.selectPage(new Page<>(currentPage, pageSize), wrapper);
+        Page<UserInfoDto> result = new Page<>();
+        return MPPageUtil.convertToPage(page, result, UserInfoDto.class);
+    }
+
+    /**
+     * 添加用户|Add user
+     *
+     * @param addUserReq 添加用户请求|add user request
+     * @return 用户信息|user information
+     */
+    public UserInfoDto addUser(UserAddReq addUserReq) {
+        User user = this.lambdaQuery().eq(User::getEmail, addUserReq.getEmail()).one();
+        if (null != user) {
+            throw new BaseException(A_USER_EXIST);
+        }
+
+        String hashed = BCrypt.hashpw(addUserReq.getPassword(), BCrypt.gensalt());
+        String uuid = UuidUtil.createShort();
+        User newOne = new User();
+        if (StringUtils.isNotBlank(addUserReq.getName())) {
+            newOne.setName(addUserReq.getName());
+        } else {
+            newOne.setName(StringUtils.substringBefore(addUserReq.getEmail(), "@"));
+        }
+        newOne.setUuid(uuid);
+        newOne.setEmail(addUserReq.getEmail());
+        newOne.setPassword(hashed);
+        newOne.setAvatar(UserAvatarPool.randomAvatar());
+        newOne.setUserStatus(UserStatusEnum.NORMAL);
+        newOne.setActiveTime(LocalDateTime.now());
+        // 设置配额字段
+        if (addUserReq.getQuotaByTokenDaily() != null) {
+            newOne.setQuotaByTokenDaily(addUserReq.getQuotaByTokenDaily());
+        }
+        if (addUserReq.getQuotaByTokenMonthly() != null) {
+            newOne.setQuotaByTokenMonthly(addUserReq.getQuotaByTokenMonthly());
+        }
+        if (addUserReq.getQuotaByRequestDaily() != null) {
+            newOne.setQuotaByRequestDaily(addUserReq.getQuotaByRequestDaily());
+        }
+        if (addUserReq.getQuotaByRequestMonthly() != null) {
+            newOne.setQuotaByRequestMonthly(addUserReq.getQuotaByRequestMonthly());
+        }
+        if (addUserReq.getQuotaByImageDaily() != null) {
+            newOne.setQuotaByImageDaily(addUserReq.getQuotaByImageDaily());
+        }
+        if (addUserReq.getQuotaByImageMonthly() != null) {
+            newOne.setQuotaByImageMonthly(addUserReq.getQuotaByImageMonthly());
+        }
+        if (addUserReq.getIsAdmin() != null) {
+            newOne.setIsAdmin(addUserReq.getIsAdmin());
+        }
+        baseMapper.insert(newOne);
+
+        UserInfoDto result = new UserInfoDto();
+        User newUser = this.getByUuid(uuid);
+        BeanUtils.copyProperties(newUser, result);
+        return result;
+    }
+}

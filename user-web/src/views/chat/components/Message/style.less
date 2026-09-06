@@ -1,0 +1,141 @@
+.markdown-body {
+	background-color: transparent;
+	font-size: 14px;
+	line-height: 1.72;
+
+	> :first-child {
+		margin-top: 0;
+	}
+
+	> :last-child {
+		margin-bottom: 0;
+	}
+
+	p {
+		white-space: pre-wrap;
+	}
+
+	ol {
+		list-style-type: decimal;
+	}
+
+	ul {
+		list-style-type: disc;
+	}
+
+	pre code,
+	pre tt {
+		line-height: 1.65;
+	}
+
+	.highlight pre,
+	pre {
+		background-color: #fff;
+	}
+
+	code.hljs {
+		padding: 0;
+	}
+
+	.code-block {
+		&-wrapper {
+			position: relative;
+			padding-top: 24px;
+		}
+
+		&-header {
+			position: absolute;
+			top: 5px;
+			right: 0;
+			width: 100%;
+			padding: 0 1rem;
+			display: flex;
+			justify-content: flex-end;
+			align-items: center;
+			color: #b3b3b3;
+
+			&__copy {
+				cursor: pointer;
+				margin-left: 0.5rem;
+				user-select: none;
+
+				&:hover {
+					color: #65a665;
+				}
+			}
+		}
+	}
+
+}
+
+.text-wrap {
+	box-sizing: border-box;
+	max-width: 100%;
+	border: 1px solid var(--zhimesh-border-subtle);
+	font-size: 14px;
+	line-height: 1.7;
+}
+
+.message-request {
+	padding: 10px 14px;
+	border-color: rgba(34, 197, 94, 0.12);
+	border-radius: 16px 16px 5px 16px;
+	background: var(--zhimesh-success-surface);
+	box-shadow: none;
+}
+
+.message-reply {
+	width: fit-content;
+	padding: 11px 15px;
+	border-radius: 16px 16px 16px 5px;
+	background: var(--zhimesh-glass);
+	box-shadow: none;
+}
+
+.message-thinking-state {
+	display: inline-flex;
+	min-width: 132px;
+	min-height: 24px;
+	align-items: center;
+	gap: 8px;
+	color: var(--zhimesh-text-muted);
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.message-thinking-icon {
+	display: inline-flex;
+	width: 18px;
+	height: 18px;
+	align-items: center;
+	justify-content: center;
+	color: var(--zhimesh-primary);
+	font-size: 18px;
+	line-height: 1;
+}
+
+html.dark {
+	.message-request {
+		color: var(--zhimesh-success-text);
+		border-color: rgba(74, 222, 128, 0.16);
+		background: var(--zhimesh-success-surface);
+	}
+
+	.message-reply {
+		color: var(--n-text-color);
+		border-color: rgba(129, 140, 248, 0.14);
+		background: var(--zhimesh-glass-strong);
+	}
+
+	.message-reply {
+		.whitespace-pre-wrap {
+			white-space: pre-wrap;
+			color: var(--n-text-color);
+		}
+	}
+
+	.highlight pre,
+	pre {
+		background-color: #282c34;
+	}
+}

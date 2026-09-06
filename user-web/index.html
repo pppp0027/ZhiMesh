@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-cmn-Hans">
+<head>
+	<meta charset="UTF-8">
+	<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+	<meta content="yes" name="apple-mobile-web-app-capable"/>
+	<link rel="apple-touch-icon" href="/favicon.ico">
+	<meta name="viewport"
+		content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>知脉 · ZhiMesh</title>
+</head>
+
+<body class="dark:bg-black"><!--
+THESIS: ZhiMesh turns model, knowledge, memory, tool, and workflow capabilities into one legible working mesh; it refuses the generic glowing AI chat shell.
+OWN-WORLD: Mineral-white and graphite surfaces, solid ink-blue controls, teal only for active connections and success, compact geometry, and quiet physical depth.
+STORY: A team member sees the available capability network, starts a task, and stays oriented through explicit context and state.
+FIRST VIEWPORT: Restrained edge navigation frames the active workspace; the task surface owns the center, with creation actions immediately reachable.
+FORM: Cognitive Mesh / 智识网络, Direction A pinned by the user; seed key 73b16682.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+-->
+	<div id="app">
+		<style>
+			.loading-wrap {
+				display: flex;
+				justify-content: center;
+				align-items: center;
+				min-height: 100vh;
+				min-height: 100dvh;
+				background: #f1f5f7;
+			}
+
+			.mesh-loader {
+				position: relative;
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				width: 62px;
+				height: 24px;
+			}
+
+			.mesh-loader::before {
+				position: absolute;
+				top: 11px;
+				right: 5px;
+				left: 5px;
+				height: 2px;
+				background: #234a7a;
+				content: "";
+				transform: scaleX(0.16);
+				transform-origin: left center;
+				animation: mesh-connect 1.15s cubic-bezier(0.22, 1, 0.36, 1) infinite alternate;
+			}
+
+			.mesh-loader span {
+				position: relative;
+				z-index: 1;
+				width: 10px;
+				height: 10px;
+				box-sizing: border-box;
+				border: 2px solid #234a7a;
+				border-radius: 3px;
+				background: #f1f5f7;
+			}
+
+			.mesh-loader span:nth-child(2) {
+				border-color: #16877d;
+				background: #16877d;
+				animation: mesh-node 1.15s ease-in-out infinite alternate;
+			}
+
+			@keyframes mesh-connect {
+				to {
+					transform: scaleX(1);
+				}
+			}
+
+			@keyframes mesh-node {
+				to {
+					transform: scale(1.2);
+				}
+			}
+
+			@media (prefers-color-scheme: dark) {
+				.loading-wrap {
+					background: #111b24;
+				}
+
+				.mesh-loader::before {
+					background: #6f91b0;
+				}
+
+				.mesh-loader span {
+					border-color: #6f91b0;
+					background: #111b24;
+				}
+
+				.mesh-loader span:nth-child(2) {
+					border-color: #2d9d92;
+					background: #2d9d92;
+				}
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				.mesh-loader::before,
+				.mesh-loader span:nth-child(2) {
+					animation: none;
+				}
+
+				.mesh-loader::before {
+					transform: scaleX(1);
+				}
+			}
+		</style>
+		<div class="loading-wrap">
+			<div class="mesh-loader" role="status" aria-label="知脉正在连接能力网络">
+				<span></span>
+				<span></span>
+				<span></span>
+			</div>
+		</div>
+	</div>
+	<script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

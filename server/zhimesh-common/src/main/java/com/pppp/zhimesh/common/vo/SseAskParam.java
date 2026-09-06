@@ -1,0 +1,43 @@
+package com.pppp.zhimesh.common.vo;
+
+import com.pppp.zhimesh.common.entity.User;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+@Data
+public class SseAskParam {
+
+    private User user;
+    //请求标识,如:知识库的记录uuid,搜索记录uuid
+    private String uuid;
+    private String modelPlatform;
+    private String modelName;
+    private String regenerateQuestionUuid;
+    /**
+     * 2:text,3:audio
+     */
+    private Integer answerContentType;
+    private String voice;
+    /**
+     * SSE 请求标识，用于从注册中心获取 SseEmitter
+     * <p>
+     * SSE request identifier, used to look up SseEmitter from the registry.
+     * </p>
+     */
+    private String sseUuid;
+    /**
+     * 创建LLM时用到的属性，非必填
+     */
+    private ChatModelBuilderProperties modelProperties;
+
+    /**
+     * 进行http请求时最终提交给LLM的信息，必填
+     */
+    private ChatModelRequest httpRequestParams;
+}

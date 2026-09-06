@@ -1,0 +1,22 @@
+package com.pppp.zhimesh.common.dto;
+
+import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
+import org.springframework.validation.annotation.Validated;
+
+import java.util.List;
+
+@Data
+@Validated
+public class CharacterPresetEditReq {
+
+    @NotBlank
+    private String title;
+    @NotBlank
+    private String remark;
+    @NotBlank
+    private String aiSystemMessage;
+    private List<Long> systemKbIds;
+    private List<Long> mcpIds;
+    private String type;
+}

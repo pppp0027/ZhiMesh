@@ -1,0 +1,21 @@
+package com.pppp.zhimesh.common.dto.workflow;
+
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.pppp.zhimesh.common.workflow.NodeExecutionMetrics;
+import lombok.Data;
+import org.springframework.validation.annotation.Validated;
+
+@Validated
+@Data
+public class WfRuntimeNodeDto {
+    private Long id;
+    private String uuid;
+    private Long workflowRuntimeId;
+    private Long nodeId;
+    private ObjectNode input;
+    private ObjectNode output;
+    private Integer status;
+    private String statusRemark;
+    private Integer duration;
+    private NodeExecutionMetrics metadata;
+}

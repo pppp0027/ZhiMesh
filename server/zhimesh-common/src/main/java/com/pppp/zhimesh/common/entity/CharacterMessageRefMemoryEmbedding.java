@@ -1,0 +1,54 @@
+package com.pppp.zhimesh.common.entity;
+
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.pppp.zhimesh.common.enums.MemoryType;
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+
+import java.io.Serial;
+import java.io.Serializable;
+
+@Data
+@TableName("adi_character_message_ref_memory_embedding")
+@Schema(title = "角色消息-记忆-引用实体 | Character Message Memory Reference Entity", description = "角色消息-记忆-引用列表 | Character Message Memory Reference List")
+public class CharacterMessageRefMemoryEmbedding implements Serializable {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    @TableId(type = IdType.AUTO)
+    private Long id;
+
+    @Schema(title = "消息ID | Message ID")
+    @TableField("message_id")
+    private Long messageId;
+
+    @Schema(title = "向量id | Embedding ID")
+    @TableField("embedding_id")
+    private String embeddingId;
+
+    @Schema(title = "分数 | Score")
+    @TableField("score")
+    private Double score;
+
+    /**
+     * 记忆类型路由码：决定该 embedding_id 指向哪个物理向量库。
+     * MyBatis-Plus 通过 {@link MemoryType} 实现的 {@code IEnum<Integer>}
+     * 自动在 smallint 列与枚举之间转换。
+     * <p>
+     * Memory type routing code: decides which physical vector store this
+     * embedding_id lives in. MyBatis-Plus auto-converts between the smallint
+     * column and the enum via {@link MemoryType}'s IEnum<Integer> contract.
+     */
+    @Schema(title = "记忆类型 | Memory Type")
+    @TableField("memory_type")
+    private MemoryType memoryType;
+
+    @Schema(title = "提问用户id | Question User ID")
+    @TableField("user_id")
+    private Long userId;
+}
+

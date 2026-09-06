@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.14</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.pppp</groupId>
+    <artifactId>zhimesh</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>zhimesh</name>
+    <description>Chat, Draw, RAG, Workflow and MCP marketplace</description>
+
+    <modules>
+        <module>zhimesh-common</module>
+        <module>zhimesh-chat</module>
+        <module>zhimesh-admin</module>
+        <module>zhimesh-bootstrap</module>
+    </modules>
+
+    <repositories>
+        <repository>
+            <id>project-local-repo</id>
+            <url>file://${maven.multiModuleProjectDirectory}/.mvn/local-repo</url>
+        </repository>
+    </repositories>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <langchain4j.version>1.14.1</langchain4j.version>
+        <tmp-langchain4j.version>1.14.1-beta24</tmp-langchain4j.version>
+        <langgraph4j.version>1.8.15</langgraph4j.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-bom</artifactId>
+                <version>${langchain4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>

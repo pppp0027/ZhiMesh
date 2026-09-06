@@ -1,0 +1,145 @@
+package com.pppp.zhimesh.chat.controller;
+
+import com.pppp.zhimesh.common.config.ZhiMeshProperties;
+import com.pppp.zhimesh.common.dto.LoginReq;
+import com.pppp.zhimesh.common.dto.LoginResp;
+import com.pppp.zhimesh.common.dto.RegisterReq;
+import com.pppp.zhimesh.common.dto.RegisterResp;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.searchengine.SearchEngineServiceContext;
+import com.pppp.zhimesh.common.service.UserService;
+import com.pppp.zhimesh.common.vo.SearchEngineInfo;
+import com.ramostear.captcha.HappyCaptcha;
+import com.ramostear.captcha.support.CaptchaType;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import jakarta.validation.Valid;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.constraints.NotBlank;
+import lombok.extern.slf4j.Slf4j;
+import org.hibernate.validator.constraints.Length;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.*;
+
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.Charset;
+import java.util.List;
+import java.util.stream.Collectors;
+
+import static com.pppp.zhimesh.common.enums.ErrorEnum.B_ACTIVE_USER_ERROR;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.B_RESET_PASSWORD_ERROR;
+import static org.springframework.http.HttpHeaders.AUTHORIZATION;
+
+
+@Slf4j
+@Tag(name = "权限controller | Auth Controller", description = "权限controller | Auth Controller")
+@Validated
+@RestController
+@RequestMapping("auth")
+public class AuthController {
+
+    @Resource
+    private ZhiMeshProperties adiProperties;
+
+    @Resource
+    private UserService userService;
+
+    @Operation(summary = "注册 | Register")
+    @PostMapping("/register")
+    public RegisterResp register(@Valid @RequestBody RegisterReq registerReq) {
+        return userService.register(registerReq.getEmail(), registerReq.getPassword(), registerReq.getCaptchaId(), registerReq.getCaptchaCode());
+    }
+
+    @Operation(summary = "注册的验证码 | Registration Captcha")
+    @GetMapping("/register/captcha")
+    public void registerCaptcha(@Parameter(description = "验证码ID | Captcha ID") @RequestParam @Length(min = 32) String captchaId,
+                                HttpServletRequest request,
+                                HttpServletResponse response) {
+        HappyCaptcha happyCaptcha = HappyCaptcha.require(request, response).type(CaptchaType.WORD_NUMBER_UPPER).build().finish();
+        String captchaCode = happyCaptcha.getCode();
+        userService.cacheRegisterCaptcha(captchaId, captchaCode);
+        happyCaptcha.output();
+    }
+
+    @Operation(summary = "激活 | Activate")
+    @GetMapping("active")
+    public boolean active(@RequestParam("code") String activeCode, HttpServletResponse response) {
+
+        try {
+            userService.active(activeCode);
+            response.sendRedirect(adiProperties.getFrontendUrl() + "/#/active?active=success&msg=" + URLEncoder.encode("Activation successful, please login", Charset.defaultCharset()));
+        } catch (IOException e) {
+            log.error("auth.active1:", e);
+            try {
+                response.sendRedirect(adiProperties.getFrontendUrl() + "/#/active?active=fail&msg=" + URLEncoder.encode("Activation failed: system error, please register or login again", Charset.defaultCharset()));
+            } catch (IOException ex) {
+                log.error("auth.active2:", ex);
+                throw new BaseException(B_ACTIVE_USER_ERROR);
+            }
+        } catch (Exception e) {
+            try {
+                response.sendRedirect(adiProperties.getFrontendUrl() + "/#/active?active=fail&msg=" + URLEncoder.encode(e.getMessage(), Charset.defaultCharset()));
+            } catch (IOException ex) {
+                log.error("auth.active3:", ex);
+                throw new BaseException(B_ACTIVE_USER_ERROR);
+            }
+        }
+        return true;
+    }
+
+    @Operation(summary = "忘记密码 | Forgot Password")
+    @PostMapping("password/forgot")
+    public String forgotPassword(@RequestParam @NotBlank String email) {
+        userService.forgotPassword(email);
+        return "Reset password link sent to your email";
+    }
+
+
+    @Operation(summary = "重置密码 | Reset Password")
+    @GetMapping("/password/reset")
+    public void resetPassword(@RequestParam @NotBlank String code, HttpServletResponse response) {
+        userService.resetPassword(code);
+        try {
+            response.sendRedirect(adiProperties.getFrontendUrl() + "/#/active?active=success&msg=" + URLEncoder.encode("Password has been reset", Charset.defaultCharset()));
+        } catch (IOException e) {
+            log.error("resetPassword:", e);
+            throw new BaseException(B_RESET_PASSWORD_ERROR);
+        }
+    }
+
+    @Operation(summary = "登录 | Login")
+    @PostMapping("login")
+    public LoginResp login(@Validated @RequestBody LoginReq loginReq, HttpServletResponse response) {
+        LoginResp loginResp = userService.login(loginReq);
+        response.setHeader(AUTHORIZATION, loginResp.getToken());
+        Cookie cookie = new Cookie(AUTHORIZATION, loginResp.getToken());
+        response.addCookie(cookie);
+        return loginResp;
+    }
+
+    @Operation(summary = "获取登录验证码 | Get Login Captcha")
+    @GetMapping("/login/captcha")
+    public void captcha(@RequestParam @Length(min = 32) String captchaId, HttpServletRequest request, HttpServletResponse response) {
+        HappyCaptcha happyCaptcha = HappyCaptcha.require(request, response).type(CaptchaType.WORD_NUMBER_UPPER).build().finish();
+        String captchaCode = happyCaptcha.getCode();
+        userService.cacheLoginCaptcha(captchaId, captchaCode);
+        happyCaptcha.output();
+    }
+
+    @Operation(summary = "搜索引擎列表 | Search Engine List")
+    @GetMapping(value = "/search-engine/list")
+    public List<SearchEngineInfo> engines() {
+        return SearchEngineServiceContext.getAllService().values().stream().map(item -> {
+            SearchEngineInfo info = new SearchEngineInfo();
+            info.setEnable(item.isEnabled());
+            info.setName(item.getEngineName());
+            return info;
+        }).toList();
+    }
+}

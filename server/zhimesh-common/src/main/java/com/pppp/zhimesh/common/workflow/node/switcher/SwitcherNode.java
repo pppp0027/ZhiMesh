@@ -1,0 +1,161 @@
+package com.pppp.zhimesh.common.workflow.node.switcher;
+
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.pppp.zhimesh.common.entity.WorkflowComponent;
+import com.pppp.zhimesh.common.entity.WorkflowNode;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.util.JsonUtil;
+import com.pppp.zhimesh.common.workflow.NodeProcessResult;
+import com.pppp.zhimesh.common.workflow.WfNodeState;
+import com.pppp.zhimesh.common.workflow.WfState;
+import com.pppp.zhimesh.common.workflow.data.NodeIOData;
+import com.pppp.zhimesh.common.workflow.node.AbstractWfNode;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+
+import java.util.List;
+
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_WF_NODE_CONFIG_ERROR;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_WF_NODE_CONFIG_NOT_FOUND;
+import static com.pppp.zhimesh.common.workflow.WfNodeIODataUtil.changeInputsToOutputs;
+
+/**
+ * 【节点】条件分支
+ */
+@Slf4j
+public class SwitcherNode extends AbstractWfNode {
+
+    public SwitcherNode(WorkflowComponent wfComponent, WorkflowNode node, WfState wfState, WfNodeState nodeState) {
+        super(wfComponent, node, wfState, nodeState);
+    }
+
+    @Override
+    protected NodeProcessResult onProcess() {
+        ObjectNode nodeConfigObj = node.getNodeConfig();
+        if (nodeConfigObj.isEmpty()) {
+            throw new BaseException(A_WF_NODE_CONFIG_NOT_FOUND);
+        }
+        SwitcherNodeConfig nodeConfig = JsonUtil.fromJson(nodeConfigObj, SwitcherNodeConfig.class);
+        if (null == nodeConfig) {
+            log.warn("Switcher node configuration not found, uuid:{}, title:{}", node.getUuid(), node.getTitle());
+            throw new BaseException(A_WF_NODE_CONFIG_ERROR);
+        }
+        if (CollectionUtils.isEmpty(nodeConfig.getCases())) {
+            log.error("Switcher has no conditions,node:{},title:{}", node.getUuid(), node.getTitle());
+            throw new BaseException(A_WF_NODE_CONFIG_ERROR);
+        }
+        String nextNode = null;
+        int executableCaseCount = 0;
+//Various cases for initializing configuration
+        //初始化配置的各种case
+        for (SwitcherCase switcherCase : nodeConfig.getCases()) {
+            List<SwitcherCase.Condition> conditions = switcherCase.getConditions();
+            if (StringUtils.isAnyBlank(switcherCase.getTargetNodeUuid(), switcherCase.getOperator()) || CollectionUtils.isEmpty(conditions)) {
+                log.warn("Switcher case error:{}", switcherCase);
+                continue;
+            }
+            executableCaseCount++;
+            int conditionPassCount = 0;
+            boolean casePass = false;
+            boolean allConditionPassRequired = switcherCase.getOperator().equals(LogicOperatorEnum.AND.getName());
+            for (SwitcherCase.Condition condition : switcherCase.getConditions()) {
+                NodeIOData ioData = createByReferParam(condition.getNodeUuid(), condition.getNodeParamName());
+                if (null == ioData || null == ioData.getContent()) {
+                    log.warn("Switcher cannot find referenced node parameter, nodeUuid:{}, paramName:{}", condition.getNodeUuid(), condition.getNodeParamName());
+                    continue;
+                }
+                String inputValue = ioData.valueToString().toLowerCase();
+                String value = condition.getValue().toLowerCase();
+                boolean conditionPass = processCondition(value, inputValue, condition.getOperator());
+                if (conditionPass) {
+                    conditionPassCount++;
+                }
+                if ((conditionPassCount == conditions.size()) || (conditionPassCount > 0 && !allConditionPassRequired)) {
+                    casePass = true;
+                    break;
+                }
+            }
+            if (casePass) {
+                nextNode = switcherCase.getTargetNodeUuid();
+                break;
+            }
+        }
+        if (StringUtils.isBlank(nextNode)) {
+            log.error("Switcher downstream is empty,node:{},title:{}", node.getUuid(), node.getTitle());
+            if (executableCaseCount == 0) {
+                throw new BaseException(A_WF_NODE_CONFIG_ERROR.getCode(), "条件分支缺少完整条件或下一步节点");
+            }
+            throw new BaseException(A_WF_NODE_CONFIG_ERROR.getCode(),
+                    "条件分支没有命中任何分支；使用大于、小于等数值运算时，引用变量必须是纯数字");
+        }
+        return NodeProcessResult.builder().nextNodeUuid(nextNode).content(changeInputsToOutputs(state.getInputs())).build();
+    }
+
+    private boolean processCondition(String defValue, String inputValue, String operator) {
+        boolean conditionPass = false;
+        switch (OperatorEnum.getByName(operator)) {
+            case CONTAINS:
+                conditionPass = StringUtils.isNotBlank(inputValue) && inputValue.contains(defValue);
+                break;
+            case NOT_CONTAINS:
+                conditionPass = StringUtils.isNotBlank(inputValue) && !inputValue.contains(defValue);
+                break;
+            case START_WITH:
+                conditionPass = StringUtils.isNotBlank(inputValue) && inputValue.startsWith(defValue);
+                break;
+            case END_WITH:
+                conditionPass = StringUtils.isNotBlank(inputValue) && inputValue.endsWith(defValue);
+                break;
+            case EMPTY:
+                conditionPass = StringUtils.isBlank(inputValue);
+                break;
+            case NOT_EMPTY:
+                conditionPass = StringUtils.isNotBlank(inputValue);
+                break;
+            case EQUAL:
+                conditionPass = StringUtils.isNotBlank(inputValue) && defValue.equals(inputValue);
+                break;
+            case NOT_EQUAL:
+                conditionPass = StringUtils.isNotBlank(inputValue) && !defValue.equals(inputValue);
+                break;
+            case GREATER:
+                try {
+                    double in = Double.parseDouble(defValue);
+                    double vl = Double.parseDouble(inputValue);
+                    conditionPass = vl > in;
+                } catch (Exception e) {
+                    log.error("parse double error", e);
+                }
+                break;
+            case GREATER_OR_EQUAL:
+                try {
+                    double in = Double.parseDouble(defValue);
+                    double vl = Double.parseDouble(inputValue);
+                    conditionPass = vl >= in;
+                } catch (Exception e) {
+                    log.error("parse double error", e);
+                }
+                break;
+            case LESS:
+                try {
+                    double in = Double.parseDouble(defValue);
+                    double vl = Double.parseDouble(inputValue);
+                    conditionPass = vl < in;
+                } catch (Exception e) {
+                    log.error("parse double error", e);
+                }
+                break;
+            case LESS_OR_EQUAL:
+                try {
+                    double in = Double.parseDouble(defValue);
+                    double vl = Double.parseDouble(inputValue);
+                    conditionPass = vl <= in;
+                } catch (Exception e) {
+                    log.error("parse double error", e);
+                }
+                break;
+        }
+        return conditionPass;
+    }
+}

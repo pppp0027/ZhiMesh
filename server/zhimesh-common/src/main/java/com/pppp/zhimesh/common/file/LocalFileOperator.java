@@ -1,0 +1,133 @@
+package com.pppp.zhimesh.common.file;
+
+import com.pppp.zhimesh.common.entity.ZhiMeshFile;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.vo.SaveRemoteImageResult;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.loader.FileSystemDocumentLoader;
+import dev.langchain4j.data.document.parser.TextDocumentParser;
+import dev.langchain4j.data.document.parser.apache.pdfbox.ApachePdfBoxDocumentParser;
+import dev.langchain4j.data.document.parser.apache.poi.ApachePoiDocumentParser;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.POI_DOC_TYPES;
+import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.URL_PREFIX_FILE;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.*;
+
+@Slf4j
+public class LocalFileOperator implements IFileOperator {
+
+    public static String imagePath;
+
+    public static String tmpImagePath;
+
+    public static String filePath;
+
+    @Override
+    public boolean checkIfExist(ZhiMeshFile adiFile) {
+        return LocalFileUtil.checkIfExist(adiFile.getPath());
+    }
+
+    @Override
+    public Pair<String, String> save(MultipartFile file, boolean image, String uuid) {
+        return LocalFileUtil.saveToLocal(file, image ? imagePath : filePath, uuid);
+    }
+
+    @Override
+    public Pair<String, String> save(byte[] file, boolean image, String name) {
+        return LocalFileUtil.saveToLocal(file, image ? imagePath : filePath, name);
+    }
+
+    @Override
+    public SaveRemoteImageResult saveImageFromUrl(String imageUrl, String uuid) {
+        String ext = LocalFileUtil.getFileExtension(imageUrl);
+        if (StringUtils.isBlank(ext)) {
+            ext = "png";
+        }
+        String filePath = imagePath + uuid + "." + ext;
+        File target = new File(filePath);
+        try {
+            FileUtils.createParentDirectories(target);
+            FileUtils.copyURLToFile(new URL(imageUrl), target);
+        } catch (IOException e) {
+            log.error("saveToLocal", e);
+            throw new BaseException(B_SAVE_IMAGE_ERROR);
+        }
+        return SaveRemoteImageResult.builder().ext(ext).originalName(target.getName()).pathOrUrl(filePath).build();
+    }
+
+    @Override
+    public void delete(ZhiMeshFile adiFile) {
+        if (StringUtils.isBlank(adiFile.getPath())) {
+            return;
+        }
+        try {
+            boolean deletedResult = Files.deleteIfExists(Paths.get(adiFile.getPath()));
+            if (!deletedResult) {
+                log.warn("Delete file fail,uuid:{}", adiFile.getUuid());
+            }
+        } catch (IOException e) {
+            log.error("delete file error", e);
+            throw new BaseException(B_DELETE_FILE_ERROR);
+        }
+    }
+
+    @Override
+    public String getFileUrl(ZhiMeshFile adiFile) {
+        return URL_PREFIX_FILE + adiFile.getUuid() + "." + adiFile.getExt();
+    }
+
+    @Override
+    public Document loadDocument(ZhiMeshFile adiFile) {
+        Document result = null;
+        String path = adiFile.getPath();
+        String ext = adiFile.getExt();
+        if (ext.equalsIgnoreCase("txt") || ext.equalsIgnoreCase("md") || ext.equalsIgnoreCase("markdown")) {
+            result = FileSystemDocumentLoader.loadDocument(path, new TextDocumentParser());
+        } else if (ext.equalsIgnoreCase("pdf")) {
+            result = FileSystemDocumentLoader.loadDocument(path, new ApachePdfBoxDocumentParser());
+        } else if (ArrayUtils.contains(POI_DOC_TYPES, adiFile.getExt())) {
+            result = FileSystemDocumentLoader.loadDocument(path, new ApachePoiDocumentParser());
+        }
+        return result;
+    }
+
+    public static void init(String imagePath, String tmpImagePath, String filePath) {
+        LocalFileOperator.imagePath = imagePath;
+        LocalFileOperator.tmpImagePath = tmpImagePath;
+        LocalFileOperator.filePath = filePath;
+    }
+
+    public static boolean checkIfExist(String filePath) {
+        Path path = Paths.get(filePath);
+        return Files.exists(path);
+    }
+
+    public static boolean checkAndCreateDir(String dir) {
+        Path dirPath = Paths.get(dir);
+        if (!Files.exists(dirPath)) {
+            try {
+// Create directory including all non-existent parent directories
+                // 创建目录，包括所有不存在的父目录
+                // Create directory including all non-existent parent directories
+                Files.createDirectories(dirPath);
+            } catch (IOException e) {
+                System.err.println("Error creating directory: " + e.getMessage());
+                throw new BaseException(B_DIR_CREATE_FAIL);
+            }
+        }
+        return true;
+    }
+}

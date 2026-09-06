@@ -1,0 +1,12 @@
+target/
+.git/
+.idea/
+*.iml
+logs/
+.claude/
+data/
+docs/
+docker/
+db_migration/
+.m2-repository/
+*.log

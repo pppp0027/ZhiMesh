@@ -1,0 +1,77 @@
+package com.pppp.zhimesh.common.entity;
+
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.pppp.zhimesh.common.config.McpCustomizedParamDefinitionTypeHandler;
+import com.pppp.zhimesh.common.config.McpPresetParamTypeHandler;
+import com.pppp.zhimesh.common.dto.mcp.McpCommonParam;
+import com.pppp.zhimesh.common.dto.mcp.McpCustomizedParamDefinition;
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import org.apache.ibatis.type.JdbcType;
+
+import java.util.List;
+
+@EqualsAndHashCode(callSuper = true)
+@Data
+@TableName(value = "adi_mcp", autoResultMap = true)
+@Schema(title = "mcp服务实体 | MCP Service Entity")
+public class Mcp extends BaseEntity {
+
+    @Schema(title = "uuid")
+    @TableField(value = "uuid")
+    private String uuid;
+
+    @Schema(title = "标题 | Title")
+    @TableField(value = "title")
+    private String title;
+
+    @Schema(title = "传输类型：sse、streamable_http、stdio | Transport type: SSE, Streamable HTTP, stdio")
+    @TableField(value = "transport_type")
+    private String transportType;
+
+    @Schema(title = "sse url")
+    @TableField(value = "sse_url")
+    private String sseUrl;
+
+    @Schema(title = "Streamable HTTP URL")
+    @TableField(value = "streamable_http_url")
+    private String streamableHttpUrl;
+
+    @Schema(title = "网络传输超时时间 | Network Transport Timeout")
+    @TableField(value = "sse_timeout")
+    private Integer sseTimeout;
+
+    @Schema(title = "stdio命令 | stdio Command")
+    @TableField(value = "stdio_command")
+    private String stdioCommand;
+
+    @Schema(title = "stdio参数 | stdio Arguments")
+    @TableField(value = "stdio_arg")
+    private String stdioArg;
+
+    @Schema(title = "由系统管理员预设的参数 | Preset Parameters by Admin")
+    @TableField(value = "preset_params", jdbcType = JdbcType.ARRAY, typeHandler = McpPresetParamTypeHandler.class)
+    private List<McpCommonParam> presetParams;
+
+    @Schema(title = "待用户设置的参数定义,用户设置后与common_params合并做为mcp的启动参数 | Customized Parameter Definitions for User (Merged with common_params as MCP Launch Arguments)")
+    @TableField(value = "customized_param_definitions", jdbcType = JdbcType.ARRAY, typeHandler = McpCustomizedParamDefinitionTypeHandler.class)
+    private List<McpCustomizedParamDefinition> customizedParamDefinitions;
+
+    @Schema(title = "安装类型(1:docker、2:local、3:remote、4:wasm) | Install Type (1: docker, 2: local, 3: remote, 4: wasm)")
+    @TableField(value = "install_type")
+    private String installType;
+
+    @Schema(title = "网址 | Website")
+    @TableField(value = "website")
+    private String website;
+
+    @Schema(title = "描述 | Description")
+    @TableField(value = "remark")
+    private String remark;
+
+    @Schema(title = "是否启用 | Is Enabled")
+    @TableField(value = "is_enable")
+    private Boolean isEnable;
+}

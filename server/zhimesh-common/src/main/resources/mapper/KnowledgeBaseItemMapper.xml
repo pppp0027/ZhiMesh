@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pppp.zhimesh.common.mapper.KnowledgeBaseItemMapper">
+
+    <select id="searchByKb" parameterType="Map" resultType="com.pppp.zhimesh.common.dto.KbItemDto">
+        select a.*, b.name source_file_name, b.uuid source_file_uuid, b.storage_location
+        from adi_knowledge_base_item a
+        left join adi_file b on a.source_file_id = b.id
+        where a.kb_uuid = #{kbUuid}
+        <if test="keyword!='' and keyword!=null">
+            and a.title like CONCAT('%', #{keyword}, '%')
+        </if>
+        order by create_time desc
+    </select>
+
+    <select id="getByUuid" resultType="com.pppp.zhimesh.common.entity.KnowledgeBaseItem">
+        select *
+        from adi_knowledge_base_item a
+        where uuid = #{uuid}
+    </select>
+
+    <select id="countCreatedByTimePeriod" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base_item
+        where create_time between #{beginTime} and #{endTime}
+    </select>
+
+    <select id="countAllCreated" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base_item
+    </select>
+
+    <!-- Write privilege: the owner of the item's knowledge base must be the current user -->
+    <select id="checkWritePrivilege" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base_item a
+                 inner join adi_knowledge_base b on a.kb_id = b.id
+        where a.uuid = #{uuid}
+          and b.owner_id = #{userId}
+    </select>
+
+    <!-- Read privilege: the item's knowledge base is owned by the current user, or is public -->
+    <select id="checkReadPrivilege" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base_item a
+                 inner join adi_knowledge_base b on a.kb_id = b.id
+        where a.uuid = #{uuid}
+          and (b.owner_id = #{userId} or b.is_public = true)
+    </select>
+
+    <!-- Write privilege keyed by knowledge-base uuid: the kb owner must be the current user -->
+    <select id="checkWritePrivilegeByKb" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base
+        where uuid = #{kbUuid}
+          and owner_id = #{userId}
+    </select>
+
+    <!-- Write privilege keyed by item id: the owner of the item's knowledge base must be the current user -->
+    <select id="checkWritePrivilegeById" resultType="Integer">
+        select count(1)
+        from adi_knowledge_base_item a
+                 inner join adi_knowledge_base b on a.kb_id = b.id
+        where a.id = #{id}
+          and b.owner_id = #{userId}
+    </select>
+</mapper>

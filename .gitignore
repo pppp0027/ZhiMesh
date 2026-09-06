@@ -1,0 +1,116 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+*.db
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!admin-web/build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Environment config ###
+application-dev.yml
+.env
+.env.*
+.npmrc
+*.local.yml
+*.local.yaml
+*.local.properties
+
+.claude/
+.codex/
+.agents/
+.codex-tmp/
+.impeccable/
+tmp/
+TODO*
+
+# Local agent artifacts, caches, and generated working directories.
+.pnpm-store/
+**/.corepack/
+**/.codex-build/
+node_modules/
+docx_qa/
+.models/
+outputs/
+ZhiMesh项目面试PPT/
+ragas-evaluation.tar.gz
+
+# The committed Maven cache is not source and is rebuildable from POM metadata.
+server/.mvn/local-repo/
+
+# Local RAG evaluation runtime and secrets
+ragas-evaluation/.venv/
+ragas-evaluation/__pycache__/
+ragas-evaluation/**/__pycache__/
+ragas-evaluation/**/*.pyc
+ragas-evaluation/.env
+ragas-evaluation/config.json
+ragas-evaluation/analysis/quantification/configs/concurrency-accounts.server.json
+ragas-evaluation/output/*
+!ragas-evaluation/output/.gitkeep
+
+# Keep RAGAS implementation code and dependency manifests only.
+ragas-evaluation/analysis/**/results/
+ragas-evaluation/experiments/
+ragas-evaluation/datasets/
+ragas-evaluation/docs/
+ragas-evaluation/configs/
+ragas-evaluation/**/*.md
+ragas-evaluation/**/config.json
+ragas-evaluation/**/configs/
+ragas-evaluation/**/*.bak
+ragas-evaluation/**/*.bak.*
+ragas-evaluation/**/*.txt
+!ragas-evaluation/requirements*.txt
+ragas-evaluation/**/*.json
+ragas-evaluation/**/*.jsonl
+ragas-evaluation/**/*.csv
+ragas-evaluation/**/*.tsv
+ragas-evaluation/**/*.xlsx
+ragas-evaluation/**/*.parquet
+ragas-evaluation/**/*.zip
+
+# Local build caches live outside source modules.
+.cache/
+.tmp-npm-cache/
+server/.m2-repository/
+server/.cache/
+server/${user.home}/
+
+# Runtime data and diagnostics
+server/data/
+server/docs/diagnostics/
+*.log
+
+# Docker secrets (keep templates)
+docker/.env
+docker/.env.*
+!docker/.env.example
+!docker/.env.*.example

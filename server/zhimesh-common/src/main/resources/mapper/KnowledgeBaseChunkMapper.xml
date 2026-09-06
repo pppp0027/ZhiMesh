@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pppp.zhimesh.common.mapper.KnowledgeBaseChunkMapper">
+    <select id="selectRouteProfileSamples"
+            resultType="com.pppp.zhimesh.common.entity.KnowledgeBaseChunk">
+        with ranked as (
+            select c.*,
+                   row_number() over (partition by c.kb_item_uuid order by c.chunk_index) as sample_rank,
+                   count(*) over (partition by c.kb_item_uuid) as sample_count
+            from adi_knowledge_base_chunk c
+            inner join adi_knowledge_base_item i
+                    on i.uuid = c.kb_item_uuid
+                   and i.active_chunk_set_uuid = c.chunk_set_uuid
+            where c.kb_uuid = #{kbUuid}
+        )
+        select id, uuid, chunk_set_id, chunk_set_uuid, kb_id, kb_uuid,
+               kb_item_id, kb_item_uuid, chunk_index, content, content_hash,
+               token_count, char_start, char_end, create_time, update_time
+        from ranked
+        where sample_rank = 1
+           or sample_rank = sample_count
+           or sample_rank = ((sample_count + 1) / 2)
+        -- Interleave documents so a large/early document cannot consume the
+        -- entire bounded pool before other documents contribute a sample.
+        order by sample_rank, md5(kb_item_uuid), chunk_index
+        limit #{limit}
+    </select>
+</mapper>

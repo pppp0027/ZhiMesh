@@ -1,0 +1,11 @@
+ragas==0.4.3
+openai==2.15.0
+httpx==0.28.1
+python-dotenv==1.2.1
+pandas==2.3.3
+psycopg[binary]>=3.1,<4
+# RAGAS 0.4.3 still imports integrations removed from langchain-community 0.4.x.
+langchain==0.3.27
+langchain-core==0.3.79
+langchain-community==0.3.31
+langchain-openai==0.3.35

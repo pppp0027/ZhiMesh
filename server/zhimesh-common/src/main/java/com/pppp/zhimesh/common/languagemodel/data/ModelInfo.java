@@ -1,0 +1,31 @@
+package com.pppp.zhimesh.common.languagemodel.data;
+
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import lombok.Data;
+
+@Data
+public class ModelInfo {
+    private Long modelId;
+    private String modelName;
+    private String modelTitle;
+    private Boolean enable;
+    private String modelPlatform;
+    /** Display metadata derived from the platform record without exposing credentials or API paths. */
+    private String platformTitle;
+    private String platformIconUrl;
+    private String platformHost;
+    /**
+     * Model usage type: text / image / vision / embedding / rerank / asr / tts.
+     * Mirrors adi_ai_model.type; exposed so the frontend can filter by purpose.
+     */
+    private String type;
+    private String inputTypes;
+    private String responseFormatTypes;
+    private Boolean isFree;
+    private Boolean isReasoner;
+    private Boolean isThinkingClosable;
+    private Boolean isSupportWebSearch;
+    private ObjectNode properties;
+    private String healthStatus;
+    private String healthReason;
+}

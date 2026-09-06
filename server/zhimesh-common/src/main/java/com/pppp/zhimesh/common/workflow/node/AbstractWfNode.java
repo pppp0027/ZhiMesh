@@ -1,0 +1,248 @@
+package com.pppp.zhimesh.common.workflow.node;
+
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.pppp.zhimesh.common.entity.WorkflowComponent;
+import com.pppp.zhimesh.common.entity.WorkflowNode;
+import com.pppp.zhimesh.common.enums.WfIODataTypeEnum;
+import com.pppp.zhimesh.common.exception.BaseException;
+import com.pppp.zhimesh.common.util.CollectionUtil;
+import com.pppp.zhimesh.common.util.JsonUtil;
+import com.pppp.zhimesh.common.util.SpringUtil;
+import com.pppp.zhimesh.common.workflow.NodeExecutionMetrics;
+import com.pppp.zhimesh.common.workflow.NodeProcessResult;
+import com.pppp.zhimesh.common.workflow.WfNodeInputConfig;
+import com.pppp.zhimesh.common.workflow.WfNodeState;
+import com.pppp.zhimesh.common.workflow.WfState;
+import com.pppp.zhimesh.common.workflow.data.NodeIOData;
+import com.pppp.zhimesh.common.workflow.def.WfNodeIO;
+import com.pppp.zhimesh.common.workflow.def.WfNodeParamRef;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
+import lombok.Data;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.SerializationUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+
+import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.WorkflowConstant.*;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_WF_NODE_CONFIG_ERROR;
+import static com.pppp.zhimesh.common.enums.ErrorEnum.A_WF_NODE_CONFIG_NOT_FOUND;
+
+/**
+ * 节点实例-运行时
+ */
+@Data
+@Slf4j
+public abstract class AbstractWfNode {
+
+    protected WorkflowComponent wfComponent;
+    protected WfState wfState;
+    @Getter
+    protected WfNodeState state;
+    protected WorkflowNode node;
+
+    public AbstractWfNode(WorkflowComponent wfComponent, WorkflowNode node, WfState wfState, WfNodeState nodeState) {
+        this.wfState = wfState;
+        this.wfComponent = wfComponent;
+        this.state = nodeState;
+        this.node = node;
+        if (this.state.getMetrics() == null) {
+            this.state.setMetrics(new NodeExecutionMetrics());
+        }
+    }
+
+    public void initInput() {
+        WfNodeInputConfig nodeInputConfig = node.getInputConfig();
+        if (null == nodeInputConfig) {
+            log.info("Node input parameters not configured");
+            return;
+        }
+        if (wfState.getCompletedNodes().isEmpty()) {
+            log.info("No upstream node, current node is start node");
+            state.getInputs().addAll(wfState.getInput());
+            return;
+        }
+
+        List<NodeIOData> inputs = new ArrayList<>();
+
+        //将上游节点的输出转成当前节点的输入
+        List<NodeIOData> upstreamOutputs = wfState.getLatestOutputs();
+        if (!upstreamOutputs.isEmpty()) {
+            inputs.addAll(new ArrayList<>(CollectionUtil.deepCopy(upstreamOutputs)));
+        } else {
+            log.warn("upstream output params is empty");
+        }
+//Process reference-type input parameters, non-start nodes only have reference-type inputs
+        //处理引用类型的输入参数，非开始节点只有引用类型输入参数
+        List<WfNodeParamRef> refInputDefs = nodeInputConfig.getRefInputs();
+        inputs.addAll(changeRefersToNodeIODatas(refInputDefs));
+
+        //根据节点的输入参数定义，刷选出符合要求的输入参数
+        WfNodeInputConfig inputConfig = node.getInputConfig();
+        List<String> defInputNames = inputConfig.getRefInputs().stream().map(WfNodeParamRef::getName).collect(Collectors.toList());
+        defInputNames.addAll(inputConfig.getUserInputs().stream().map(WfNodeIO::getName).toList());
+        List<NodeIOData> needInputs = inputs.stream().filter(item -> {
+            String needInputName = item.getName();
+//Upstream node default output parameter (output), change to input
+            //上流节点的默认输出参数(output)，改成input即可
+            if (DEFAULT_OUTPUT_PARAM_NAME.equals(needInputName)) {
+                item.setName(DEFAULT_INPUT_PARAM_NAME);
+                return true;
+            }
+            return defInputNames.contains(needInputName);
+        }).toList();
+        state.getInputs().addAll(needInputs);
+    }
+
+    /**
+     * 查找引用节点的参数并转成输入输出参数
+     *
+     * @param referParams 引用类型的定义列表
+     */
+    private List<NodeIOData> changeRefersToNodeIODatas(List<WfNodeParamRef> referParams) {
+        List<NodeIOData> result = new ArrayList<>();
+        for (WfNodeParamRef referParam : referParams) {
+            String nodeUuid = referParam.getNodeUuid();
+            String nodeParamName = referParam.getNodeParamName();
+            NodeIOData newInput = createByReferParam(nodeUuid, nodeParamName);
+            if (null != newInput) {
+                newInput.setName(referParam.getName());
+                result.add(newInput);
+            } else {
+                log.warn("Can not find reference node output param,refNodeId:{},refNodeOutputName:{}", nodeUuid, nodeParamName);
+            }
+        }
+        return result;
+    }
+
+    public NodeIOData createByReferParam(String refNodeUuid, String refNodeParamName) {
+        Optional<NodeIOData> hitDataOpt = wfState.getIOByNodeUuid(refNodeUuid)
+                .stream()
+                .filter(wfNodeIOData -> wfNodeIOData.getName().equalsIgnoreCase(refNodeParamName))
+                .findFirst();
+        return hitDataOpt.<NodeIOData>map(SerializationUtils::clone).orElse(null);
+    }
+
+    public NodeProcessResult process(Consumer<WfNodeState> inputConsumer, Consumer<WfNodeState> outputConsumer) {
+        log.info("↓↓↓↓↓ node process start,name:{},uuid:{}", node.getTitle(), node.getUuid());
+        long startTime = System.currentTimeMillis();
+        state.setProcessStatus(NODE_PROCESS_STATUS_DOING);
+        NodeProcessResult processResult;
+        try {
+            initInput();
+//HumanFeedback case
+            //HumanFeedback的情况
+            Object humanFeedbackState = state.data().get(HUMAN_FEEDBACK_KEY);
+            if (null != humanFeedbackState) {
+                String userInput = humanFeedbackState.toString();
+                if (StringUtils.isNotBlank(userInput)) {
+                    state.getInputs().add(NodeIOData.createByText(HUMAN_FEEDBACK_KEY, "default", userInput));
+                }
+            }
+            if (null != inputConsumer) {
+                inputConsumer.accept(state);
+            }
+            log.info("--node input:{}", JsonUtil.toJson(state.getInputs()));
+            processResult = onProcess();
+        } catch (Exception e) {
+            state.getMetrics().setDurationMs(System.currentTimeMillis() - startTime);
+            state.setProcessStatus(NODE_PROCESS_STATUS_FAIL);
+            state.setProcessStatusRemark("process error:" + e.getMessage());
+            wfState.setProcessStatus(WORKFLOW_PROCESS_STATUS_FAIL);
+            log.info("↑↑↑↑↑ node process error,name:{},uuid:{},error", node.getTitle(), node.getUuid(), e);
+            if (null != outputConsumer) {
+                try {
+                    outputConsumer.accept(state);
+                } catch (Exception persistenceException) {
+                    log.error("Persist failed workflow node state error,node:{}", node.getUuid(), persistenceException);
+                }
+            }
+            throw new RuntimeException(e);
+        }
+
+        if (!processResult.getContent().isEmpty()) {
+            state.setOutputs(processResult.getContent());
+        }
+        state.getMetrics().setDurationMs(System.currentTimeMillis() - startTime);
+        state.setProcessStatus(NODE_PROCESS_STATUS_SUCCESS);
+//Let langgraph4j execute the next node
+        //交由langgraph4j执行下一个节点
+//        if (nextNode != null) {
+//            nextNode.getWfNodeState().setInput(output);
+//            nextNode.process();
+//        } else {
+//            wfNodeState.setOutput(output);
+//            wfNodeState.setProcessState(NODE_STATE_SUCCESS);
+//            wfNodeState.setProcessStateDesc("workflow complete");
+//        }
+        wfState.getCompletedNodes().add(this);
+        log.info("↑↑↑↑↑ node process end,name:{},uuid:{},duration:{}ms,output:{}", node.getTitle(), node.getUuid(), state.getMetrics().getDurationMs(), JsonUtil.toJson(state.getOutputs()));
+        if (null != outputConsumer) {
+            outputConsumer.accept(state);
+        }
+        return processResult;
+    }
+
+    protected abstract NodeProcessResult onProcess();
+
+    protected String getFirstInputText() {
+        if (state.getInputs().isEmpty()) {
+            return StringUtils.EMPTY;
+        }
+        String firstInputText;
+        if (state.getInputs().size() > 1) {
+            firstInputText = state.getInputs()
+                    .stream()
+                    .filter(item -> item.getContent() != null
+                            && WfIODataTypeEnum.TEXT.getValue().equals(item.getContent().getType())
+                            && !DEFAULT_INPUT_PARAM_NAME.equals(item.getName()))
+                    .map(NodeIOData::valueToString)
+                    .findFirst()
+                    .orElse("");
+        } else {
+            firstInputText = state.getInputs().get(0).valueToString();
+        }
+        return firstInputText;
+    }
+
+    protected <T> T checkAndGetConfig(Class<T> clazz) {
+        ObjectNode configObj = node.getNodeConfig();
+        if (configObj.isEmpty()) {
+            log.error("node config is empty,node uuid:{}", state.getUuid());
+            throw new BaseException(A_WF_NODE_CONFIG_NOT_FOUND);
+        }
+        log.info("node config:{}", configObj);
+        T nodeConfig = JsonUtil.fromJson(configObj, clazz);
+        if (null == nodeConfig) {
+            log.warn("Node configuration not found, node uuid:{}", state.getUuid());
+            throw new BaseException(A_WF_NODE_CONFIG_ERROR);
+        }
+        boolean configValid = true;
+        try {
+            Set<ConstraintViolation<T>> violations = SpringUtil.getBean("beanValidator", LocalValidatorFactoryBean.class).validate(nodeConfig);
+            for (ConstraintViolation<T> violation : violations) {
+                log.error(violation.getMessage());
+                configValid = false;
+            }
+        } catch (Exception e) {
+            log.error("Node configuration validation failed, node uuid:{}, error:{}", state.getUuid(), e.getMessage());
+            configValid = false;
+        }
+        if (!configValid) {
+            log.warn("Node configuration error, node uuid:{}", state.getUuid());
+            throw new BaseException(A_WF_NODE_CONFIG_ERROR);
+        }
+        return nodeConfig;
+    }
+
+}
