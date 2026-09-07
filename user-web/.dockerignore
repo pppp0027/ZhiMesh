@@ -3,7 +3,9 @@ dist/
 .git/
 .idea/
 .vscode/
+# VITE_* env 文件是公开的构建期配置（无密钥），镜像构建时必须进入上下文
 .env*
+!.env
 !.env.example
 npm-debug.log*
 pnpm-debug.log*
