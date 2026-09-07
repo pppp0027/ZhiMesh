@@ -38,6 +38,7 @@ build/
 application-dev.yml
 .env
 .env.*
+!.env.example
 .npmrc
 *.local.yml
 *.local.yaml

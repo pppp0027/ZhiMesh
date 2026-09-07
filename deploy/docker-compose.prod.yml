@@ -1,0 +1,48 @@
+# ZhiMesh 生产部署编排（服务器 /opt/zhimesh/docker-compose.yml）
+#
+# 与 docker/docker-compose.yml（本地开发用）的区别：
+#   - 三个服务全部引用镜像仓库的镜像，无 build 段
+#   - 不包含 redis / gateway：数据库与 Redis 是服务器上独立 docker run 的容器，
+#     入口是服务器上既有的 nginx 容器（多项目共用），均维持现状不动
+#   - 数据目录按旧部署路径原样平移挂载，配置值除 host 外无需任何修改
+#
+# 使用：复制本文件到服务器 /opt/zhimesh/docker-compose.yml，
+#       同目录放置 .env（参照 deploy/.env.example，填真实密码），
+#       然后 docker compose pull && docker compose up -d
+
+name: zhimesh
+
+services:
+  api:
+    image: ${REGISTRY}/${REGISTRY_NAMESPACE}/zhimesh-api:latest
+    restart: unless-stopped
+    # 容器内通过 host.docker.internal 访问宿主机上的 PostgreSQL / Redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9999:9999"
+    # environment 优先级高于 env_file：host 与 JVM 参数固定由编排管控，其余变量来自 .env
+    environment:
+      TZ: Asia/Shanghai
+      APP_PROFILE: prod
+      JAVA_OPTS: "-Xms512m -Xmx1536m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/opt/zhimesh/logs"
+      ZHIMESH_DB_HOST: host.docker.internal
+      ZHIMESH_REDIS_HOST: host.docker.internal
+    env_file: .env
+    volumes:
+      # 路径平移：容器内使用与旧部署完全相同的绝对路径，LOG_PATH / 堆转储路径均无需改动
+      - /opt/zhimesh/data:/opt/zhimesh/data
+      - /opt/zhimesh/logs:/opt/zhimesh/logs
+
+  user-web:
+    image: ${REGISTRY}/${REGISTRY_NAMESPACE}/zhimesh-user-web:latest
+    restart: unless-stopped
+    # 仅绑定宿主机回环地址：只允许本机 nginx 反代访问，不直接暴露公网
+    ports:
+      - "127.0.0.1:8081:80"
+
+  admin-web:
+    image: ${REGISTRY}/${REGISTRY_NAMESPACE}/zhimesh-admin-web:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8082:80"

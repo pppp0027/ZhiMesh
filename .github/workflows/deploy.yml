@@ -1,0 +1,105 @@
+name: deploy
+
+# 发版流水线：push 到云端 main 分支（任意本地分支推送到远端 main 均可触发）
+# 或在 Actions 页面手动 Run workflow
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# 同一时间只允许一条发版流水线，后来的排队等待，避免交叉部署
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # 阶段一：后端单元测试（纯单测，不依赖外部数据库/Redis）
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run backend tests
+        working-directory: server
+        run: mvn -B -ntp test
+
+  # 阶段二：构建三个镜像并推送到镜像仓库
+  # 后端镜像在 Dockerfile 内部完成 Maven 构建（含 .mvn/local-repo 本地构件）
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: ./server
+          - name: user-web
+            context: ./user-web
+          - name: admin-web
+            context: ./admin-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-${{ matrix.name }}:latest
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-${{ matrix.name }}:sha-${{ github.sha }}
+          # 利用 GitHub Actions 缓存加速依赖层（lockfile/pom 未变时命中）
+          cache-from: type=gha,scope=build-${{ matrix.name }}
+          cache-to: type=gha,scope=build-${{ matrix.name }},mode=max
+
+  # 阶段三：登录服务器拉取新镜像并滚动更新容器
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/zhimesh
+
+            # 首次运行守卫：服务器尚未放置 compose/.env 时跳过部署（只完成镜像推送）
+            if [ ! -f docker-compose.yml ]; then
+              echo "deploy: /opt/zhimesh/docker-compose.yml 未安装，跳过部署（仅完成镜像构建推送）"
+              exit 0
+            fi
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
+
+            sleep 12
+            docker compose ps
+
+            # 健康检查：任意 HTTP 状态码都算服务存活（000 = 连不上才算失败）
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:9999/ || echo 000)
+            if [ "$code" = "000" ]; then
+              echo "deploy: API 健康检查失败（:9999 无 HTTP 响应）"
+              docker compose logs --tail=80 api
+              exit 1
+            fi
+            echo "deploy: API 已启动（HTTP $code）"
