@@ -39,6 +39,12 @@ application-dev.yml
 .env
 .env.*
 !.env.example
+# 前端构建期配置（VITE_* 为公开配置，会打包进浏览器可见的 JS，非密钥）；
+# 缺失会导致 CI 镜像构建时 vite.config 读取 undefined 而失败
+!user-web/.env
+!admin-web/.env
+!admin-web/.env.development
+!admin-web/.env.production
 .npmrc
 *.local.yml
 *.local.yaml
