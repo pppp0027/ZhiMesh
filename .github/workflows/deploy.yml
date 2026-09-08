@@ -30,7 +30,11 @@ jobs:
         run: mvn -B -ntp test
 
   # 阶段二：构建三个镜像并推送到镜像仓库
-  # 后端镜像在 Dockerfile 内部完成 Maven 构建（含 .mvn/local-repo 本地构件）
+  # 前端镜像在各自 Dockerfile 内部构建（pnpm 依赖层走 gha 缓存）
+  # 后端 jar 在 runner 上构建（复用 test 阶段预热的 ~/.m2 Actions 缓存），
+  # 再用瘦运行时镜像 Dockerfile.ci 打包——Docker 内部的
+  # --mount=type=cache 不会随 gha 缓存导出，改在 Docker 里跑 Maven 会导致
+  # 每次源码变更后全量重下依赖
   build-push:
     needs: test
     runs-on: ubuntu-latest
@@ -40,24 +44,58 @@ jobs:
         include:
           - name: api
             context: ./server
+            dockerfile: server/Dockerfile.ci
           - name: user-web
             context: ./user-web
+            dockerfile: user-web/Dockerfile
           - name: admin-web
             context: ./admin-web
+            dockerfile: admin-web/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-java@v4
+        if: matrix.name == 'api'
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build backend jar
+        if: matrix.name == 'api'
+        working-directory: server
+        run: |
+          mvn -B -ntp package -DskipTests
+          # 复制到 server 根目录，避开 .dockerignore 的 **/target/ 排除
+          cp zhimesh-bootstrap/target/zhimesh-bootstrap-0.0.1-SNAPSHOT.jar ./zhimesh-api.jar
+
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+      # 跨境登录 TCR（美国 runner → 腾讯云）偶发超时，重试兜底；
+      # timeout-minutes 兜住整步，避免再出现小时级挂死
+      - name: Login to registry (with retry)
+        timeout-minutes: 10
+        env:
+          REGISTRY: ${{ secrets.REGISTRY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          for attempt in 1 2 3; do
+            if echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin; then
+              echo "registry login ok (attempt $attempt)"
+              exit 0
+            fi
+            echo "registry login attempt $attempt failed; retrying in 30s"
+            sleep 30
+          done
+          echo "registry login failed after 3 attempts"
+          exit 1
 
       - uses: docker/build-push-action@v6
+        timeout-minutes: 30
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
             ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-${{ matrix.name }}:latest

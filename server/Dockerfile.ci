@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.7
+# CI 专用运行时镜像：jar 由 GitHub runner 预先构建后复制进来（见 deploy.yml
+# 的 build-push 阶段），复用 Actions 的 ~/.m2 Maven 缓存，避免 Docker 内部
+# 每次全量重下依赖（--mount=type=cache 的内容不会随 gha 缓存导出）。
+# 本地构建仍使用同目录下的 Dockerfile（内部多阶段 Maven 构建）。
+FROM eclipse-temurin:17-jre
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=Asia/Shanghai \
+    APP_PROFILE=prod \
+    JAVA_OPTS="-Xms512m -Xmx1536m -XX:+HeapDumpOnOutOfMemoryError"
+
+WORKDIR /data/app
+RUN mkdir -p /data/zhimesh /data/zhimesh-logs
+
+# jar 由流水线在构建前复制到 server/ 根目录（绕开 .dockerignore 的 target/ 排除）
+COPY zhimesh-api.jar ./zhimesh-api.jar
+
+EXPOSE 9999
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /data/app/zhimesh-api.jar --spring.profiles.active=$APP_PROFILE"]
