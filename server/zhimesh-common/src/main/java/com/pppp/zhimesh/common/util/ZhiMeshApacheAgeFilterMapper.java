@@ -9,6 +9,7 @@ import dev.langchain4j.store.embedding.filter.logical.Or;
 
 import java.util.AbstractMap.SimpleEntry;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -23,6 +24,15 @@ abstract class ZhiMeshApacheAgeFilterMapper {
     public void setAlias(String alias) {
         this.alias = alias;
     }
+
+    /**
+     * Cypher parameter bindings emitted while mapping, keyed by placeholder
+     * name (without the leading "$"). Filled only by comparisons that are
+     * parameterized (see {@link #mapEqual}).
+     */
+    private final Map<String, Object> parameterArgs = new LinkedHashMap<>();
+
+    private int parameterCounter = 0;
 
     static final Map<Class<?>, String> SQL_TYPE_MAP = Stream.of(
                     new SimpleEntry<>(Integer.class, "int"),
@@ -68,8 +78,32 @@ abstract class ZhiMeshApacheAgeFilterMapper {
 
     private String mapEqual(IsEqualTo isEqualTo) {
         String key = formatKey(isEqualTo.key(), isEqualTo.comparisonValue().getClass());
-        return format("%s is not null and %s = %s", key, key,
-                formatValue(isEqualTo.comparisonValue()));
+        Object value = isEqualTo.comparisonValue();
+        // Parameterize value types that can carry quote-based injection. Numeric
+        // values stay inlined: the shared JsonUtil serializes boxed Long as a
+        // JSON string, which would break agtype numeric comparison as a parameter.
+        if (value instanceof String || value instanceof UUID || value instanceof Boolean) {
+            String placeholder = registerParameter(isEqualTo.key(), value);
+            return format("%s is not null and %s = %s", key, key, placeholder);
+        }
+        return format("%s is not null and %s = %s", key, key, formatValue(value));
+    }
+
+    /**
+     * Registers a comparison value as a Cypher parameter instead of an inlined
+     * literal. Placeholder names are counter-based, so repeated keys never
+     * collide and clause/args passes stay deterministic for one filter tree.
+     */
+    private String registerParameter(String key, Object value) {
+        String safeKey = key.replaceAll("[^a-zA-Z0-9_]", "_");
+        String aliasPrefix = alias == null || alias.isBlank() ? "" : alias + "_";
+        String name = aliasPrefix + "metadata_" + safeKey + "_" + parameterCounter++;
+        parameterArgs.put(name, value);
+        return "$" + name;
+    }
+
+    Map<String, Object> getParameterArgs() {
+        return parameterArgs;
     }
 
     private String mapNotEqual(IsNotEqualTo isNotEqualTo) {

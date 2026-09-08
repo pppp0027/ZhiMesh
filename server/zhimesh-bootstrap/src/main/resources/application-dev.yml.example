@@ -76,9 +76,9 @@ zhimesh:
   backend-url: http://localhost:1002/api
   indexing:
     canonical-chunk-enabled: ${ZHIMESH_CANONICAL_CHUNK_ENABLED:true}
-    graph-concurrency: ${ZHIMESH_INDEXING_GRAPH_CONCURRENCY:1}
-    graph-segment-concurrency: ${ZHIMESH_GRAPH_SEGMENT_CONCURRENCY:2}
-    graph-request-concurrency: ${ZHIMESH_GRAPH_REQUEST_CONCURRENCY:2}
+    graph-concurrency: ${ZHIMESH_INDEXING_GRAPH_CONCURRENCY:2}
+    graph-segment-concurrency: ${ZHIMESH_GRAPH_SEGMENT_CONCURRENCY:4}
+    graph-request-concurrency: ${ZHIMESH_GRAPH_REQUEST_CONCURRENCY:4}
     graph-request-timeout-seconds: ${ZHIMESH_GRAPH_REQUEST_TIMEOUT_SECONDS:120}
     graph-request-max-attempts: ${ZHIMESH_GRAPH_REQUEST_MAX_ATTEMPTS:3}
     graph-retry-initial-backoff-ms: ${ZHIMESH_GRAPH_RETRY_INITIAL_BACKOFF_MS:2000}

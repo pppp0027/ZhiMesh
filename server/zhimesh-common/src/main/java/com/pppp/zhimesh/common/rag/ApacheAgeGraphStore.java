@@ -21,6 +21,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import javax.sql.DataSource;
+
 import static com.pppp.zhimesh.common.enums.ErrorEnum.B_DB_ERROR;
 import static dev.langchain4j.internal.Utils.getOrDefault;
 import static dev.langchain4j.internal.ValidationUtils.*;
@@ -35,6 +37,14 @@ public class ApacheAgeGraphStore implements GraphStore {
     private final String password;
     private final String database;
     private final String graph;
+    /**
+     * Optional dedicated pooled data source. When present, every statement
+     * borrows a pooled connection whose AGE session setup (agtype type
+     * registration, LOAD 'age', search_path) was done once at physical
+     * connection creation; when null, the legacy per-statement driver
+     * connection path is used.
+     */
+    private final DataSource dataSource;
 
     @Builder
     public ApacheAgeGraphStore(String host,
@@ -44,12 +54,14 @@ public class ApacheAgeGraphStore implements GraphStore {
                                String database,
                                String graphName,
                                Boolean createGraph,
-                               Boolean dropGraphFirst) {
+                               Boolean dropGraphFirst,
+                               DataSource dataSource) {
         this.host = ensureNotBlank(host, "host");
         this.port = ensureGreaterThanZero(port, "port");
         this.user = ensureNotBlank(user, "user");
         this.password = ensureNotBlank(password, "password");
         this.database = ensureNotBlank(database, "database");
+        this.dataSource = dataSource;
         if (!graphName.matches("^[a-zA-Z0-9_]+$")) {
             throw new IllegalArgumentException("graphName must contain only alphanumeric characters and underscores");
         }
@@ -90,7 +102,7 @@ public class ApacheAgeGraphStore implements GraphStore {
                                 description:$description,metadata:$metadata})
                         $$, ?) as (a agtype);
                         """.formatted(graph, StringUtils.isNotBlank(label) ? ":" + label : "");
-                log.info("addVertex prepareSql:{}", prepareSql);
+                log.debug("addVertex prepareSql:{}", prepareSql);
                 try (PreparedStatement upsertStmt = connection.prepareStatement(prepareSql)) {
                     Map<String, Object> args = new HashMap<>();
                     args.put("name", vertex.getName());
@@ -119,7 +131,7 @@ public class ApacheAgeGraphStore implements GraphStore {
 
     @Override
     public boolean addVertex(GraphVertex vertex) {
-        log.info("Add vertex:{}", vertex);
+        log.debug("Add vertex:{}", vertex);
         ensureNotNull(vertex, vertex.toString());
         ensureNotEmpty(vertex.getMetadata(), "Metadata");
         return addVertexes(List.of(vertex));
@@ -133,7 +145,7 @@ public class ApacheAgeGraphStore implements GraphStore {
      */
     @Override
     public GraphVertex updateVertex(GraphVertexUpdateInfo updateInfo) {
-        log.info("Update vertex:{}", updateInfo.getNewData());
+        log.debug("Update vertex:{}", updateInfo.getNewData());
         ensureNotNull(updateInfo.getMetadataFilter(), "Metadata filter");
         GraphVertex newData = updateInfo.getNewData();
         ensureNotNull(newData, newData.toString());
@@ -155,13 +167,13 @@ public class ApacheAgeGraphStore implements GraphStore {
                        limit 1
                     $$, ?) as (v agtype);
                     """.formatted(graph, whereClause, setClause);
-            log.info("updateVertex prepareSql:{}", prepareSql);
+            log.debug("updateVertex prepareSql:{}", prepareSql);
             try (PreparedStatement stmt = connection.prepareStatement(prepareSql)) {
                 Map<String, Object> whereArgs = GraphStoreUtil.buildWhereArgs(whereCondition, "v");
                 Map<String, Object> setArgs = GraphStoreUtil.buildSetArgs(updateInfo.getNewData().getMetadata());
                 whereArgs.putAll(setArgs);
                 whereArgs.putAll(Map.of("new_text_segment_id", newData.getTextSegmentId(), "new_description", newData.getDescription()));
-                log.info("updateVertex args:{}", whereArgs);
+                log.debug("updateVertex args:{}", whereArgs);
 
                 Agtype agtype = new Agtype();
                 agtype.setValue(JsonUtil.toJson(whereArgs));
@@ -264,7 +276,7 @@ public class ApacheAgeGraphStore implements GraphStore {
                         return v
                     $$) as (v agtype);
                     """.formatted(graph, Joiner.on(",").join(longIds));
-            log.info("getVertices query:{}", query);
+            log.debug("getVertices query:{}", query);
             try (Statement stmt = connection.createStatement()) {
                 ResultSet resultSet = stmt.executeQuery(query);
                 return getVerticesFromResultSet(resultSet);
@@ -279,25 +291,37 @@ public class ApacheAgeGraphStore implements GraphStore {
      * @param search
      * @return
      */
+    /**
+     * Package-private so the Cypher shape (filter before sort, fence, limit) can
+     * be asserted in unit tests without a database.
+     */
+    static String buildSearchVerticesSql(String graph, GraphVertexSearch search) {
+        String label = search.getLabel();
+        String whereClause = GraphStoreUtil.buildWhereClause(search, "v");
+        // WHERE must come before ORDER BY: filter/sort commute on the unique
+        // id(v) total order, so filtering first returns the identical set and
+        // lets PG stop early on the __id__ descending scan instead of sorting
+        // the whole shared graph per KB.
+        return """
+                select * from cypher('%s', $$
+                    match (%s)
+                    where %s and id(v) < %d
+                    with v
+                    order by id(v) desc
+                    return v
+                    limit %d
+                $$,?) as (v agtype);
+                """.formatted(graph, StringUtils.isNotBlank(label) ? "v:" + label : "v", whereClause, search.getMaxId(), search.getLimit());
+    }
+
     @Override
     public List<GraphVertex> searchVertices(GraphVertexSearch search) {
         try (Connection connection = setupConnection()) {
-            String label = search.getLabel();
-            String whereClause = GraphStoreUtil.buildWhereClause(search, "v");
-            String query = """
-                    select * from cypher('%s', $$
-                        match (%s)
-                        with v
-                        order by id(v) desc
-                        where %s and id(v) < %d
-                        return v
-                        limit %d
-                    $$,?) as (v agtype);
-                    """.formatted(graph, StringUtils.isNotBlank(label) ? "v:" + label : "v", whereClause, search.getMaxId(), search.getLimit());
-            log.info("SearchVertices prepareSql:{}", query);
+            String query = buildSearchVerticesSql(graph, search);
+            log.debug("SearchVertices prepareSql:{}", query);
             try (PreparedStatement selectStmt = connection.prepareStatement(query)) {
                 Map<String, Object> whereArgs = GraphStoreUtil.buildWhereArgs(search, "v");
-                log.info("getVertex args:{}", whereArgs);
+                log.debug("getVertex args:{}", whereArgs);
                 Agtype agtype = new Agtype();
                 agtype.setValue(JsonUtil.toJson(whereArgs));
                 selectStmt.setObject(1, agtype);
@@ -321,7 +345,7 @@ public class ApacheAgeGraphStore implements GraphStore {
                         return v1,e,v2
                     $$) as (v1 agtype,e agtype,v2 agtype);
                     """.formatted(graph, Joiner.on(",").join(longIds));
-            log.info("getEdges query:{}", query);
+            log.debug("getEdges query:{}", query);
             try (Statement stmt = connection.createStatement()) {
                 ResultSet resultSet = stmt.executeQuery(query);
                 return getEdgesFromResultSet(resultSet);
@@ -332,36 +356,45 @@ public class ApacheAgeGraphStore implements GraphStore {
         }
     }
 
+    /**
+     * Package-private twin of {@link #buildSearchVerticesSql} for edge searches.
+     */
+    static String buildSearchEdgesSql(String graph, GraphEdgeSearch search) {
+        String filterClause1 = GraphStoreUtil.buildWhereClause(search.getSource(), "v1");
+        String filterClause2 = GraphStoreUtil.buildWhereClause(search.getTarget(), "v2");
+        String filterClause3 = GraphStoreUtil.buildWhereClause(search.getEdge(), "e");
+        String filterClause = filterClause1;
+        if (StringUtils.isNotBlank(filterClause2)) {
+            filterClause += StringUtils.isNotBlank(filterClause) ? " and " + filterClause2 : filterClause2;
+        }
+        if (StringUtils.isNotBlank(filterClause3)) {
+            filterClause += StringUtils.isNotBlank(filterClause) ? " and " + filterClause3 : filterClause3;
+        }
+        // Same reorder as searchVertices: filter first on the id(e) total
+        // order, sort only the survivors, identical result set.
+        return """
+                select * from cypher('%s', $$
+                    match (v1)-[e]-(v2)
+                    where %s and id(e) < %d
+                    with v1,e,v2
+                    order by id(e) desc
+                    return v1,e,v2
+                    limit %d
+                $$,?) as (v1 agtype,e agtype,v2 agtype);
+                """.formatted(graph, filterClause, search.getMaxId(), search.getLimit());
+    }
+
     @Override
     public List<Triple<GraphVertex, GraphEdge, GraphVertex>> searchEdges(GraphEdgeSearch search) {
         try (Connection connection = setupConnection()) {
-            String filterClause1 = GraphStoreUtil.buildWhereClause(search.getSource(), "v1");
-            String filterClause2 = GraphStoreUtil.buildWhereClause(search.getTarget(), "v2");
-            String filterClause3 = GraphStoreUtil.buildWhereClause(search.getEdge(), "e");
-            String filterClause = filterClause1;
-            if (StringUtils.isNotBlank(filterClause2)) {
-                filterClause += StringUtils.isNotBlank(filterClause) ? " and " + filterClause2 : filterClause2;
-            }
-            if (StringUtils.isNotBlank(filterClause3)) {
-                filterClause += StringUtils.isNotBlank(filterClause) ? " and " + filterClause3 : filterClause3;
-            }
-            String query = """
-                    select * from cypher('%s', $$
-                        match (v1)-[e]-(v2)
-                        with v1,e,v2
-                        order by id(e) desc
-                        where %s and id(e) < %d
-                        return v1,e,v2
-                        limit %d
-                    $$,?) as (v1 agtype,e agtype,v2 agtype);
-                    """.formatted(graph, filterClause, search.getMaxId(), search.getLimit());
-            log.info("Search edges prepareSql:\n{}", query);
+            String query = buildSearchEdgesSql(graph, search);
+            log.debug("Search edges prepareSql:\n{}", query);
             try (PreparedStatement selectStmt = connection.prepareStatement(query)) {
                 Map<String, Object> whereArgs = buildEdgeWhereArgs(search);
                 Agtype agtype = new Agtype();
                 agtype.setValue(JsonUtil.toJson(whereArgs));
                 selectStmt.setObject(1, agtype);
-                log.info("Search edges args:{}", agtype);
+                log.debug("Search edges args:{}", agtype);
                 ResultSet resultSet = selectStmt.executeQuery();
                 return getEdgesFromResultSet(resultSet);
             }
@@ -405,7 +438,7 @@ public class ApacheAgeGraphStore implements GraphStore {
                       return v1,e,v2
                     $$, ?) as (v1 agtype,e agtype,v2 agtype);
                     """.formatted(graph, whereClause1 + " and " + whereClause2);
-            log.info("Add edge prepareSql:{}", prepareSql);
+            log.debug("Add edge prepareSql:{}", prepareSql);
             try (PreparedStatement preparedStatement = connection.prepareStatement(prepareSql)) {
                 Map<String, Object> whereArgs1 = GraphStoreUtil.buildWhereArgs(addInfo.getSourceFilter(), "v1");
                 Map<String, Object> whereArgs2 = GraphStoreUtil.buildWhereArgs(addInfo.getTargetFilter(), "v2");
@@ -511,7 +544,7 @@ public class ApacheAgeGraphStore implements GraphStore {
 
     @Override
     public Triple<GraphVertex, GraphEdge, GraphVertex> updateEdge(GraphEdgeEditInfo edgeEditInfo) {
-        log.info("Update edge:{}", edgeEditInfo);
+        log.debug("Update edge:{}", edgeEditInfo);
         ensureNotNull(edgeEditInfo.getEdge(), "Graph edit info");
         GraphEdge newData = edgeEditInfo.getEdge();
         try (Connection connection = setupConnection()) {
@@ -526,7 +559,7 @@ public class ApacheAgeGraphStore implements GraphStore {
                        return v1,e,v2
                     $$, ?) as (v1 agtype,e agtype,v2 agtype);
                     """.formatted(graph, whereClause1 + " and " + whereClause2, setClause);
-            log.info("updateEdge prepareSql:{}", prepareSql);
+            log.debug("updateEdge prepareSql:{}", prepareSql);
             try (PreparedStatement upsertStmt = connection.prepareStatement(prepareSql)) {
                 Map<String, Object> whereArgs1 = GraphStoreUtil.buildWhereArgs(edgeEditInfo.getSourceFilter(), "v1");
                 Map<String, Object> whereArgs2 = GraphStoreUtil.buildWhereArgs(edgeEditInfo.getTargetFilter(), "v2");
@@ -616,7 +649,7 @@ public class ApacheAgeGraphStore implements GraphStore {
                       where %s %s
                     $$,?) as (v agtype);
                     """.formatted(graph, whereClause, includeEdges ? "DETACH DELETE v" : "DELETE v");
-            log.info("deleteVertices prepareSql:{}", prepareSql);
+            log.debug("deleteVertices prepareSql:{}", prepareSql);
             try (PreparedStatement upsertStmt = connection.prepareStatement(prepareSql)) {
                 Map<String, Object> whereArgs = GraphStoreUtil.buildWhereArgs(filter, "v");
                 Agtype agtype = new Agtype();
@@ -647,7 +680,7 @@ public class ApacheAgeGraphStore implements GraphStore {
                         delete r
                     $$,?) as (r agtype);
                     """.formatted(graph, whereClause);
-            log.info("deleteEdges prepareSql:{}", prepareSql);
+            log.debug("deleteEdges prepareSql:{}", prepareSql);
             try (PreparedStatement upsertStmt = connection.prepareStatement(prepareSql)) {
                 Map<String, Object> whereArgs = GraphStoreUtil.buildWhereArgs(filter, "r");
                 Agtype agtype = new Agtype();
@@ -728,7 +761,7 @@ public class ApacheAgeGraphStore implements GraphStore {
     }
 
     private void executeDeleteByIds(String elementType, String query) {
-        log.info("Delete graph {} by ids query:{}", elementType, query);
+        log.debug("Delete graph {} by ids query:{}", elementType, query);
         try (Connection connection = setupConnection();
              Statement statement = connection.createStatement()) {
             statement.execute(query);
@@ -874,7 +907,20 @@ public class ApacheAgeGraphStore implements GraphStore {
     }
 
     @SuppressWarnings("java:S2095")
-    private Connection setupConnection() throws SQLException {
+    Connection setupConnection() throws SQLException {
+        if (dataSource != null) {
+            return dataSource.getConnection();
+        }
+        return openLegacyConnection();
+    }
+
+    /**
+     * Legacy fallback path used when pooling is disabled: open, initialize,
+     * and return a brand-new driver connection for a single statement. The
+     * AGE session setup repeated here used to run for every Cypher statement.
+     */
+    @SuppressWarnings("java:S2095")
+    private Connection openLegacyConnection() throws SQLException {
         PgConnection connection = DriverManager.getConnection(
                 String.format("jdbc:postgresql://%s:%s/%s", host, port, database),
                 user,
@@ -886,5 +932,19 @@ public class ApacheAgeGraphStore implements GraphStore {
             stmt.execute("SET search_path = ag_catalog, \"$user\", public;");
         }
         return connection;
+    }
+
+    /**
+     * Releases the pooled data source, if any. Invoked by Spring on context
+     * shutdown; a no-op when the legacy non-pooled path is configured.
+     */
+    public void close() {
+        if (dataSource instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                log.warn("Close Apache AGE graph store data source failed", e);
+            }
+        }
     }
 }

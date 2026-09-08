@@ -65,9 +65,13 @@ zhimesh:
     demo-register-enabled: ${ZHIMESH_DEMO_REGISTER_ENABLED:false}
   indexing:
     canonical-chunk-enabled: ${ZHIMESH_CANONICAL_CHUNK_ENABLED:true}
-    graph-concurrency: ${ZHIMESH_INDEXING_GRAPH_CONCURRENCY:1}
-    graph-segment-concurrency: ${ZHIMESH_GRAPH_SEGMENT_CONCURRENCY:2}
-    graph-request-concurrency: ${ZHIMESH_GRAPH_REQUEST_CONCURRENCY:2}
+    # The three graph concurrency knobs must move together: effective extraction
+    # parallelism is the minimum of the document-level, segment and request caps.
+    # If the LLM provider starts rate limiting (429 retries in logs), lower
+    # graph-request-concurrency first via env.
+    graph-concurrency: ${ZHIMESH_INDEXING_GRAPH_CONCURRENCY:2}
+    graph-segment-concurrency: ${ZHIMESH_GRAPH_SEGMENT_CONCURRENCY:4}
+    graph-request-concurrency: ${ZHIMESH_GRAPH_REQUEST_CONCURRENCY:4}
     graph-request-timeout-seconds: ${ZHIMESH_GRAPH_REQUEST_TIMEOUT_SECONDS:120}
     graph-request-max-attempts: ${ZHIMESH_GRAPH_REQUEST_MAX_ATTEMPTS:3}
     graph-retry-initial-backoff-ms: ${ZHIMESH_GRAPH_RETRY_INITIAL_BACKOFF_MS:2000}
@@ -123,6 +127,14 @@ zhimesh:
       queue-capacity: ${ZHIMESH_IMAGES_QUEUE_CAPACITY:10}
     task-scheduler-pool-size: ${ZHIMESH_TASK_SCHEDULER_POOL_SIZE:2}
     lock-renew-scheduler-pool-size: ${ZHIMESH_LOCK_RENEW_SCHEDULER_POOL_SIZE:2}
+  graph-store:
+    # Dedicated Apache AGE connection pool (separate from the MyBatis datasource).
+    # false restores the legacy per-statement driver connections as a rollback switch.
+    pool-enabled: ${ZHIMESH_GRAPH_STORE_POOL_ENABLED:true}
+    pool-max-size: ${ZHIMESH_GRAPH_STORE_POOL_MAX_SIZE:4}
+    pool-min-idle: ${ZHIMESH_GRAPH_STORE_POOL_MIN_IDLE:1}
+    pool-connection-timeout-ms: ${ZHIMESH_GRAPH_STORE_POOL_CONNECTION_TIMEOUT_MS:8000}
+    pool-max-lifetime-ms: ${ZHIMESH_GRAPH_STORE_POOL_MAX_LIFETIME_MS:1800000}
   retrieval:
     concurrency: ${ZHIMESH_RAG_RETRIEVAL_CONCURRENCY:4}
     queue-capacity: ${ZHIMESH_RAG_RETRIEVAL_QUEUE_CAPACITY:8}

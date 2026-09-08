@@ -36,6 +36,9 @@ public class ZhiMeshProperties {
 
     private Retrieval retrieval = new Retrieval();
 
+    /** Apache AGE graph-store connection pool; replaces per-statement driver connections. */
+    private GraphStore graphStore = new GraphStore();
+
     /** Bounded application executors tuned for a 4-core/4-GB deployment. */
     private AsyncExecution async = new AsyncExecution();
 
@@ -97,11 +100,11 @@ public class ZhiMeshProperties {
         /** Disabled in plain unit construction; application.yml enables shared canonical chunks. */
         private boolean canonicalChunkEnabled = false;
         /** Concurrent document-level graph extraction requests. */
-        private int graphConcurrency = 1;
+        private int graphConcurrency = 2;
         /** Maximum graph segments extracted in parallel inside one document. */
-        private int graphSegmentConcurrency = 2;
+        private int graphSegmentConcurrency = 4;
         /** Process-wide cap for actual graph-extraction LLM HTTP requests. */
-        private int graphRequestConcurrency = 2;
+        private int graphRequestConcurrency = 4;
         /** A graph JSON response can be slower than an interactive chat response. */
         private long graphRequestTimeoutSeconds = 120L;
         /** Total attempts, including the first request, for timeout/rate-limit failures. */
@@ -182,6 +185,25 @@ public class ZhiMeshProperties {
         private int minActiveModels = 10;
         private int catchUpAfterHours = 26;
         private List<String> protectedModels = new ArrayList<>();
+    }
+
+    @Data
+    public static class GraphStore {
+        /**
+         * Emergency rollback switch: false restores the legacy per-statement
+         * DriverManager connection path (no pooling, one fresh connection per
+         * Cypher statement).
+         */
+        private boolean poolEnabled = true;
+        /**
+         * Pool ceiling. Graph writes are globally serialized (one connection)
+         * and retrieval graph-route concurrency is bounded by the retrieval
+         * executor, so a small pool covers the peak with headroom.
+         */
+        private int poolMaxSize = 4;
+        private int poolMinIdle = 1;
+        private long poolConnectionTimeoutMs = 8000;
+        private long poolMaxLifetimeMs = 1800000;
     }
 
     @Data

@@ -12,20 +12,30 @@ public class GraphStoreUtil {
     private GraphStoreUtil() {
     }
 
-    public static String buildWhereClause(GraphSearchCondition search, String alias) {
+    /**
+     * WHERE clause plus the matching Cypher parameter bindings for one search
+     * condition, built in a single pass so placeholders and values can never
+     * drift apart. Both {@link #buildWhereClause} and {@link #buildWhereArgs}
+     * delegate here; the pass is deterministic for one filter tree, so the two
+     * delegating calls always agree on placeholder names.
+     */
+    public record WhereClauseAndArgs(String clause, Map<String, Object> args) {
+    }
+
+    public static WhereClauseAndArgs buildWhere(GraphSearchCondition search, String alias) {
         if (null == search) {
-            return StringUtils.EMPTY;
+            return new WhereClauseAndArgs(StringUtils.EMPTY, Collections.emptyMap());
         }
         StringBuilder whereClause = new StringBuilder();
+        Map<String, Object> result = new HashMap<>();
         if (CollectionUtils.isNotEmpty(search.getNames())) {
             List<String> nameArgs = new ArrayList<>();
             for (int i = 0; i < search.getNames().size(); i++) {
                 nameArgs.add("$" + alias + "_name_" + i);
+                result.put(alias + "_name_" + i, search.getNames().get(i));
             }
             whereClause.append(String.format("(%s.name in [%s])", alias, String.join(",", nameArgs)));
         }
-//Metadata directly concatenated as string
-        //Metadata直接拼接字符串
         if (null != search.getMetadataFilter()) {
             if (!whereClause.isEmpty()) {
                 whereClause.append(" and ");
@@ -34,22 +44,18 @@ public class GraphStoreUtil {
             adiJSONFilterMapper.setAlias(alias);
             String metadataWhereClause = adiJSONFilterMapper.map(search.getMetadataFilter());
             whereClause.append(metadataWhereClause);
+            result.putAll(adiJSONFilterMapper.getParameterArgs());
         }
 
-        return whereClause.toString();
+        return new WhereClauseAndArgs(whereClause.toString(), result);
+    }
+
+    public static String buildWhereClause(GraphSearchCondition search, String alias) {
+        return buildWhere(search, alias).clause();
     }
 
     public static Map<String, Object> buildWhereArgs(GraphSearchCondition search, String alias) {
-        if (null == search) {
-            return Collections.emptyMap();
-        }
-        Map<String, Object> result = new HashMap<>();
-        if (CollectionUtils.isNotEmpty(search.getNames())) {
-            for (int i = 0; i < search.getNames().size(); i++) {
-                result.put(alias + "_name_" + i, search.getNames().get(i));
-            }
-        }
-        return result;
+        return buildWhere(search, alias).args();
     }
 
     public static String buildSetClause(Map<String, Object> metadata) {
