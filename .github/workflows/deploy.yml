@@ -92,7 +92,8 @@ jobs:
           exit 1
 
       - uses: docker/build-push-action@v6
-        timeout-minutes: 30
+        # 跨境推 TCR 慢时给足余量；构建本身在 runner 上完成，只有层推送慢
+        timeout-minutes: 90
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
