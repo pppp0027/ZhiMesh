@@ -30,49 +30,35 @@ jobs:
         run: mvn -B -ntp test
 
   # 阶段二：构建三个镜像并推送到镜像仓库
-  # 前端镜像在各自 Dockerfile 内部构建（pnpm 依赖层走 gha 缓存）
-  # 后端 jar 在 runner 上构建（复用 test 阶段预热的 ~/.m2 Actions 缓存），
-  # 再用瘦运行时镜像 Dockerfile.ci 打包——Docker 内部的
-  # --mount=type=cache 不会随 gha 缓存导出，改在 Docker 里跑 Maven 会导致
-  # 每次源码变更后全量重下依赖
+  # 在自建 runner（腾讯云服务器）上执行：构建与推镜像全部国内完成，彻底
+  # 绕开美国 runner 推 TCR 的跨境链路。api 使用多阶段 Dockerfile 在 Docker
+  # 内构建 Maven——runner 上 builder 容器持久存在，--mount=type=cache 的
+  # 依赖缓存跨次构建复用（ephemeral GitHub runner 做不到这点，当时才引入
+  # Dockerfile.ci 方案，保留作 GitHub-hosted 回退路径）。
   build-push:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: api
             context: ./server
-            dockerfile: server/Dockerfile.ci
           - name: user-web
             context: ./user-web
-            dockerfile: user-web/Dockerfile
           - name: admin-web
             context: ./admin-web
-            dockerfile: admin-web/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
-        if: matrix.name == 'api'
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-
-      - name: Build backend jar
-        if: matrix.name == 'api'
-        working-directory: server
-        run: |
-          mvn -B -ntp package -DskipTests
-          # 复制到 server 根目录，避开 .dockerignore 的 **/target/ 排除
-          cp zhimesh-bootstrap/target/zhimesh-bootstrap-0.0.1-SNAPSHOT.jar ./zhimesh-api.jar
-
+      # 固定 builder 名称：容器在 runner 主机上持久存在，层缓存与
+      # Maven/pnpm 的 cache mount 跨次构建复用
       - uses: docker/setup-buildx-action@v3
+        with:
+          name: zhimesh-builder
+          driver: docker-container
 
-      # 跨境登录 TCR（美国 runner → 腾讯云）偶发超时，重试兜底；
-      # timeout-minutes 兜住整步，避免再出现小时级挂死
+      # 国内→国内登录 TCR，保留重试兜底
       - name: Login to registry (with retry)
         timeout-minutes: 10
         env:
@@ -92,53 +78,42 @@ jobs:
           exit 1
 
       - uses: docker/build-push-action@v6
-        # 跨境推 TCR 慢时给足余量；构建本身在 runner 上完成，只有层推送慢
-        timeout-minutes: 90
+        timeout-minutes: 60
         with:
           context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
             ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-${{ matrix.name }}:latest
             ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-${{ matrix.name }}:sha-${{ github.sha }}
-          # 利用 GitHub Actions 缓存加速依赖层（lockfile/pom 未变时命中）
-          cache-from: type=gha,scope=build-${{ matrix.name }}
-          cache-to: type=gha,scope=build-${{ matrix.name }},mode=max
 
-  # 阶段三：登录服务器拉取新镜像并滚动更新容器
+  # 阶段三：拉取新镜像并滚动更新容器（runner 就在部署机上，直接本机执行）
   deploy:
     needs: build-push
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          port: ${{ secrets.SSH_PORT }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            set -e
-            cd /opt/zhimesh
+      - name: Deploy containers
+        run: |
+          set -e
+          cd /opt/zhimesh
 
-            # 首次运行守卫：服务器尚未放置 compose/.env 时跳过部署（只完成镜像推送）
-            if [ ! -f docker-compose.yml ]; then
-              echo "deploy: /opt/zhimesh/docker-compose.yml 未安装，跳过部署（仅完成镜像构建推送）"
-              exit 0
-            fi
+          # 首次运行守卫：服务器尚未放置 compose/.env 时跳过部署（只完成镜像推送）
+          if [ ! -f docker-compose.yml ]; then
+            echo "deploy: /opt/zhimesh/docker-compose.yml 未安装，跳过部署（仅完成镜像构建推送）"
+            exit 0
+          fi
 
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker image prune -f
+          docker compose pull
+          docker compose up -d --remove-orphans
+          docker image prune -f
 
-            sleep 12
-            docker compose ps
+          sleep 12
+          docker compose ps
 
-            # 健康检查：任意 HTTP 状态码都算服务存活（000 = 连不上才算失败）
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:9999/ || echo 000)
-            if [ "$code" = "000" ]; then
-              echo "deploy: API 健康检查失败（:9999 无 HTTP 响应）"
-              docker compose logs --tail=80 api
-              exit 1
-            fi
-            echo "deploy: API 已启动（HTTP $code）"
+          # 健康检查：任意 HTTP 状态码都算服务存活（000 = 连不上才算失败）
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:9999/ || echo 000)
+          if [ "$code" = "000" ]; then
+            echo "deploy: API 健康检查失败（:9999 无 HTTP 响应）"
+            docker compose logs --tail=80 api
+            exit 1
+          fi
+          echo "deploy: API 已启动（HTTP $code）"
