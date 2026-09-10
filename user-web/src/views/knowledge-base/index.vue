@@ -183,7 +183,7 @@ async function handleSubmit() {
 }
 
 async function loadMoreMessage(callback?: Function) {
-  if (kbStore.loadingRecords.get(currKbUuid) || loadedAll.value)
+  if (currKbUuid === 'default' || kbStore.loadingRecords.get(currKbUuid) || loadedAll.value)
     return
 
   loaddingBar.start()
@@ -399,7 +399,11 @@ async function firstLoad() {
 watch(
   () => authStore.token,
   () => {
-    if (authStore.token) {
+    // 'default' is only a route placeholder. The sider list resolves the real
+    // kb uuid and router.replace re-creates this component, so fetching here
+    // would only send a doomed qa/search?kbUuid=default request that pops an
+    // error toast on first entry.
+    if (authStore.token && currKbUuid !== 'default') {
       console.log('kb first load')
       firstLoad()
     }
