@@ -1,6 +1,6 @@
 # 数据库初始化与迁移
 
-数据库脚本以当前 Java 实体、Mapper、运行时向量表创建逻辑，以及 `001`～`035` 迁移后的目标结构为准。完整结构说明见 [`docs/database/schema.zh-CN.md`](../../docs/database/schema.zh-CN.md)。
+数据库脚本以当前 Java 实体、Mapper、运行时向量表创建逻辑，以及 `001`～`043` 迁移后的目标结构为准。完整结构说明见 [`docs/database/schema.zh-CN.md`](../../docs/database/schema.zh-CN.md)。
 
 ## 依赖
 
@@ -77,6 +77,13 @@ psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d zhimesh -f verify_schema.sql
 | 034 | 按失败节点/成功终点节点修复历史工作流悬挂状态，同步中断节点，并增加运行心跳索引 |
 | 035 | 扩展模型 ID 长度与平台内唯一约束，新增 OpenRouter 模型状态表和同步审计表 |
 | 036 | 工作流取消状态、历史分页与节点详情查询索引 |
+| 037 | 图元素贡献来源追踪 |
+| 038 | 图元素语义标识与结构化抽取贡献 |
+| 039 | 团队表与知识库三级归属（个人/团队/企业）字段 |
+| 040 | 下线 is_public 公开列：可见性按归属推导，企业库新增 company_scope（STAFF 全员/EXECUTIVE 管理层），存量公开个人库升级为 COMPANY/STAFF |
+| 041 | 角色对话 Agentic 改造：adi_character 新增 is_agentic 开关，新增 adi_character_message_tool_call 工具调用轨迹表（工具名、入参、结果摘要、耗时、成败与轮内序号） |
+| 042 | 角色对话 Agentic 模式成为产品默认：存量角色全部开启，is_agentic 列默认值翻转为 true（未绑知识库、无可运行工作流的角色无工具可调，行为不受影响） |
+| 043 | mcp-servers 演示三件套（人事 / IT 服务台 / 财务报销助手）由用户自建角色转为系统预设（adi_character_preset，is_system=true，沿用原角色 uuid 作幂等键），并删除原用户角色及其会话、消息与工具调用痕迹 |
 
 BM25 上线时必须先依次执行 `026`、`027`、`028`，再启动设置了 `ZHIMESH_BM25_ENABLED=true` 的应用。已有普通知识库可调用 `POST /knowledge-base/indexing/{uuid}?indexTypes=fulltext` 批量回填；系统知识库通过 `POST /admin/kb/items/indexing-list` 并传入 `indexTypes=fulltext` 回填。在某个知识库的全部条目都具备当前 FULLTEXT 构建前，在线请求会自动保持 Vector/Graph 双路检索。
 

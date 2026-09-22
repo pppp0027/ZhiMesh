@@ -1,0 +1,12 @@
+{
+  "name": "zhimesh-mcp-servers",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ZhiMesh 领域 MCP mock server：人事系统（zhimesh-hr）与 IT 服务台（zhimesh-helpdesk），stdio 传输",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "ssh2": "^1.17.0",
+    "zod": "^3.25.0"
+  }
+}

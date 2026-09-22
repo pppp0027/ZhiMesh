@@ -1,5 +1,5 @@
 -- Read-only schema verification for the current application version.
--- Run after all_ddl.sql or after incremental migrations 001 through 035.
+-- Run after all_ddl.sql or after incremental migrations 001 through 041.
 
 WITH required_tables(table_name) AS (
     VALUES
@@ -10,6 +10,7 @@ WITH required_tables(table_name) AS (
         ('adi_character_message_ref_graph'),
         ('adi_character_message_ref_memory_embedding'),
         ('adi_character_message_ref_bm25'),
+        ('adi_character_message_tool_call'),
         ('adi_character_preset'),
         ('adi_character_preset_rel'),
         ('adi_conversation'),
@@ -41,6 +42,8 @@ WITH required_tables(table_name) AS (
         ('adi_openrouter_sync_run'),
         ('adi_prompt'),
         ('adi_sys_config'),
+        ('adi_team'),
+        ('adi_team_member'),
         ('adi_user'),
         ('adi_user_day_cost'),
         ('adi_user_ext_api_key'),
@@ -69,7 +72,9 @@ WITH required_indexes(index_name) AS (
         ('idx_wf_runtime_workflow_update'),
         ('idx_wf_runtime_node_runtime_id'),
         ('uk_ai_model_platform_name'),
-        ('uk_openrouter_model_state_model_id')
+        ('uk_openrouter_model_state_model_id'),
+        ('uk_team_uuid'),
+        ('uk_team_member')
 ), missing AS (
     SELECT required.index_name
     FROM required_indexes required
@@ -106,12 +111,16 @@ WITH required_columns(table_name, column_name) AS (
         ('adi_knowledge_base_item', 'fulltext_status_change_time'),
         ('adi_knowledge_base_item', 'fulltext_started_at'),
         ('adi_knowledge_base_item', 'fulltext_completed_at'),
+        ('adi_character', 'is_agentic'),
         ('adi_character_message', 'is_ref_bm25'),
         ('adi_knowledge_base', 'route_profile_status'),
         ('adi_knowledge_base', 'route_profile_generation'),
         ('adi_knowledge_base', 'route_profile_active_generation'),
         ('adi_knowledge_base', 'route_profile_set_uuid'),
-        ('adi_knowledge_base', 'route_profile_model_identity')
+        ('adi_knowledge_base', 'route_profile_model_identity'),
+        ('adi_knowledge_base', 'owner_type'),
+        ('adi_knowledge_base', 'team_id'),
+        ('adi_knowledge_base', 'company_scope')
 ), missing AS (
     SELECT r.table_name, r.column_name
     FROM required_columns r

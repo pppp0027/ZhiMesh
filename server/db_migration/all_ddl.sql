@@ -257,6 +257,7 @@ CREATE TABLE adi_character
     is_autoplay_answer        boolean       default true              not null,
     is_enable_thinking        boolean       default false             not null,
     is_enable_web_search      boolean       default false             not null,
+    is_agentic                boolean       default true              not null,
     audio_config              jsonb         default '{}'              not null,
     api_key                   varchar(200)  default ''                not null,
     create_time               timestamp     default CURRENT_TIMESTAMP not null,
@@ -276,6 +277,7 @@ COMMENT ON COLUMN adi_character.answer_content_type IS 'Response content type: 1
 COMMENT ON COLUMN adi_character.is_autoplay_answer IS 'Whether audio responses play automatically';
 COMMENT ON COLUMN adi_character.is_enable_thinking IS 'Whether thinking/reasoning process is enabled (effective only if the model supports it)';
 COMMENT ON COLUMN adi_character.is_enable_web_search IS 'Whether to enable web search';
+COMMENT ON COLUMN adi_character.is_agentic IS '是否启用 Agentic 模式：开启后角色回答走工具调用循环，关闭则保持原有单次 RAG 问答 | Whether agentic tool-calling mode is enabled for this character';
 COMMENT ON COLUMN adi_character.audio_config IS 'Audio configuration, stored in JSON format, e.g., {"voice":{"param_name":"longyingda","model":"cosyvoice-v2","platform":"dashscope"}}';
 COMMENT ON COLUMN adi_character.api_key IS 'API key for external system integration (AES encrypted)';
 
@@ -604,6 +606,32 @@ comment on column adi_character_message_ref_bm25.query_terms is 'JSON array of t
 comment on column adi_character_message_ref_bm25.content_snapshot is 'Matched canonical chunk content copied at answer time for durable provenance';
 comment on column adi_character_message_ref_bm25.score is 'Raw Okapi BM25 score returned at retrieval time';
 
+create table adi_character_message_tool_call
+(
+    id             bigserial primary key,
+    message_id     bigint       default 0                 not null,
+    tool_name      varchar(128)                           not null,
+    args           text,
+    result_summary text,
+    duration_ms    bigint       default 0                 not null,
+    success        boolean      default true              not null,
+    seq            integer      default 0                 not null,
+    create_time    timestamp    default CURRENT_TIMESTAMP not null
+);
+
+create index idx_msg_tool_call_message
+    on adi_character_message_tool_call(message_id);
+
+comment on table adi_character_message_tool_call is '角色对话 Agentic 工具调用轨迹（溯源表）：生成一条助手消息过程中实际执行的每次工具调用各占一行，记录工具名、入参、结果摘要、耗时与成败。姊妹表：adi_character_message_ref_embedding（KB 向量命中）、adi_character_message_ref_graph（KB 图谱命中）、adi_character_message_ref_memory_embedding（记忆命中）、adi_character_message_ref_bm25（BM25 命中）。 | Agentic tool-call trace for character chat: one row per tool invocation executed while producing an assistant message, with name, args, result summary, duration and outcome.';
+comment on column adi_character_message_tool_call.message_id is 'adi_character_message.id，本次工具调用所属的助手消息（与消息溯源姊妹表保持一致，不建外键）';
+comment on column adi_character_message_tool_call.tool_name is '工具名称或标识，如 MCP 工具名、内置检索工具名';
+comment on column adi_character_message_tool_call.args is '工具入参，JSON 字符串，可为空';
+comment on column adi_character_message_tool_call.result_summary is '工具结果摘要，可为空（调用失败或结果过长被截断时为空）';
+comment on column adi_character_message_tool_call.duration_ms is '工具调用耗时，毫秒';
+comment on column adi_character_message_tool_call.success is '工具调用是否成功';
+comment on column adi_character_message_tool_call.seq is '同一轮回答内的工具调用序号，从 0 开始递增';
+comment on column adi_character_message_tool_call.create_time is '记录创建时间';
+
 -- ============================================================
 -- LLM Call Record: unified LLM call resource consumption tracking
 -- ============================================================
@@ -841,6 +869,62 @@ CREATE TRIGGER trigger_user_ext_api_key_update_time
     FOR EACH ROW
 EXECUTE PROCEDURE update_modified_column();
 
+CREATE TABLE adi_team
+(
+    id          bigserial primary key,
+    uuid        varchar(32)  default ''                not null,
+    name        varchar(100) default ''                not null,
+    remark      varchar(500) default ''                not null,
+    creator_id  bigint       default 0                 not null,
+    create_time timestamp    default CURRENT_TIMESTAMP not null,
+    update_time timestamp    default CURRENT_TIMESTAMP not null,
+    constraint ck_team_name_not_empty check (length(btrim(name)) > 0)
+);
+
+CREATE UNIQUE INDEX uk_team_uuid ON adi_team (uuid);
+CREATE INDEX idx_team_creator ON adi_team (creator_id);
+
+COMMENT ON TABLE adi_team IS 'Team for collaborative knowledge-base ownership';
+COMMENT ON COLUMN adi_team.uuid IS 'Team UUID (32 hex chars)';
+COMMENT ON COLUMN adi_team.name IS 'Team name';
+COMMENT ON COLUMN adi_team.remark IS 'Team description';
+COMMENT ON COLUMN adi_team.creator_id IS 'User id of the team creator';
+COMMENT ON COLUMN adi_team.create_time IS 'Creation time';
+COMMENT ON COLUMN adi_team.update_time IS 'Last update time';
+
+CREATE TRIGGER trigger_team_update_time
+    BEFORE UPDATE
+    ON adi_team
+    FOR EACH ROW
+EXECUTE PROCEDURE update_modified_column();
+
+CREATE TABLE adi_team_member
+(
+    id          bigserial primary key,
+    team_id     bigint       default 0                 not null,
+    user_id     bigint       default 0                 not null,
+    role        varchar(16)  default 'CONTRIBUTOR'     not null,
+    create_time timestamp    default CURRENT_TIMESTAMP not null,
+    update_time timestamp    default CURRENT_TIMESTAMP not null,
+    constraint ck_team_member_role check (role in ('OWNER', 'CONTRIBUTOR', 'READER'))
+);
+
+CREATE UNIQUE INDEX uk_team_member ON adi_team_member (team_id, user_id);
+CREATE INDEX idx_team_member_user ON adi_team_member (user_id);
+
+COMMENT ON TABLE adi_team_member IS 'Team membership; access to team knowledge bases derives from these rows';
+COMMENT ON COLUMN adi_team_member.team_id IS 'adi_team id';
+COMMENT ON COLUMN adi_team_member.user_id IS 'adi_user id';
+COMMENT ON COLUMN adi_team_member.role IS 'Team role: OWNER, CONTRIBUTOR or READER';
+COMMENT ON COLUMN adi_team_member.create_time IS 'Membership creation time';
+COMMENT ON COLUMN adi_team_member.update_time IS 'Last update time';
+
+CREATE TRIGGER trigger_team_member_update_time
+    BEFORE UPDATE
+    ON adi_team_member
+    FOR EACH ROW
+EXECUTE PROCEDURE update_modified_column();
+
 -- ============================================================
 -- Knowledge Base: RAG with vector and graph search
 -- ============================================================
@@ -851,7 +935,7 @@ create table adi_knowledge_base
     uuid                   varchar(32)   default ''                not null,
     title                  varchar(250)  default ''                not null,
     remark                 text          default ''                not null,
-    is_public              boolean       default false             not null,
+    company_scope          varchar(16)   default 'STAFF'           not null,
     is_strict              boolean       default true              not null,
     ingest_max_overlap     int           default 0                 not null,
     ingest_split_strategy  varchar(20)   default 'recursive'       not null,
@@ -871,6 +955,8 @@ create table adi_knowledge_base
     owner_id               bigint        default 0                 not null,
     owner_uuid             varchar(32)   default ''                not null,
     owner_name             varchar(45)   default ''                not null,
+    owner_type             varchar(16)   default 'PERSONAL'        not null,
+    team_id                bigint        default 0                 not null,
     star_count             int           default 0                 not null,
     item_count             int           default 0                 not null,
     embedding_count        int           default 0                 not null,
@@ -895,13 +981,20 @@ create table adi_knowledge_base
         check (route_profile_status <> 'READY' or
             (route_profile_generation = route_profile_active_generation
                 and route_profile_active_generation > 0 and route_profile_set_uuid <> ''
-                and route_profile_model_id >= 0 and route_profile_model_identity <> ''))
+                and route_profile_model_id >= 0 and route_profile_model_identity <> '')),
+    constraint ck_kb_owner_type
+        check (owner_type in ('PERSONAL', 'TEAM', 'COMPANY')),
+    constraint ck_kb_owner_team
+        check ((owner_type = 'TEAM' and team_id > 0) or (owner_type <> 'TEAM' and team_id = 0)),
+    constraint ck_kb_company_scope
+        check (company_scope in ('STAFF', 'EXECUTIVE')
+            and (owner_type = 'COMPANY' or company_scope = 'STAFF'))
 );
 
 comment on table adi_knowledge_base is 'Knowledge Base';
 comment on column adi_knowledge_base.title is 'Knowledge Base Title';
 comment on column adi_knowledge_base.remark is 'Knowledge Base Description';
-comment on column adi_knowledge_base.is_public is 'Is Public';
+comment on column adi_knowledge_base.company_scope is 'Company-tier visibility: STAFF (all employees) or EXECUTIVE (administrators only); forced to STAFF for non-COMPANY tiers';
 comment on column adi_knowledge_base.is_strict is 'Strict mode: return no answer if no results found in knowledge base; Non-strict: fall back to LLM if no results';
 comment on column adi_knowledge_base.ingest_max_overlap is 'Max overlap (in tokens) when chunking documents, only used when cutting complete sentences';
 comment on column adi_knowledge_base.ingest_split_strategy is 'Split strategy: recursive/paragraph/line/sentence/custom';
@@ -927,6 +1020,8 @@ comment on column adi_knowledge_base.route_profile_model_identity is 'Authoritat
 comment on column adi_knowledge_base.owner_id is 'Owner ID';
 comment on column adi_knowledge_base.owner_uuid is 'Owner UUID';
 comment on column adi_knowledge_base.owner_name is 'Owner Name';
+comment on column adi_knowledge_base.owner_type is 'Ownership tier: PERSONAL, TEAM or COMPANY';
+comment on column adi_knowledge_base.team_id is 'adi_team id for TEAM ownership, 0 otherwise';
 
 CREATE TABLE adi_knowledge_base_route_profile_set (
     id bigserial primary key,
@@ -1004,6 +1099,10 @@ create trigger trigger_kb_update_time
     on adi_knowledge_base
     for each row
 execute procedure update_modified_column();
+
+CREATE INDEX idx_kb_team ON adi_knowledge_base (team_id) WHERE team_id > 0;
+CREATE INDEX idx_kb_owner_type ON adi_knowledge_base (owner_type) WHERE owner_type <> 'PERSONAL';
+CREATE INDEX idx_kb_company_exec ON adi_knowledge_base (company_scope) WHERE owner_type = 'COMPANY' AND company_scope = 'EXECUTIVE';
 
 create table adi_knowledge_base_item
 (

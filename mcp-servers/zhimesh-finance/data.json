@@ -1,0 +1,41 @@
+{
+  "_comment": "智聘科技（ZhiMesh）财务报销 mock 数据。员工口径与 zhimesh-hr/data.json 完全对齐（同工号/姓名/在职状态，仅保留三字段）；today 为当前日期兼可报销费用日期上限；budgets 为 2026 Q3 部门预算（剩余 = 总额 - 已用，由代码计算）；expenseReports 金额均不超过所属类别单笔上限（已驳回单除外，超限正是驳回原因）。",
+  "company": "智聘科技",
+  "today": "2026-09-14",
+  "quarter": "2026 Q3",
+  "employees": [
+    { "employeeId": "ZP1001", "name": "陈建国", "status": "在职" },
+    { "employeeId": "ZP1002", "name": "李四", "status": "在职" },
+    { "employeeId": "ZP1003", "name": "王五", "status": "在职" },
+    { "employeeId": "ZP1004", "name": "赵敏", "status": "在职" },
+    { "employeeId": "ZP1005", "name": "刘洋", "status": "在职" },
+    { "employeeId": "ZP1006", "name": "孙丽", "status": "在职" },
+    { "employeeId": "ZP1008", "name": "张三", "status": "在职" },
+    { "employeeId": "ZP1007", "name": "周杰", "status": "在职" },
+    { "employeeId": "ZP1009", "name": "吴霞", "status": "在职" },
+    { "employeeId": "ZP1010", "name": "郑强", "status": "在职" },
+    { "employeeId": "ZP1011", "name": "冯婷", "status": "在职" },
+    { "employeeId": "ZP1012", "name": "蒋伟", "status": "在职" },
+    { "employeeId": "ZP1013", "name": "韩雪", "status": "在职" },
+    { "employeeId": "ZP1014", "name": "曹阳", "status": "离职" },
+    { "employeeId": "ZP1015", "name": "谢鹏", "status": "离职" }
+  ],
+  "budgets": [
+    { "department": "技术部", "total": 50000, "used": 32400 },
+    { "department": "产品部", "total": 20000, "used": 8600 },
+    { "department": "人事部", "total": 12000, "used": 4100 },
+    { "department": "财务部", "total": 10000, "used": 3300 },
+    { "department": "市场部", "total": 30000, "used": 21500 }
+  ],
+  "expenseReports": [
+    { "id": "EX-20260805-001", "employeeName": "张三", "category": "差旅交通", "amount": 1200, "invoiceCount": 2, "status": "已报销", "submittedDate": "2026-08-05", "note": "深圳客户现场支持高铁往返" },
+    { "id": "EX-20260815-001", "employeeName": "王五", "category": "差旅住宿", "amount": 680, "invoiceCount": 1, "status": "已驳回", "submittedDate": "2026-08-15", "note": "杭州机房巡检两晚住宿，超出住宿标准未附特批单" },
+    { "id": "EX-20260820-001", "employeeName": "张三", "category": "办公用品", "amount": 700, "invoiceCount": 3, "status": "已报销", "submittedDate": "2026-08-20", "note": "团队技术书籍与办公耗材采购" },
+    { "id": "EX-20260828-001", "employeeName": "冯婷", "category": "出差餐补", "amount": 80, "invoiceCount": 1, "status": "已报销", "submittedDate": "2026-08-28", "note": "客户走访两天出差餐补" },
+    { "id": "EX-20260902-001", "employeeName": "李四", "category": "差旅交通", "amount": 760, "invoiceCount": 2, "status": "已报销", "submittedDate": "2026-09-02", "note": "校园招聘跨城高铁往返" },
+    { "id": "EX-20260908-001", "employeeName": "韩雪", "category": "办公用品", "amount": 260, "invoiceCount": 3, "status": "已报销", "submittedDate": "2026-09-08", "note": "短视频拍摄物料与文具采购" },
+    { "id": "EX-20260910-001", "employeeName": "张三", "category": "差旅住宿", "amount": 480, "invoiceCount": 1, "status": "待审批", "submittedDate": "2026-09-10", "note": "北京客户现场支持两晚住宿" },
+    { "id": "EX-20260911-001", "employeeName": "蒋伟", "category": "出差餐补", "amount": 90, "invoiceCount": 2, "status": "待审批", "submittedDate": "2026-09-11", "note": "IDC 机房驻场三天餐补" },
+    { "id": "EX-20260912-001", "employeeName": "赵敏", "category": "培训费", "amount": 3200, "invoiceCount": 1, "status": "待审批", "submittedDate": "2026-09-12", "note": "产品经理认证培训课程费用" }
+  ]
+}
