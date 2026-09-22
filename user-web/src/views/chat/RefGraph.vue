@@ -89,7 +89,6 @@ async function loadGraph() {
 }
 
 function initCy() {
-  console.log('ref graph initCy')
   const isMobile = window.matchMedia('(max-width: 767px)').matches
   cy = cytoscape({
     container: graphContainer.value,
@@ -152,7 +151,6 @@ watch(() => props.msgUuid, (nextUuid, previousUuid) => {
 })
 
 onMounted(() => {
-  console.log('RefGraph onMounted')
   nextTick(() => {
     initCy()
     if (graphContainer.value) {
@@ -173,14 +171,15 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="zhimesh-graph-layout">
-    <div ref="graphContainer" class="zhimesh-graph-canvas border border-gray-300" aria-label="Knowledge graph" />
+    <div ref="graphContainer" class="zhimesh-graph-canvas" aria-label="Knowledge graph">
+      <div v-show="isEmpty" class="zhimesh-graph-empty">
+        {{ t('common.noData') }}
+      </div>
+    </div>
     <div class="zhimesh-graph-inspector">
       <div class="zhimesh-graph-toolbar">
         <NButton v-show="!isEmpty" class="zhimesh-graph-action" size="small" :loading="loading" type="info" ghost @click="relayout">
           {{ t('chat.relayout') }}
-        </NButton>
-        <NButton v-show="isEmpty" class="zhimesh-graph-action" size="small" type="warning" ghost>
-          {{ t('common.noData') }}
         </NButton>
       </div>
       <NFlex v-if="selectedVertex" vertical>
@@ -210,3 +209,20 @@ onBeforeUnmount(() => {
     </div>
   </div>
 </template>
+
+<style scoped lang="less">
+.zhimesh-graph-canvas {
+  position: relative;
+  border: 1px solid var(--zhimesh-border);
+}
+
+.zhimesh-graph-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--zhimesh-text-muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+</style>

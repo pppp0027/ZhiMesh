@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { NCollapse, NCollapseItem, NTag } from 'naive-ui'
+import { NCollapse, NCollapseItem, NSpin, NTag } from 'naive-ui'
 import api from '@/api'
 import { t } from '@/locales'
-import { SvgIcon } from '@/components/common'
+import EvidenceMarkdown from './components/EvidenceMarkdown.vue'
 
 interface Props {
   msgUuid: string
@@ -33,7 +33,7 @@ watch(() => props.msgUuid, value => load(value))
 
 <template>
   <div v-if="loading" class="keyword-empty-state">
-    <SvgIcon icon="line-md:loading-loop" class="text-2xl text-green-800 w-12 h-12" />
+    <NSpin size="medium" />
   </div>
   <div v-else-if="reference.hits.length === 0" class="keyword-empty-state">
     {{ t('common.noData') }}
@@ -57,7 +57,7 @@ watch(() => props.msgUuid, value => load(value))
           <span class="keyword-score">BM25 {{ hit.score.toFixed(3) }}</span>
         </template>
         <div class="keyword-hit-text">
-          {{ hit.text }}
+          <EvidenceMarkdown :text="hit.text" />
         </div>
       </NCollapseItem>
     </NCollapse>
@@ -103,7 +103,5 @@ watch(() => props.msgUuid, value => load(value))
 
 .keyword-hit-text {
   max-width: 75ch;
-  white-space: pre-wrap;
-  line-height: 1.75;
 }
 </style>

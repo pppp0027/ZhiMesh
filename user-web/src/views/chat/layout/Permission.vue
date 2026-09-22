@@ -53,7 +53,6 @@ const show = computed({
 })
 
 onMounted(async () => {
-  console.info('permission,onmounted')
   if (!authStore.token) {
     activeTab.value = 'login'
     show.value = true
@@ -90,12 +89,12 @@ async function handleLogin() {
     const result = await api.login<LoginResp>(email.value, pwd, loginCaptchaId.value, loginCaptchaCode.value)
     await authStore.setToken(result.data.token)
     userStore.replaceUserInfo(result.data)
-    ms.success('success')
+    ms.success(t('common.success'))
     // router.go(0)
     loading.value = false
   } catch (error: any) {
     console.error('login error', error)
-    ms.error(error.message ?? 'error')
+    ms.error(error?.message ?? t('common.wrong'))
     if (error.data?.captchaId) {
       // 显示验证码
       loginCaptchaId.value = error.data.captchaId
@@ -123,8 +122,8 @@ async function handleRegister() {
     registerReturnMsg.value = result.data as string
     ms.success(registerReturnMsg.value)
   } catch (error: any) {
-    ms.error(error.message ?? 'error')
-    registerReturnMsg.value = error.message ?? 'error'
+    ms.error(error?.message ?? t('common.wrong'))
+    registerReturnMsg.value = error?.message ?? t('common.wrong')
   } finally {
     loading.value = false
   }
@@ -142,7 +141,7 @@ async function handleForgotPassword() {
     ms.success(result.data as string)
     resetPasswordReturnMsg.value = result.data as string
   } catch (error: any) {
-    ms.error(error.message ?? 'error')
+    ms.error(error?.message ?? t('common.wrong'))
   } finally {
     loading.value = false
   }
@@ -170,7 +169,7 @@ async function handleForgotPassword() {
               />
               <NSpace :wrap-item="false">
                 <NInput
-                  v-if="loginCaptchaId" v-model:value="loginCaptchaCode" style="flex:1;height:40px;"
+                  v-if="loginCaptchaId" v-model:value="loginCaptchaCode" style="flex: 1;"
                   :placeholder="t('common.captcha')"
                 />
                 <NImage
@@ -192,19 +191,19 @@ async function handleForgotPassword() {
 
           <NTabPane name="register" :tab="t('common.register')">
             <NSpace vertical>
-              <NInput v-model:value="email" type="text" size="large" :placeholder="t('common.email')" />
+              <NInput v-model:value="email" type="text" :placeholder="t('common.email')" />
               <NInput
-                v-model:value="password" type="password" size="large" show-password-on="click"
+                v-model:value="password" type="password" show-password-on="click"
                 :placeholder="t('common.password')"
               />
               <NInput
-                v-model:value="confirmPassword" type="password" size="large" show-password-on="click"
+                v-model:value="confirmPassword" type="password" show-password-on="click"
                 :placeholder="t('common.confirmPassword')" :status="confirmPasswordStatus"
               />
               <NSpace :wrap-item="false">
                 <NInput
-                  v-if="registerCaptchaId" v-model:value="registerCaptchaCode" size="large"
-                  style="flex:1;height:40px;" :placeholder="t('common.captcha')"
+                  v-if="registerCaptchaId" v-model:value="registerCaptchaCode" style="flex: 1;"
+                  :placeholder="t('common.captcha')"
                 />
                 <NImage
                   v-if="registerCaptchaId" object-fit="fill"
@@ -231,7 +230,7 @@ async function handleForgotPassword() {
 
           <NTabPane name="forgotPassword" :tab="t('common.findMyPassword')">
             <NSpace vertical>
-              <NInput v-model:value="email" type="text" size="large" :placeholder="t('common.email')" />
+              <NInput v-model:value="email" type="text" :placeholder="t('common.email')" />
               <NTag v-if="resetPasswordReturnMsg" :type="resetPasswordReturnMsg ? 'success' : 'error'">
                 {{ resetPasswordReturnMsg }}
                 <template #icon>

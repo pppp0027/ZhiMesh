@@ -9,11 +9,13 @@ import com.pppp.zhimesh.common.entity.CharacterMessageRefEmbedding;
 import com.pppp.zhimesh.common.entity.CharacterMessageRefGraph;
 import com.pppp.zhimesh.common.entity.CharacterMessageRefMemoryEmbedding;
 import com.pppp.zhimesh.common.entity.CharacterMessageRefBm25;
+import com.pppp.zhimesh.common.entity.CharacterMessageToolCall;
 import com.pppp.zhimesh.common.rag.bm25.Bm25ContentRetriever;
 import com.pppp.zhimesh.common.entity.User;
 import com.pppp.zhimesh.common.enums.MemoryType;
 import com.pppp.zhimesh.common.exception.BaseException;
 import com.pppp.zhimesh.common.mapper.CharacterMessageMapper;
+import com.pppp.zhimesh.common.mapper.CharacterMessageToolCallMapper;
 import com.pppp.zhimesh.common.rag.ZhiMeshEmbeddingStoreContentRetriever;
 import com.pppp.zhimesh.common.rag.GraphStoreContentRetriever;
 import com.pppp.zhimesh.common.util.JsonUtil;
@@ -46,6 +48,9 @@ public class CharacterMessageService extends ServiceImpl<CharacterMessageMapper,
 
     @Resource
     private CharacterMessageRefBm25Service characterMessageRefBm25Service;
+
+    @Resource
+    private CharacterMessageToolCallMapper characterMessageToolCallMapper;
 
     public List<CharacterMessage> listQuestionsByCharacterId(long characterId, long maxId, int pageSize) {
         LambdaQueryWrapper<CharacterMessage> queryWrapper = new LambdaQueryWrapper<>();
@@ -109,23 +114,56 @@ public class CharacterMessageService extends ServiceImpl<CharacterMessageMapper,
     /**
      * Soft-delete every message owned by a Conversation. Keeping this in the same
      * transaction as Conversation deletion prevents legacy Character history APIs
-     * from exposing messages from a deleted Conversation.
+     * from exposing messages from a deleted Conversation. Tool-call traces keyed
+     * by the removed messages are cascaded here too: the table carries no FK by
+     * convention, so orphaned traces would otherwise accumulate forever.
      */
     public boolean softDeleteByConversationIds(Long userId, List<Long> conversationIds) {
         if (userId == null || CollectionUtils.isEmpty(conversationIds)) {
             return false;
         }
-        return this.remove(new LambdaQueryWrapper<CharacterMessage>()
+        List<Long> messageIds = list(new LambdaQueryWrapper<CharacterMessage>()
+                .select(CharacterMessage::getId)
+                .eq(CharacterMessage::getUserId, userId)
+                .in(CharacterMessage::getConversationId, conversationIds)
+        ).stream().map(CharacterMessage::getId).toList();
+        boolean removed = this.remove(new LambdaQueryWrapper<CharacterMessage>()
                 .eq(CharacterMessage::getUserId, userId)
                 .in(CharacterMessage::getConversationId, conversationIds)
         );
+        if (removed) {
+            deleteToolCallsByMessageIds(messageIds);
+        }
+        return removed;
     }
 
+    /**
+     * Single-message deletion entry (message-level remove from the UI); the
+     * removed message's tool-call traces are cascaded for the same no-FK reason.
+     */
     public boolean softDelete(String uuid) {
-        return this.remove(new LambdaQueryWrapper<CharacterMessage>()
+        Long userId = ThreadContext.getCurrentUserId();
+        List<Long> messageIds = list(new LambdaQueryWrapper<CharacterMessage>()
+                .select(CharacterMessage::getId)
                 .eq(CharacterMessage::getUuid, uuid)
-                .eq(CharacterMessage::getUserId, ThreadContext.getCurrentUserId())
+                .eq(CharacterMessage::getUserId, userId)
+        ).stream().map(CharacterMessage::getId).toList();
+        boolean removed = this.remove(new LambdaQueryWrapper<CharacterMessage>()
+                .eq(CharacterMessage::getUuid, uuid)
+                .eq(CharacterMessage::getUserId, userId)
         );
+        if (removed) {
+            deleteToolCallsByMessageIds(messageIds);
+        }
+        return removed;
+    }
+
+    private void deleteToolCallsByMessageIds(List<Long> messageIds) {
+        if (CollectionUtils.isEmpty(messageIds)) {
+            return;
+        }
+        characterMessageToolCallMapper.delete(new LambdaQueryWrapper<CharacterMessageToolCall>()
+                .in(CharacterMessageToolCall::getMessageId, messageIds));
     }
 
     public String getTextByAudioUuid(String audioUuid) {

@@ -11,7 +11,9 @@ import com.pppp.zhimesh.common.entity.*;
 import com.pppp.zhimesh.common.entity.Character;
 import com.pppp.zhimesh.common.enums.LLMCallRecordSourceType;
 import com.pppp.zhimesh.common.exception.BaseException;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.pppp.zhimesh.common.mapper.CharacterMapper;
+import com.pppp.zhimesh.common.mapper.CharacterMessageToolCallMapper;
 import com.pppp.zhimesh.common.util.JsonUtil;
 import com.pppp.zhimesh.common.util.LocalCache;
 import com.pppp.zhimesh.common.util.MPPageUtil;
@@ -19,6 +21,7 @@ import com.pppp.zhimesh.common.util.UuidUtil;
 
 import java.util.Objects;
 import com.pppp.zhimesh.common.vo.AudioConfig;
+import com.pppp.zhimesh.common.vo.ToolCallTrace;
 import com.pppp.zhimesh.common.vo.TtsSetting;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -72,6 +75,9 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
     private KnowledgeBaseService knowledgeBaseService;
 
     @Resource
+    private KnowledgeBaseAccessService knowledgeBaseAccessService;
+
+    @Resource
     private FileService fileService;
 
     @Resource
@@ -79,6 +85,9 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
 
     @Resource
     private LLMCallRecordService llmCallRecordService;
+
+    @Resource
+    private CharacterMessageToolCallMapper characterMessageToolCallMapper;
 
     public Page<CharacterDto> search(CharacterSearchReq characterSearchReq, int currentPage, int pageSize) {
         Page<Character> page = this.lambdaQuery()
@@ -212,6 +221,10 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
         Map<Long, LLMCallRecord> idToCallRecord = callRecords.stream()
                 .collect(Collectors.toMap(LLMCallRecord::getSourceId, r -> r, (a, b) -> a));
 
+        //Batch query agentic tool-call traces (single IN query grouped by message id, no N+1),
+        //ordered by seq within each message for frontend step replay
+        Map<Long, List<ToolCallTrace>> idToToolCalls = listToolCallsByMessageIds(childIds);
+
         //Fill AI answer to the request of user
         result.getMsgList().forEach(item -> {
             List<CharacterMsgDto> children = MPPageUtil.convertToList(idToMessages.get(item.getId()), CharacterMsgDto.class);
@@ -234,10 +247,51 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
                     characterMsgDto.setOutputTokens(callRecord.getOutputTokens());
                     characterMsgDto.setDuration(callRecord.getDuration());
                 }
+                //Fill agentic tool-call traces; non-agentic messages keep toolCalls null
+                List<ToolCallTrace> toolCalls = idToToolCalls.get(characterMsgDto.getId());
+                if (CollectionUtils.isNotEmpty(toolCalls)) {
+                    characterMsgDto.setToolCalls(toolCalls);
+                }
             }
             item.setChildren(children);
         });
         return result;
+    }
+
+    /**
+     * 批量查询消息的工具调用轨迹并按 message_id 分组：一次 IN 查询（避免 N+1），
+     * 每组内按 seq 升序排序（Java 端显式排序，不依赖数据库返回顺序）
+     * <p>
+     * Batch-load tool-call traces for the given messages grouped by message_id:
+     * one IN query (no N+1), each group explicitly sorted by seq ascending in
+     * Java instead of relying on database return order.
+     */
+    private Map<Long, List<ToolCallTrace>> listToolCallsByMessageIds(List<Long> messageIds) {
+        if (CollectionUtils.isEmpty(messageIds)) {
+            return Collections.emptyMap();
+        }
+        List<CharacterMessageToolCall> records = characterMessageToolCallMapper.selectList(
+                new LambdaQueryWrapper<CharacterMessageToolCall>()
+                        .in(CharacterMessageToolCall::getMessageId, messageIds));
+        Map<Long, List<ToolCallTrace>> grouped = new HashMap<>();
+        for (CharacterMessageToolCall record : records) {
+            grouped.computeIfAbsent(record.getMessageId(), key -> new ArrayList<>())
+                    .add(toToolCallTrace(record));
+        }
+        grouped.values().forEach(traces -> traces.sort(Comparator.comparingInt(ToolCallTrace::getSeq)));
+        return grouped;
+    }
+
+    /** 实体行 → 历史回放用的轨迹 DTO / Entity row → trace DTO for history replay */
+    private static ToolCallTrace toToolCallTrace(CharacterMessageToolCall record) {
+        return ToolCallTrace.builder()
+                .toolName(record.getToolName())
+                .args(record.getArgs())
+                .resultSummary(record.getResultSummary())
+                .durationMs(null == record.getDurationMs() ? 0L : record.getDurationMs())
+                .success(Boolean.TRUE.equals(record.getSuccess()))
+                .seq(null == record.getSeq() ? 0 : record.getSeq())
+                .build();
     }
 
     public int createDefault(Long userId) {
@@ -286,6 +340,12 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
         String uuid = UuidUtil.createShort();
         Character one = new Character();
         BeanUtils.copyProperties(characterAddReq, one);
+        // Agentic 为产品默认（迁移 042）：未显式传入时按开启创建，DB 列默认值已同步翻转
+        // Agentic is the product default (migration 042): create as enabled when
+        // absent; the column default has been flipped to match
+        if (null == characterAddReq.getIsAgentic()) {
+            one.setIsAgentic(true);
+        }
         one.setUuid(uuid);
         one.setUserId(userId);
         one.setMcpIds(StringUtils.join(filteredMcpIds, ","));
@@ -364,8 +424,9 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
                 }
                 characterKnowledge.setIsSystem(systemKb);
                 characterKnowledge.setIsReadOnly(systemKb);
-                // Skip if not mine and not public
-                if (!characterKnowledge.getIsMine() && !characterKnowledge.getIsPublic()) {
+                // Hide metadata when the unified tier rules no longer grant a
+                // read: membership may have been revoked after binding.
+                if (!knowledgeBaseAccessService.canRead(ThreadContext.getCurrentUser(), kb)) {
                     characterKnowledge.setKbInfo(null);
                     characterKnowledge.setIsEnable(false);
                 }
@@ -589,7 +650,8 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
 
     /**
      * 过滤出有效的知识库id列表 | Find the list of valid knowledge base IDs
-     * 如果知识库是别人的且不是公开的，则不属于有效的可以关联的知识库
+     * 按 KnowledgeBaseAccessService 的三级归属规则判定可读性：本人的个人库、已加入团队的团队库、
+     * 以及按 company_scope 对当前用户可见的企业库均有效。
      *
      * @param user 当前用户 | Current user
      * @param ids  知识库id列表 | List of knowledge base IDs
@@ -602,7 +664,7 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
         return knowledgeBaseService.listByIds(ids).stream()
                 .filter(CharacterService::isKnowledgeBaseEnabled)
                 .filter(item -> !Boolean.TRUE.equals(item.getIsSystem()))
-                .filter(item -> Boolean.TRUE.equals(item.getIsPublic()) || user.getUuid().equals(item.getOwnerUuid()))
+                .filter(item -> knowledgeBaseAccessService.canRead(user, item))
                 .toList();
     }
 
@@ -642,7 +704,7 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
                 .filter(CharacterService::isKnowledgeBaseEnabled)
                 .filter(item -> (systemIds.contains(item.getId()) && Boolean.TRUE.equals(item.getIsSystem()))
                         || (!Boolean.TRUE.equals(item.getIsSystem())
-                        && (Boolean.TRUE.equals(item.getIsPublic()) || user.getUuid().equals(item.getOwnerUuid()))))
+                        && knowledgeBaseAccessService.canRead(user, item)))
                 .sorted(Comparator.comparing((KbInfoResp item) -> !systemIds.contains(item.getId())))
                 .limit(ZhiMeshConstant.CharacterConstant.MAX_KNOWLEDGE_BASES)
                 .toList();

@@ -67,6 +67,10 @@ public class Character extends BaseEntity {
     @TableField("is_enable_web_search")
     private Boolean isEnableWebSearch;
 
+    @Schema(title = "是否启用 Agentic 模式（开启后角色可自主调用知识库检索等内置工具） | Enable Agentic Mode (the character may autonomously invoke builtin tools such as KB retrieval)")
+    @TableField("is_agentic")
+    private Boolean isAgentic;
+
     @Schema(title = "外部系统对接密钥 | API key for external system integration")
     @TableField("api_key")
     private String apiKey;

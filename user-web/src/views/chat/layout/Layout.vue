@@ -48,12 +48,9 @@ provide('createConversation', createConversation)
 provide('creatingConversation', creatingConversation)
 
 const { uuid: curCharacterUuid } = route.params as { uuid: string }
-console.log(`curCharacterUuid:${curCharacterUuid}`)
 if (!curCharacterUuid) {
-  console.log(`uuid,chatStore.active:${chatStore.active}`)
   router.replace({ name: 'Chat', params: { uuid: chatStore.active } })
 } else if (curCharacterUuid !== chatStore.active) {
-  console.log(`curCharacterUuid !== chatStore.active:${chatStore.active}`)
   chatStore.active = curCharacterUuid
 }
 const routeConversationUuid = route.query.conversation as string

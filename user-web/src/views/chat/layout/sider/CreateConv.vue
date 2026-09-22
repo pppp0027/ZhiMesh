@@ -1,6 +1,6 @@
 <script setup lang='ts'>
 import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NDivider, NList, NListItem, NModal, NScrollbar, NTabPane, NTabs, NTag, NThing, useMessage } from 'naive-ui'
+import { NButton, NDivider, NList, NListItem, NModal, NScrollbar, NSpin, NTabPane, NTabs, NTag, NThing, useMessage } from 'naive-ui'
 import { useAuthStore, useChatStore } from '@/store'
 import { emptyCharacter } from '@/utils/functions'
 import EditConvDetail from '@/views/chat/components/Header/EditConvDetail.vue'
@@ -108,7 +108,7 @@ async function handleUsePresetCharacter(presetCharacter: Chat.CharacterPreset) {
     showModal.value = false
     emit('characterCreated', newCharacter)
   } catch (error: any) {
-    console.log('addCharacter error', error)
+    console.error('addCharacter error', error)
     if (error.message) {
       ms.error(error.message, {
         duration: 2000,
@@ -170,6 +170,12 @@ defineExpose({ openModal })
       <NTabPane class="creator-tab-pane" name="presetCharacter" :tab="t('chat.presetRole')">
         <div class="creator-tab-hint">{{ t('chat.presetRoleHint') }}</div>
         <NScrollbar class="creator-preset-scroll">
+          <div v-if="loadingPresetCharacters" class="creator-preset-status">
+            <NSpin size="medium" />
+          </div>
+          <div v-else-if="!groupedPresets.length" class="creator-preset-status is-empty">
+            {{ t('common.noData') }}
+          </div>
           <template v-for="[type, presets] in groupedPresets" :key="type">
             <NDivider title-placement="left" style="margin: 8px 0 4px;">
               {{ typeLabelMap[type] || type }}
@@ -231,6 +237,17 @@ defineExpose({ openModal })
 </template>
 
 <style scoped lang="less">
+.creator-preset-status {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+}
+
+.creator-preset-status.is-empty {
+  color: var(--zhimesh-text-muted);
+  font-size: 13px;
+}
+
 .agent-capability-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

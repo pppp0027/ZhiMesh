@@ -64,4 +64,26 @@ public class LLMTokenUtil {
         }
         return Pair.of(inputTokenCount, outputTokenCount);
     }
+
+    /**
+     * 清空某次请求累计的 token 使用记录。重新生成等场景会复用同一 questionUuid，
+     * 若不先清空，上一轮尝试的中间轮会与本轮累加，导致 {@link #calAllTokenCostByUuid}
+     * 读回后按旧+新双重计费；计费读取失败不能影响回答链路，异常一律吞掉并告警。
+     * <p>
+     * Clears the accumulated token records of one request. Regenerate reuses the
+     * same questionUuid; without clearing, the previous attempt's intermediate
+     * rounds accumulate with the new one and {@link #calAllTokenCostByUuid}
+     * double-bills both on read-back. A billing-reset failure must never break
+     * the answer pipeline, so exceptions are swallowed with a warning.
+     */
+    public static void resetTokenUsage(StringRedisTemplate stringRedisTemplate, String uuid) {
+        if (stringRedisTemplate == null || StringUtils.isBlank(uuid)) {
+            return;
+        }
+        try {
+            stringRedisTemplate.delete(MessageFormat.format(TOKEN_USAGE_KEY, uuid));
+        } catch (Exception e) {
+            log.warn("resetTokenUsage failed, uuid:{}", uuid, e);
+        }
+    }
 }

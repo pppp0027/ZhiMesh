@@ -22,6 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.text.MessageFormat;
 import java.util.Objects;
@@ -66,6 +67,14 @@ public class SseManager {
      * API 用户最大并发 SSE 数 / Max concurrent SSE for API users
      */
     private static final int MAX_API_CONCURRENT = 5;
+
+    /**
+     * TOOL_CALL 事件 resultSummary 字段的下发截断长度，防止完整工具结果撑爆 SSE 载荷
+     * <p>
+     * Truncation length for the resultSummary field of the TOOL_CALL event,
+     * keeping full tool results from blowing up the SSE payload.
+     */
+    private static final int TOOL_CALL_RESULT_SUMMARY_MAX_CHARS = 200;
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
@@ -272,6 +281,12 @@ public class SseManager {
         AbstractLLMService resolvedLlmService = Objects.requireNonNull(llmService, "llmService");
         String sseUuid = sseAskParam.getSseUuid();
         registerEventStreamListener(sseAskParam); // 给SseEmitter绑定生命周期回调（超时，异常该怎么办）
+        // 新一次请求开始前清掉该 uuid 可能残留的累计记录：重新生成复用同一
+        // questionUuid，若不清空会把上一轮尝试的中间轮也计入本次计费
+        // Clear any stale accumulation for this uuid before the new request
+        // starts: regenerate reuses the same questionUuid, and leftover
+        // intermediate rounds from the previous attempt would be billed again
+        LLMTokenUtil.resetTokenUsage(stringRedisTemplate, sseAskParam.getUuid());
         // 模型路由由上层业务完成，避免同一请求在此处按字符串二次解析后选中不同服务。
         resolvedLlmService.streamingChat(sseAskParam, (response, promptMeta, answerMeta) -> {
             try {
@@ -446,18 +461,68 @@ public class SseManager {
     }
     // 推送工具调用状态
     public static void sendToolCall(String uuid, String toolName, long durationMs, boolean success) {
+        sendToolCall(uuid, toolName, durationMs, success, null, null);
+    }
+
+    /**
+     * 推送工具调用状态（扩展载荷：args / resultSummary 两个可空新字段，旧三字段名不变）。
+     * <p>
+     * uuid 为 null 时（blocking 路径无 SSE）直接返回：ConcurrentHashMap.get(null) 会抛 NPE。
+     * resultSummary 只下发摘要（截断至 {@link #TOOL_CALL_RESULT_SUMMARY_MAX_CHARS} 字符），
+     * 防止完整工具结果撑爆 SSE 载荷。
+     * <p>
+     * Push tool-call status (extended payload: two nullable new fields
+     * args / resultSummary; the legacy three field names are unchanged).
+     * A null uuid (blocking path, no SSE) returns immediately because
+     * ConcurrentHashMap.get(null) would throw an NPE. resultSummary carries a
+     * summary only (truncated to {@link #TOOL_CALL_RESULT_SUMMARY_MAX_CHARS}
+     * chars) to keep the SSE payload small.
+     */
+    public static void sendToolCall(String uuid, String toolName, long durationMs, boolean success,
+                                    String args, String resultSummary) {
+        if (uuid == null) {
+            // blocking 路径没有已注册的 emitter，且 entries.get(null) 本身会抛 NPE
+            // The blocking path has no registered emitter, and entries.get(null) itself throws an NPE
+            return;
+        }
         SseEntry entry = getEntry(uuid);
         if (entry == null) {
             return;
         }
         try {
-            String safeName = toolName != null ? toolName : "unknown";
-            String data = JsonUtil.toJson(Map.of("toolName", safeName, "durationMs", durationMs, "success", success));
-            entry.emitter().send(SseEmitter.event().name(ZhiMeshConstant.SSEEventName.TOOL_CALL).data(data));
+            entry.emitter().send(SseEmitter.event().name(ZhiMeshConstant.SSEEventName.TOOL_CALL)
+                    .data(JsonUtil.toJson(buildToolCallPayload(toolName, durationMs, success, args, resultSummary))));
         } catch (Exception e) {
             log.error("sendToolCall error", e);
             SpringUtil.getBean(SseManager.class).unregister(uuid);
         }
+    }
+
+    /**
+     * 组装 TOOL_CALL 事件载荷：旧三字段名与语义不变（向后兼容红线），args /
+     * resultSummary 为可空新增字段，仅在非 null 时出现；resultSummary 截断至
+     * {@link #TOOL_CALL_RESULT_SUMMARY_MAX_CHARS} 字符
+     * <p>
+     * Build the TOOL_CALL event payload: the legacy three fields keep their
+     * names and semantics (backward-compatibility red line); args /
+     * resultSummary are nullable additions present only when non-null, and
+     * resultSummary is truncated to {@link #TOOL_CALL_RESULT_SUMMARY_MAX_CHARS}
+     * chars.
+     */
+    static Map<String, Object> buildToolCallPayload(String toolName, long durationMs, boolean success,
+                                                    String args, String resultSummary) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("toolName", toolName != null ? toolName : "unknown");
+        payload.put("durationMs", durationMs);
+        payload.put("success", success);
+        if (args != null) {
+            payload.put("args", args);
+        }
+        if (resultSummary != null) {
+            payload.put("resultSummary",
+                    StringUtils.substring(resultSummary, 0, TOOL_CALL_RESULT_SUMMARY_MAX_CHARS));
+        }
+        return payload;
     }
 
     public static void parseAndSendPartialMsg(String uuid, String name, String content) {
@@ -529,6 +594,26 @@ public class SseManager {
         //只在 tokenUsage 不为 null 时才缓存，避免 NPE | Only cache when tokenUsage is non-null to avoid NPE
         if (response.metadata() != null && response.metadata().tokenUsage() != null) {
             LLMTokenUtil.cacheTokenUsage(SpringUtil.getBean(StringRedisTemplate.class), uuid, response.metadata().tokenUsage());
+        }
+
+        // 工具循环的中间轮 token 已按轮缓存在同一 uuid 的 List 中（见 innerStreamingChat），
+        // 计费与展示都应取全部轮次的累计值，而非仅最终轮；缓存不可用时回退最终轮数值。
+        // 单轮请求 List 仅含最终轮，累计值与原值相等，行为不变。
+        // <p>
+        // Intermediate tool-loop rounds were cached under the same uuid List (see
+        // innerStreamingChat); billing and display should use the accumulated total
+        // across all rounds instead of the final round alone. Falls back to the
+        // final-round numbers when the cache is unavailable. For single-round
+        // requests the List holds only the final round, so nothing changes.
+        try {
+            Pair<Integer, Integer> accumulated = LLMTokenUtil.calAllTokenCostByUuid(
+                    SpringUtil.getBean(StringRedisTemplate.class), uuid);
+            if (null != accumulated && (accumulated.getLeft() > 0 || accumulated.getRight() > 0)) {
+                inputTokenCount = accumulated.getLeft();
+                outputTokenCount = accumulated.getRight();
+            }
+        } catch (Exception e) {
+            log.warn("calculateToken failed to read accumulated usage, falling back to final round, uuid:{}", uuid, e);
         }
 
         PromptMeta questionMeta = new PromptMeta(inputTokenCount, uuid);

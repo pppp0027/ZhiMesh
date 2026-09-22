@@ -152,7 +152,6 @@ function handleSubmit() {
 }
 
 const fetchChatAPIOnce = async (message: string, requestId: number) => {
-  console.log('input editor chat')
   const requestCharacterUuid = props.characterUuid
   const requestConversationUuid = props.conversationUuid
   const requestChatKey = props.chatKey || requestCharacterUuid
@@ -183,7 +182,6 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
     stateChanged: (state) => {
       if (!isCurrentRequest())
         return
-      console.log('State changed:', state)
       if (state) {
         try {
           requestMessage.state = new Map(Object.entries(JSON.parse(state)))
@@ -196,7 +194,6 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
       if (!isCurrentRequest())
         return
       // 处理思考数据
-      console.log('Thinking data received:', chunk)
       const answer = requestMessage.children[0]
       for (let i = 0; i < chunk.length; i++) {
         appendChunk(
@@ -398,7 +395,6 @@ function setMobileToolsExpanded(expanded: boolean) {
 }
 
 watch(() => isChatting.value, () => {
-  console.log(`isChatting changed to ${isChatting.value}`)
   emit('isChatting', isChatting.value)
 })
 
@@ -442,7 +438,8 @@ defineExpose({
     <NAutoComplete v-model:value="prompt" class="composer-input" :options="searchOptions" :get-show="getShow">
       <template #default="{ handleInput, handleBlur, handleFocus }">
         <NInput
-          ref="inputRef" v-model:value="prompt" type="textarea" placeholder=""
+          ref="inputRef" v-model:value="prompt" type="textarea"
+          :placeholder="isMobile ? t('chat.placeholderMobile') : t('chat.placeholder')"
           :autosize="{ minRows: 1, maxRows: isMobile ? 4 : 8 }" @input="handleInput" @focus="handleFocus"
           @blur="handleBlur" @keyup.up="handleUp" @keyup.down="handleDown" @keypress="handleEnter"
         />

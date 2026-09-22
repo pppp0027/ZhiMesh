@@ -34,4 +34,6 @@ public class CharacterAddReq {
     private Boolean isEnableThinking;
 
     private Boolean isEnableWebSearch;
+
+    private Boolean isAgentic;
 }

@@ -2,7 +2,7 @@
 import type { Ref } from 'vue'
 import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCollapse, NCollapseItem, NDrawer, NDrawerContent, NModal, NTabPane, NTabs, useDialog, useLoadingBar, useMessage } from 'naive-ui'
+import { NButton, NCollapse, NCollapseItem, NDrawer, NDrawerContent, NModal, NSpin, NTabPane, NTabs, useDialog, useLoadingBar, useMessage } from 'naive-ui'
 import { v4 as uuidv4 } from 'uuid'
 import { AudioMessage, Message } from './components'
 import { useScroll } from './hooks/useScroll'
@@ -16,6 +16,7 @@ import RefGraph from './RefGraph.vue'
 import RefMemory from './RefMemory.vue'
 import RefKeyword from './RefKeyword.vue'
 import AnswerEvidenceActions from './components/AnswerEvidenceActions.vue'
+import EvidenceMarkdown from './components/EvidenceMarkdown.vue'
 import LoginTip from '@/views/user/LoginTip.vue'
 import brandLogo from '@/assets/zhimesh-logo.svg'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
@@ -44,7 +45,7 @@ const authStore = useAuthStore()
 const loaddingBar = useLoadingBar()
 const { isMobile } = useBasicLayout()
 const { unshiftAnswer, updateMessageSomeFields, appendChunk } = useChat()
-const { scrollRef, scrollToBottom, scrollToBottomIfAtBottom, scrollTo } = useScroll()
+const { scrollRef, scrollToBottom, scrollToBottomIfAtBottom, scrollTo, scrollToTop } = useScroll()
 const { uuid: curCharacterUuid } = route.params as { uuid: string }
 const initialConversationUuid = typeof route.query.conversation === 'string'
   ? route.query.conversation
@@ -165,7 +166,6 @@ function handleKeywordClick(msgUuid: string) {
 }
 
 const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlayState: AudioPlayState, requestId: number) => {
-  console.log('begin sseProcess')
 
   const characterUuid = currCharacter.value.uuid
   const requestConversationUuid = curConversationUuid.value
@@ -336,7 +336,6 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
 }
 
 async function onRegenerate(questionUuid: string) {
-  console.log(`onRegenerate,question uuid:${questionUuid}`)
   if (isChatting.value)
     return
 
@@ -391,11 +390,9 @@ async function onRegenerate(questionUuid: string) {
 
 function selectedLatestAnswer(questionUuid: string) {
   nextTick(() => {
-    console.log('fetchChatAPIOnce nextTick')
     const index = messages.value.findIndex((msg: { uuid: string }) => msg.uuid === questionUuid)
     if (index !== -1 && messages.value[index].children[0]) {
       tabsActiveTab.value[index] = `tab_${messages.value[index].children[0].uuid}`
-      console.log(`tabsActiveTab[${index}]: ${tabsActiveTab.value[index]}`)
     }
   })
 }
@@ -417,9 +414,7 @@ async function loadMoreMessage(callback?: Function) {
         chatStore.updateConversation(curConversationUuid.value, { minMsgUuid: data.minMsgUuid, loadedAll: true })
       else
         chatStore.updateCharacter(curCharacterUuid, { minMsgUuid: data.minMsgUuid, loadedAll: true })
-      ms.warning(t('common.noMore'), {
-        duration: 3000,
-      })
+      ms.info(t('common.noMore'))
     } else {
       if (curConversationUuid.value)
         chatStore.updateConversation(curConversationUuid.value, { minMsgUuid: data.minMsgUuid })
@@ -473,9 +468,7 @@ function handleDelete(questionUuid: string, answerUuid: string, isQuestion = fal
         } else {
           await api.messageDel(answerUuid)
           chatStore.deleteAnswer(chatKey.value, questionUuid, answerUuid)
-          setTimeout(() => {
-            selectedLatestAnswer(questionUuid)
-          }, 3000)
+          selectedLatestAnswer(questionUuid)
         }
       } catch (error: any) {
         ms.error(error?.message || t('common.wrong'))
@@ -567,7 +560,6 @@ watch(
 )
 
 onMounted(() => {
-  console.info('chat,onmounted')
   nextTick(() => {
     scrollToBottom()
   })
@@ -601,6 +593,7 @@ onDeactivated(() => {
     <HeaderComponent
       v-if="isMobile" :using-context="currCharacter.understandContextEnable"
       @toggle-using-context="toggleUsingContext"
+      @scroll-to-top="scrollToTop"
     />
     <PcHeader v-if="!isMobile" :character="currCharacter" />
     <main class="flex-1 overflow-hidden">
@@ -724,9 +717,8 @@ onDeactivated(() => {
               <!-- LLM的多条回复消息 -->
               <template v-if="qaMessage.children.length > 1">
                 <NTabs
-                  v-model:value="tabsActiveTab[index]" pane-wrapper-style="margin: -30px -30px"
-                  pane-style="padding-left: 4px; box-sizing: border-box;" type="bar" placement="left" size="small"
-                  animated
+                  v-model:value="tabsActiveTab[index]" type="bar" placement="left" size="small"
+                  pane-style="padding: 0 0 0 10px;" animated
                 >
                   <NTabPane
                     v-for="(answer, index) of qaMessage.children" :key="`tab_${answer.uuid}`"
@@ -749,7 +741,7 @@ onDeactivated(() => {
                     <Message
                       v-else :show-avatar="false" :date-time="answer.createTime" :thinking="answer.thinking"
                       :thinking-content="answer.thinkingContent" :text="answer.remark" type="text" :inversion="false"
-                      :regenerate="true" :error="answer.error" :loading="answer.loading"
+                      :regenerate="true" :regenerate-disabled="isChatting" :error="answer.error" :loading="answer.loading"
                       :input-tokens="answer.inputTokens" :output-tokens="answer.outputTokens"
                       :duration="answer.duration"
                       :tool-calls="answer.toolCalls"
@@ -790,7 +782,7 @@ onDeactivated(() => {
                   v-else :date-time="qaMessage.children[0].createTime" :thinking="qaMessage.children[0].thinking"
                   :thinking-content="qaMessage.children[0].thinkingContent" :text="qaMessage.children[0].remark"
                   type="text" :inversion="qaMessage.children[0].inversion" :regenerate="true"
-                  :error="qaMessage.children[0].error" :loading="qaMessage.children[0].loading"
+                  :regenerate-disabled="isChatting" :error="qaMessage.children[0].error" :loading="qaMessage.children[0].loading"
                   :input-tokens="qaMessage.children[0].inputTokens" :output-tokens="qaMessage.children[0].outputTokens"
                   :duration="qaMessage.children[0].duration"
                   :tool-calls="qaMessage.children[0].toolCalls"
@@ -813,8 +805,8 @@ onDeactivated(() => {
             </TransitionGroup>
           </template>
         </div>
-        <div class="sticky bottom-0 left-0 flex justify-center">
-          <NButton v-if="isChatting" size="tiny" @click="handleStop">
+        <div class="sticky bottom-0 left-0 z-10 flex justify-center py-2">
+          <NButton v-if="isChatting" size="small" type="primary" secondary round @click="handleStop">
             <template #icon>
               <SvgIcon icon="ri:stop-circle-line" />
             </template>
@@ -864,37 +856,38 @@ onDeactivated(() => {
       </NDrawerContent>
     </NDrawer>
 
-    <NModal v-model:show="showRefEmbeddingModal" style="max-width: 80%;" preset="card" :title="t('chat.referenceMaterial')">
+    <NModal v-model:show="showRefEmbeddingModal" style="width: min(640px, 92vw);" preset="card" :title="t('chat.referenceMaterial')">
       <div v-show="knowledgeEmbeddingRef.length === 0" class="flex items-center justify-center h-64">
         <span v-show="!loaddingEmbeddingRef">{{ t('common.noData') }}</span>
-        <SvgIcon v-show="loaddingEmbeddingRef" icon="line-md:loading-loop" class="text-2xl text-green-800 w-12 h-12" />
+        <NSpin v-show="loaddingEmbeddingRef" size="medium" />
       </div>
       <NCollapse v-show="knowledgeEmbeddingRef.length > 0" :default-expanded-names="['refer_0']">
         <NCollapseItem
           v-for="(reference, idx) of knowledgeEmbeddingRef" :key="reference.embeddingId" :title="`${t('chat.reference')}${idx + 1}`"
           :name="`refer_${idx}`"
         >
-          {{ reference.text }}
+          <!-- 证据原文可能来自 Markdown 文档，按 Markdown 渲染；纯文本回落为段落 -->
+          <EvidenceMarkdown :text="reference.text" />
         </NCollapseItem>
       </NCollapse>
     </NModal>
 
     <NModal
-      v-model:show="showMemoryModal" display-directive="show" style="max-width: 80%;"
+      v-model:show="showMemoryModal" display-directive="show" style="width: min(640px, 92vw);"
       preset="card" :title="t('chat.hitMemory')"
     >
       <RefMemory :msg-uuid="selectedMemoryMsgUuid" />
     </NModal>
 
     <NModal
-      v-model:show="showRefGraphModal" class="graph-modal" display-directive="show" style="max-width: 80%;" preset="card"
+      v-model:show="showRefGraphModal" class="graph-modal" display-directive="show" style="width: min(860px, 92vw);" preset="card"
       :title="t('chat.referenceGraph')"
     >
       <RefGraph :msg-uuid="showRefGraphMsgUuid" />
     </NModal>
 
     <NModal
-      v-model:show="showKeywordModal" display-directive="show" style="width: min(760px, 92vw);"
+      v-model:show="showKeywordModal" display-directive="show" style="width: min(640px, 92vw);"
       preset="card" :title="t('chat.keywordReference')"
     >
       <RefKeyword :msg-uuid="selectedKeywordMsgUuid" />

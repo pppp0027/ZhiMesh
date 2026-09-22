@@ -1,6 +1,6 @@
 <script setup lang='ts'>
 import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NInput, NModal, NScrollbar, useDialog, useMessage } from 'naive-ui'
+import { NButton, NInput, NModal, NScrollbar, NSpin, useDialog, useMessage } from 'naive-ui'
 import { useRoute } from 'vue-router'
 import { SvgIcon } from '@/components/common'
 import { useAppStore, useAuthStore, useChatStore } from '@/store'
@@ -25,6 +25,9 @@ const showRenameModal = ref(false)
 const renameConversation = ref<Chat.Conversation | null>(null)
 const renameTitle = ref('')
 const renaming = ref(false)
+const historyLoading = ref(false)
+// 正在创建默认会话的请求去重表：同一角色并发点击只发一次请求
+const defaultConversationInFlight = new Map<string, Promise<Chat.Conversation>>()
 
 const conversationEnabled = computed(() => appStore.sysConfigInfo.conversationEnabled)
 const characterList = computed(() => chatStore.characters)
@@ -110,14 +113,24 @@ async function handleSelectConversation(character: Chat.Character, conversation:
     appStore.setPageSiderCollapsed('chat', true)
 }
 
-async function getOrCreateDefaultConversation(character: Chat.Character) {
+function getOrCreateDefaultConversation(character: Chat.Character) {
   const existing = conversationsFor(character).find(item => item.isDefault)
   if (existing)
-    return existing
+    return Promise.resolve(existing)
 
-  const { data } = await api.fetchDefaultConversation(character.uuid)
-  chatStore.addConversation(data)
-  return data
+  // 快速连点同一角色时复用在途请求，避免并发创建多个默认会话
+  const inFlight = defaultConversationInFlight.get(character.uuid)
+  if (inFlight)
+    return inFlight
+
+  const request = api.fetchDefaultConversation(character.uuid).then(({ data }) => {
+    chatStore.addConversation(data)
+    return data
+  }).finally(() => {
+    defaultConversationInFlight.delete(character.uuid)
+  })
+  defaultConversationInFlight.set(character.uuid, request)
+  return request
 }
 
 async function handleSelectCharacter(character: Chat.Character) {
@@ -216,6 +229,9 @@ async function fetchAllConversations() {
 }
 
 async function fetchHistory() {
+  if (historyLoading.value)
+    return
+  historyLoading.value = true
   try {
     const { data: characters } = await api.fetchCharacters<Chat.Character[]>()
     if (!characters.length)
@@ -236,6 +252,8 @@ async function fetchHistory() {
   } catch (error) {
     console.error('load chat history failed', error)
     ms.error(t('common.wrong'))
+  } finally {
+    historyLoading.value = false
   }
 }
 
@@ -280,7 +298,7 @@ onMounted(() => {
 
 <template>
   <EditConv v-model:showModal="showEditModal" :character="editCharacter" @show-modal="show => showEditModal = show" />
-  <NModal v-model:show="showRenameModal" preset="card" closable :title="t('chat.renameConversation')" style="max-width: 420px">
+  <NModal v-model:show="showRenameModal" preset="card" closable :title="t('chat.renameConversation')" style="width: min(480px, 92vw);">
     <NInput v-model:value="renameTitle" :maxlength="100" show-count @keyup.enter="submitRename" />
     <template #footer>
       <div class="flex justify-end gap-2">
@@ -304,7 +322,11 @@ onMounted(() => {
         <span class="character-count">{{ characterList.length }}</span>
       </div>
 
-      <div v-if="!characterList.length" class="character-empty">
+      <div v-if="historyLoading" class="character-list-loading">
+        <NSpin size="medium" />
+      </div>
+
+      <div v-else-if="!characterList.length" class="character-empty">
         <span class="character-empty-icon"><SvgIcon icon="ri:user-star-line" /></span>
         <strong>{{ t('chat.noCharacterTitle') }}</strong>
         <span>{{ t('chat.noCharacterHint') }}</span>
@@ -412,6 +434,12 @@ onMounted(() => {
 .character-list-heading {
   margin: 3px 2px 10px;
   text-transform: uppercase;
+}
+
+.character-list-loading {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
 }
 
 .character-count {

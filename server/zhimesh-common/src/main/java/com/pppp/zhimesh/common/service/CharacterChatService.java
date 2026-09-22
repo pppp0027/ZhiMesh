@@ -10,12 +10,15 @@ import com.pppp.zhimesh.common.entity.ZhiMeshFile;
 import com.pppp.zhimesh.common.entity.AiModel;
 import com.pppp.zhimesh.common.entity.Character;
 import com.pppp.zhimesh.common.entity.CharacterMessage;
+import com.pppp.zhimesh.common.entity.CharacterMessageToolCall;
 import com.pppp.zhimesh.common.entity.LLMCallRecord;
 import com.pppp.zhimesh.common.entity.User;
+import com.pppp.zhimesh.common.entity.Workflow;
 import com.pppp.zhimesh.common.enums.ChatMessageRoleEnum;
 import com.pppp.zhimesh.common.enums.ErrorEnum;
 import com.pppp.zhimesh.common.enums.LLMCallRecordSourceType;
 import com.pppp.zhimesh.common.enums.MemoryType;
+import com.pppp.zhimesh.common.enums.WfIODataTypeEnum;
 import com.pppp.zhimesh.common.exception.BaseException;
 import com.pppp.zhimesh.common.file.FileOperatorContext;
 import com.pppp.zhimesh.common.file.LocalFileUtil;
@@ -25,6 +28,12 @@ import com.pppp.zhimesh.common.helper.QuotaHelper;
 import com.pppp.zhimesh.common.helper.SseManager;
 import com.pppp.zhimesh.common.languagemodel.AbstractLLMService;
 import com.pppp.zhimesh.common.languagemodel.data.LLMResponseContent;
+import com.pppp.zhimesh.common.languagemodel.tool.RunWorkflowTool;
+import com.pppp.zhimesh.common.languagemodel.tool.SearchKnowledgeTool;
+import com.pppp.zhimesh.common.languagemodel.tool.ToolContext;
+import com.pppp.zhimesh.common.languagemodel.tool.ToolExecutor;
+import com.pppp.zhimesh.common.languagemodel.tool.ToolRagContext;
+import com.pppp.zhimesh.common.mapper.CharacterMessageToolCallMapper;
 import com.pppp.zhimesh.common.memory.longterm.LongTermMemoryService;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryService;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryTurnCoordinator;
@@ -38,6 +47,10 @@ import com.pppp.zhimesh.common.rag.intent.MemoryRetrievalPolicy;
 import com.pppp.zhimesh.common.util.*;
 import com.pppp.zhimesh.common.util.NumberUtil;
 import com.pppp.zhimesh.common.vo.*;
+import com.pppp.zhimesh.common.workflow.WfNodeInputConfig;
+import com.pppp.zhimesh.common.workflow.WorkflowStarter;
+import com.pppp.zhimesh.common.workflow.def.WfNodeIO;
+import com.pppp.zhimesh.common.workflow.def.WfNodeIOText;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -57,6 +70,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import ws.schild.jave.info.MultimediaInfo;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.*;
 import static com.pppp.zhimesh.common.enums.ErrorEnum.A_CHARACTER_NOT_FOUND;
@@ -124,6 +138,18 @@ public class CharacterChatService {
 
     @Resource
     private LLMCallRecordService llmCallRecordService;
+
+    @Resource
+    private CharacterMessageToolCallMapper characterMessageToolCallMapper;
+
+    @Resource
+    private WorkflowService workflowService;
+
+    @Resource
+    private WorkflowNodeService workflowNodeService;
+
+    @Resource
+    private WorkflowStarter workflowStarter;
 
     public SseEmitter sseAsk(AskReq askReq) {
         String sseUuid = UuidUtil.createShort();
@@ -201,7 +227,7 @@ public class CharacterChatService {
         LLMResponseContent responseContent = new LLMResponseContent(
                 result.getThinking(), result.getAnswer(), null);
         self.saveAfterAiResponse(chatContext, askReq, new ArrayList<>(), responseContent,
-                questionMeta, answerMeta, null, llmService, result.getMemoryWindowMaxTokens());
+                questionMeta, answerMeta, null, llmService, result.getMemoryWindowMaxTokens(), null);
 
         // Build response
         Map<String, Object> data = new LinkedHashMap<>();
@@ -370,6 +396,20 @@ public class CharacterChatService {
                 askReq.getProcessedPrompt() != null ? askReq.getProcessedPrompt() : askReq.getPrompt(),
                 user, llmService, true, Boolean.TRUE.equals(character.getIsEnableWebSearch()), askReq.getImageUrls());
         chatRequestParams.setShortTermMemoryUserMessage(askReq.getPrompt());
+        // 11.5 Agentic 分支：角色开启 isAgentic 且（绑定可用知识库 或 存在可调用工作流）时
+        // 注册内置工具（search_knowledge / run_workflow 按可用性组装）。混合检索——现有预检索
+        // （scope-gate 判定相关时的自动首检索）完全不动，工具是增量能力；isAgentic=false 时不
+        // 构造任何对象、不触发工作流可见性查询，行为与存量逐字节等价
+        List<RunWorkflowTool.WorkflowOption> runnableWorkflows =
+                Boolean.TRUE.equals(character.getIsAgentic()) ? listRunnableWorkflowOptions(user) : List.of();
+        ToolContext toolContext = buildAgenticToolContext(character, user, filteredKb, runnableWorkflows,
+                llmService, chatContext.shortTermMemoryId());
+        if (null != toolContext) {
+            chatRequestParams.setBuiltinTools(buildBuiltinTools(filteredKb, runnableWorkflows));
+            sseAskParam.setToolContext(toolContext);
+            log.info("Agentic mode enabled, characterId:{}, kbCount:{}, runnableWorkflowCount:{}",
+                    character.getId(), filteredKb.size(), runnableWorkflows.size());
+        }
         // 12.设置temperature、是否返回思考等模型参数
         sseAskParam.setHttpRequestParams(chatRequestParams);
         sseAskParam.setModelProperties(
@@ -412,11 +452,14 @@ public class CharacterChatService {
                     audioInfo.setUrl(FileOperatorContext.getFileUrl(adiFile));
                 }
                 */
+                // 工具检索证据（refCollector）与预检索证据合并去重后的集合：
+                // is_ref_* 标志计算与落库共用同一集合，工具命中的通道同样点亮标志
+                List<RetrieverWrapper> effectiveRetrievers = mergeToolCollectedRefs(retrieverWrappers, toolContext);
                 boolean isRefEmbedding = false;
                 boolean isRefGraph = false;
                 boolean isRefMemoryEmbedding = false;
                 boolean isRefBm25 = false;
-                for (RetrieverWrapper wrapper : retrieverWrappers) {
+                for (RetrieverWrapper wrapper : effectiveRetrievers) {
                     if (RetrieveContentFrom.KNOWLEDGE_BASE.equals(wrapper.getContentFrom())) {
                         for (ContentRetriever sourceRetriever : DeduplicatingContentRetriever.unwrapSourceRetrievers(wrapper.getRetriever())) {
                             if (sourceRetriever instanceof ZhiMeshEmbeddingStoreContentRetriever embeddingStoreContentRetriever) {
@@ -444,9 +487,13 @@ public class CharacterChatService {
                 answerMeta.setIsRefGraph(isRefGraph);
                 answerMeta.setIsRefMemoryEmbedding(isRefMemoryEmbedding);
                 answerMeta.setIsRefBm25(isRefBm25);
-                self.saveAfterAiResponse(chatContext, askReq, retrieverWrappers, response,
+                // 仅当确有工具调用时随 meta 事件下发轨迹，非 Agentic 路径载荷形状不变
+                if (null != toolContext && CollectionUtils.isNotEmpty(toolContext.getToolTraces())) {
+                    answerMeta.setToolCalls(toolContext.getToolTraces());
+                }
+                self.saveAfterAiResponse(chatContext, askReq, effectiveRetrievers, response,
                         questionMeta, answerMeta, audioInfo, llmService,
-                        chatRequestParams.getMemoryWindowMaxTokens());
+                        chatRequestParams.getMemoryWindowMaxTokens(), toolContext);
                 sseManager.sendComplete(user.getId(), sseUuid, questionMeta, answerMeta, audioInfo,
                         chatContext.conversation() == null ? null : chatContext.conversation().getUuid());
             });
@@ -457,11 +504,170 @@ public class CharacterChatService {
         }
     }
 
+    /**
+     * 构造 Agentic 请求级工具上下文；角色未开启 isAgentic、且既无可检索知识库也无
+     * 可调用工作流时返回 null，调用方不注册任何内置工具、不改动请求，存量行为逐字节等价。
+     * 检索依赖（filteredKb/llmService/embeddingModel）封装进 ToolRagContext，
+     * filteredKb 已过 KnowledgeBaseAccessService 鉴权，是工具检索的唯一合法范围；
+     * filteredKb 为空但工作流可用时 ragContext 置 null（不注册 search_knowledge，
+     * 其对 null ragContext 的短路兼容保持不变）。
+     * <p>
+     * Build the request-scoped agentic tool context; returns null when the
+     * character has isAgentic off or has neither a searchable knowledge base
+     * nor a runnable workflow, in which case the caller registers no builtin
+     * tools and leaves the request untouched (byte-for-byte legacy behavior).
+     * Retrieval dependencies (filteredKb/llmService/embeddingModel) are wrapped
+     * into ToolRagContext; filteredKb is already authorization-filtered by
+     * KnowledgeBaseAccessService and is the only legal retrieval scope for
+     * tools. When filteredKb is empty but workflows are available, ragContext
+     * stays null (search_knowledge is not registered; its null-ragContext
+     * short-circuit compatibility is unchanged).
+     *
+     * @param character 角色 / Character
+     * @param user      当前用户 / Current user
+     * @param filteredKb 鉴权后的可用知识库 / Authorization-filtered visible KBs
+     * @param runnableWorkflows 可调用工作流清单 / Visible runnable workflows
+     * @param llmService 实际使用的 LLM 服务 / Resolved LLM service
+     * @param shortTermMemoryId 短期记忆ID / Short-term memory id
+     * @return 工具上下文，无可注册工具时为 null / Tool context, or null when nothing to register
+     */
+    private ToolContext buildAgenticToolContext(Character character, User user, List<KbInfoResp> filteredKb,
+                                                List<RunWorkflowTool.WorkflowOption> runnableWorkflows,
+                                                AbstractLLMService llmService, String shortTermMemoryId) {
+        boolean hasKnowledgeBases = CollectionUtils.isNotEmpty(filteredKb);
+        if (!Boolean.TRUE.equals(character.getIsAgentic())
+                || (!hasKnowledgeBases && CollectionUtils.isEmpty(runnableWorkflows))) {
+            return null;
+        }
+        // 记忆接线口径与预检索保持一致：仅 understandContextEnable 时携带短期记忆ID
+        // Memory wiring matches pre-retrieval: the short-term memory id is
+        // carried only when understandContextEnable is on
+        String toolMemoryId = Boolean.TRUE.equals(character.getUnderstandContextEnable())
+                ? shortTermMemoryId : null;
+        ToolContext.ToolContextBuilder builder = ToolContext.builder()
+                .user(user)
+                .characterId(character.getId())
+                .memoryId(toolMemoryId)
+                .toolTraces(new ArrayList<>())
+                .refCollector(new ArrayList<>());
+        if (hasKnowledgeBases) {
+            builder.ragContext(ToolRagContext.builder()
+                    .filteredKb(filteredKb)
+                    .llmService(llmService)
+                    .embeddingModel(embeddingModel)
+                    .build());
+        }
+        return builder.build();
+    }
+
+    /** run_workflow 可见清单的单次查询上限（按更新时间倒序取最近 N 条，防膨胀） */
+    private static final int RUNNABLE_WORKFLOW_QUERY_LIMIT = 100;
+
+    /**
+     * 按请求解析当前用户可调用的工作流清单：一次工作流列表查询（mine+public 同口径）+
+     * 一次起始节点 in 查询，把每个工作流映射为 title+uuid+起始节点首个文本输入定义的
+     * WorkflowOption；无可调用工作流时返回空列表
+     * <p>
+     * Resolve the user's runnable workflow catalog per request: one workflow
+     * list query (mine+public scope) plus one start-node in-query, mapping each
+     * workflow to a WorkflowOption of title+uuid+the start node's first TEXT
+     * input definition; empty when nothing is runnable.
+     */
+    private List<RunWorkflowTool.WorkflowOption> listRunnableWorkflowOptions(User user) {
+        List<Workflow> workflows = workflowService.listRunnableForUser(user, RUNNABLE_WORKFLOW_QUERY_LIMIT);
+        if (CollectionUtils.isEmpty(workflows)) {
+            return List.of();
+        }
+        Map<Long, WfNodeInputConfig> startInputConfigs = workflowNodeService.getStartNodeInputConfigs(
+                workflows.stream().map(Workflow::getId).toList());
+        return workflows.stream()
+                .map(workflow -> toRunnableWorkflowOption(workflow, startInputConfigs.get(workflow.getId())))
+                .toList();
+    }
+
+    /**
+     * 工作流实体 + 起始节点输入定义 → 工具可见清单条目：取首个文本类型输入参数的
+     * name/maxLength（超长截断与投递依据），并携带备注摘要与全部输入参数清单（展示名/
+     * 类型/必填）——run_workflow 的目录展示与门卫前置均以此为准；无文本输入定义时
+     * inputParamName 为 null
+     * <p>
+     * Workflow entity + start-node input definitions → one catalog entry:
+     * takes the first TEXT-typed input's name/maxLength (the truncation and
+     * delivery basis) and carries the remark digest plus the full input-param
+     * manifest (display name/type/required) — the basis for run_workflow's
+     * catalog display and input preflight; inputParamName is null when no TEXT
+     * input is defined.
+     */
+    private static RunWorkflowTool.WorkflowOption toRunnableWorkflowOption(Workflow workflow,
+                                                                           WfNodeInputConfig startInputConfig) {
+        String inputParamName = null;
+        Integer inputMaxLength = null;
+        List<RunWorkflowTool.WorkflowParamInfo> params = new ArrayList<>();
+        if (null != startInputConfig && CollectionUtils.isNotEmpty(startInputConfig.getUserInputs())) {
+            for (WfNodeIO inputDef : startInputConfig.getUserInputs()) {
+                params.add(new RunWorkflowTool.WorkflowParamInfo(inputDef.getName(),
+                        StringUtils.defaultIfBlank(inputDef.getTitle(), inputDef.getName()),
+                        inputDef.getType(), Boolean.TRUE.equals(inputDef.getRequired())));
+                if (null == inputParamName && WfIODataTypeEnum.TEXT.getValue().equals(inputDef.getType())) {
+                    inputParamName = inputDef.getName();
+                    if (inputDef instanceof WfNodeIOText textDef && null != textDef.getMaxLength()) {
+                        inputMaxLength = textDef.getMaxLength();
+                    }
+                }
+            }
+        }
+        return new RunWorkflowTool.WorkflowOption(workflow.getTitle(), workflow.getUuid(),
+                inputParamName, inputMaxLength, workflow.getRemark(), params);
+    }
+
+    /**
+     * 按可用性组装内置工具：filteredKb 非空 → search_knowledge；可调用工作流非空 →
+     * run_workflow（内部超时取 tool-timeout-ms - 5000，先于外层 guardrail 返回）
+     * <p>
+     * Assemble builtin tools by availability: search_knowledge when filteredKb
+     * is non-empty; run_workflow when runnable workflows exist (its internal
+     * timeout is tool-timeout-ms - 5000, returning ahead of the outer guardrail).
+     */
+    private List<ToolExecutor> buildBuiltinTools(List<KbInfoResp> filteredKb,
+                                                 List<RunWorkflowTool.WorkflowOption> runnableWorkflows) {
+        List<ToolExecutor> builtinTools = new ArrayList<>();
+        if (CollectionUtils.isNotEmpty(filteredKb)) {
+            builtinTools.add(new SearchKnowledgeTool());
+        }
+        if (CollectionUtils.isNotEmpty(runnableWorkflows)) {
+            builtinTools.add(new RunWorkflowTool(workflowStarter, runnableWorkflows,
+                    resolveRunWorkflowInternalTimeoutMs()));
+        }
+        return builtinTools;
+    }
+
+    /**
+     * run_workflow 的内部等待上限：比外层工具超时（tool-timeout-ms）提前 5s 返回，留出
+     * 余量先于外层 guardrail 结束，避免池线程等待被外层 cancel(true) 打断后"仍在执行中"
+     * 摘要退化为工具失败；下限 1s——内部必须始终先于外层触发，绝不能被下限抬到外层之后
+     * （否则 10s 下限在 tool-timeout-ms &lt; 15s 时反而让外层先 fire）。配置不可用时按
+     * 默认 tool-timeout-ms=60s 推导
+     * <p>
+     * Internal wait cap for run_workflow: 5s ahead of the outer tool timeout
+     * (tool-timeout-ms) so it returns before the outer guardrail fires and the
+     * pool thread's wait is never interrupted by the outer cancel(true), which
+     * would degrade the "still running" summary into a tool failure; floor 1s —
+     * the internal cap must ALWAYS fire before the outer guardrail and must never
+     * be lifted past it by a floor (a 10s floor did exactly that whenever
+     * tool-timeout-ms &lt; 15s). Falls back to the default tool-timeout-ms=60s
+     * when properties are absent.
+     */
+    private long resolveRunWorkflowInternalTimeoutMs() {
+        ZhiMeshProperties.Agent agentSettings = null != adiProperties && null != adiProperties.getAgent()
+                ? adiProperties.getAgent() : new ZhiMeshProperties.Agent();
+        return Math.max(1_000L, agentSettings.getToolTimeoutMs() - 5_000L);
+    }
+
     @Transactional
     public void saveAfterAiResponse(ChatContext chatContext, AskReq askReq, List<RetrieverWrapper> retrievers,
                                     LLMResponseContent response, PromptMeta questionMeta, AnswerMeta answerMeta,
                                     AudioInfo audioInfo, AbstractLLMService llmService,
-                                    Integer memoryWindowMaxTokens) {
+                                    Integer memoryWindowMaxTokens, ToolContext toolContext) {
         User user = chatContext.user();
         Character character = chatContext.character();
         String prompt = askReq.getPrompt();
@@ -543,6 +749,9 @@ public class CharacterChatService {
         llmCallRecordService.saveRecord(callRecord);
 
         createRef(retrievers, user, aiAnswer.getId());
+
+        // Agentic 工具调用轨迹落库（retrievers 已是预检索+工具检索合并去重后的集合）
+        saveToolCallTraces(toolContext, aiAnswer.getId());
 
         calcTodayCost(user, character, questionMeta, answerMeta, aiModel.getIsFree());
 
@@ -720,6 +929,144 @@ public class CharacterChatService {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * 把工具检索命中的证据（ToolContext.refCollector）合并进预检索证据集合，返回
+     * is_ref_* 标志计算与落库共用的合并视图。
+     * <p>
+     * 去重键 =（通道 contentFrom，片段标识）：
+     * <ul>
+     * <li>向量通道（知识库 embedding / 记忆 embedding）：embeddingId —— 同一片段既被预检索
+     * 又被工具检索时只落一次。实现方式是按通道收集已见 id 集合，对工具 wrapper 的源检索器
+     * 调用 retainRetrievedEmbeddings 就地剔除已见 id，剩余的全新 id 再并入集合（同一回答内
+     * 多次工具调用之间的重复也按此顺序去重）</li>
+     * <li>BM25 通道：chunkUuid —— 同一规则，retainRetrievedHits 就地剔除已见 chunk</li>
+     * <li>图谱通道：无稳定片段标识（落库是 vertices/edges 快照），按原样追加，快照级重复可接受</li>
+     * </ul>
+     * 合并仅发生在响应完成后一次，就地修改的只是工具 wrapper 内部的检索器记账（工具结果文本
+     * 早已发往模型，不受影响）；无工具上下文或 refCollector 为空时原样返回预检索集合。
+     * <p>
+     * Merge tool-retrieved evidence (ToolContext.refCollector) into the
+     * pre-retrieval set, producing the combined view shared by the is_ref_*
+     * flag computation and persistence.
+     * <p>
+     * Dedup key = (channel contentFrom, fragment identifier):
+     * <ul>
+     * <li>vector channels (KB embedding / memory embedding): embeddingId — a
+     * fragment hit by both pre-retrieval and tool retrieval is persisted once.
+     * Seen ids are collected per channel, then each tool wrapper's source
+     * retriever has already-seen ids stripped in place via
+     * retainRetrievedEmbeddings; the remaining fresh ids join the set (repeats
+     * across multiple tool calls within one answer are deduped the same way,
+     * in order)</li>
+     * <li>BM25 channel: chunkUuid — same rule via retainRetrievedHits</li>
+     * <li>graph channel: no stable fragment id (persistence is a
+     * vertices/edges snapshot); appended as-is, snapshot-level repetition is
+     * acceptable</li>
+     * </ul>
+     * The merge runs exactly once after the response completes; the in-place
+     * mutation only touches the tool wrapper's internal retriever bookkeeping
+     * (the tool result text has already been sent to the model). Without a
+     * tool context or with an empty refCollector the pre-retrieval set is
+     * returned unchanged.
+     */
+    private List<RetrieverWrapper> mergeToolCollectedRefs(List<RetrieverWrapper> preflightWrappers,
+                                                          ToolContext toolContext) {
+        if (null == toolContext || CollectionUtils.isEmpty(toolContext.getRefCollector())) {
+            return preflightWrappers;
+        }
+        Map<String, Set<String>> channelToSeenIds = new HashMap<>();
+        collectSeenEvidenceIds(preflightWrappers, channelToSeenIds);
+        for (RetrieverWrapper toolWrapper : toolContext.getRefCollector()) {
+            Set<String> seenIds = channelToSeenIds.computeIfAbsent(
+                    StringUtils.defaultString(toolWrapper.getContentFrom()), key -> new HashSet<>());
+            for (ContentRetriever sourceRetriever
+                    : DeduplicatingContentRetriever.unwrapSourceRetrievers(toolWrapper.getRetriever())) {
+                if (sourceRetriever instanceof ZhiMeshEmbeddingStoreContentRetriever embeddingSource) {
+                    Map<String, Double> hits = embeddingSource.getRetrievedEmbeddingToScore();
+                    if (null == hits || hits.isEmpty()) {
+                        continue;
+                    }
+                    Set<String> freshIds = hits.keySet().stream()
+                            .filter(embeddingId -> !seenIds.contains(embeddingId))
+                            .collect(Collectors.toSet());
+                    embeddingSource.retainRetrievedEmbeddings(freshIds);
+                    seenIds.addAll(freshIds);
+                } else if (sourceRetriever instanceof Bm25ContentRetriever bm25Source) {
+                    List<Bm25ContentRetriever.Bm25RetrievedHit> hits = bm25Source.getRetrievedHits();
+                    if (CollectionUtils.isEmpty(hits)) {
+                        continue;
+                    }
+                    Set<String> freshChunkUuids = hits.stream()
+                            .map(Bm25ContentRetriever.Bm25RetrievedHit::chunkUuid)
+                            .filter(chunkUuid -> !seenIds.contains(chunkUuid))
+                            .collect(Collectors.toSet());
+                    bm25Source.retainRetrievedHits(freshChunkUuids);
+                    seenIds.addAll(freshChunkUuids);
+                }
+            }
+        }
+        List<RetrieverWrapper> merged = new ArrayList<>(preflightWrappers);
+        merged.addAll(toolContext.getRefCollector());
+        return merged;
+    }
+
+    /**
+     * 收集既有 wrapper 集合已产出的证据标识，按通道（contentFrom）分组：
+     * 向量通道取 embeddingId，BM25 通道取 chunkUuid
+     * <p>
+     * Collect evidence identifiers already produced by the existing wrapper
+     * set, grouped by channel (contentFrom): embeddingId for vector channels,
+     * chunkUuid for the BM25 channel.
+     */
+    private void collectSeenEvidenceIds(List<RetrieverWrapper> wrappers, Map<String, Set<String>> channelToSeenIds) {
+        if (CollectionUtils.isEmpty(wrappers)) {
+            return;
+        }
+        for (RetrieverWrapper wrapper : wrappers) {
+            Set<String> seenIds = channelToSeenIds.computeIfAbsent(
+                    StringUtils.defaultString(wrapper.getContentFrom()), key -> new HashSet<>());
+            for (ContentRetriever sourceRetriever
+                    : DeduplicatingContentRetriever.unwrapSourceRetrievers(wrapper.getRetriever())) {
+                if (sourceRetriever instanceof ZhiMeshEmbeddingStoreContentRetriever embeddingSource) {
+                    Map<String, Double> hits = embeddingSource.getRetrievedEmbeddingToScore();
+                    if (null != hits) {
+                        seenIds.addAll(hits.keySet());
+                    }
+                } else if (sourceRetriever instanceof Bm25ContentRetriever bm25Source) {
+                    List<Bm25ContentRetriever.Bm25RetrievedHit> hits = bm25Source.getRetrievedHits();
+                    if (null != hits) {
+                        hits.stream().map(Bm25ContentRetriever.Bm25RetrievedHit::chunkUuid).forEach(seenIds::add);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 把请求级工具调用轨迹批量落库到 adi_character_message_tool_call；
+     * seq 沿用轨迹内已有的请求内序号，保持调用顺序
+     * <p>
+     * Persist the request-scoped tool-call traces into
+     * adi_character_message_tool_call; seq reuses the in-request sequence
+     * number carried by each trace, preserving call order.
+     */
+    private void saveToolCallTraces(ToolContext toolContext, Long messageId) {
+        if (null == toolContext || CollectionUtils.isEmpty(toolContext.getToolTraces())) {
+            return;
+        }
+        for (ToolCallTrace trace : toolContext.getToolTraces()) {
+            CharacterMessageToolCall record = new CharacterMessageToolCall();
+            record.setMessageId(messageId);
+            record.setToolName(trace.getToolName());
+            record.setArgs(trace.getArgs());
+            record.setResultSummary(trace.getResultSummary());
+            record.setDurationMs(trace.getDurationMs());
+            record.setSuccess(trace.isSuccess());
+            record.setSeq(trace.getSeq());
+            characterMessageToolCallMapper.insert(record);
         }
     }
 

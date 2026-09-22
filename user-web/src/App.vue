@@ -132,7 +132,7 @@ function refreshModelsWhenVisible() {
 const menuKeyToRouteNames = new Map<string, string[]>(
   [
     ['chat', ['Chat', 'ChatDetail']],
-    ['knowledge-base', ['QAIndex', 'QADetail', 'KnowledgeBaseManage', 'KnowledgeBaseManageDetail']],
+    ['knowledge-base', ['QAIndex', 'QADetail', 'KnowledgeBaseManage', 'KnowledgeBaseManageDetail', 'TeamManage']],
     ['workflow', ['WfDetail']],
     ['mcp', ['Mcp']],
   ])

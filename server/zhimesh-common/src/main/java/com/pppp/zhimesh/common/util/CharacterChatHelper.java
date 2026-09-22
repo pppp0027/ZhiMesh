@@ -95,16 +95,39 @@ public class CharacterChatHelper {
     public static List<RetrieverWrapper> retrieve(Long characterId, List<KbInfoResp> filteredKb,
                                                   AbstractLLMService llmService, EmbeddingModel embeddingModel,
                                                   String queryText, String memoryId) {
+        return retrieve(characterId, filteredKb, llmService, embeddingModel, queryText, memoryId, false);
+    }
+
+    /**
+     * 多知识库搜索、记忆搜索
+     * <p>
+     * Concurrent RAG retrieval from knowledge bases and character memory.
+     * </p>
+     *
+     * @param characterId 角色ID / Character ID
+     * @param filteredKb  有效的已关联的知识库 / Filtered enabled knowledge bases
+     * @param llmService  大模型服务 / LLM service
+     * @param embeddingModel 向量化模型 / Embedding model
+     * @param queryText   查询文本 / Query text
+     * @param memoryId short-term memory used only when the query needs context
+     * @param modelAuthoredQuery query 是否由 Agentic 工具循环中的模型自拟：
+     *                           此时跳过 ContextualQueryRewriter 改写（模型已带全上下文，
+     *                           改写属于重复 LLM 调用）/ whether the query was authored by
+     *                           the agentic tool loop's model: skips the contextual
+     *                           rewrite, which would be a redundant LLM call
+     * @return 检索结果列表 / Retrieval result list
+     */
+    public static List<RetrieverWrapper> retrieve(Long characterId, List<KbInfoResp> filteredKb,
+                                                  AbstractLLMService llmService, EmbeddingModel embeddingModel,
+                                                  String queryText, String memoryId, boolean modelAuthoredQuery) {
         MemoryRetrievalPolicy memoryPolicy = SpringUtil.getBean(MemoryRetrievalPolicy.class);
         if (shouldSkipAllExternalSources(queryText, memoryPolicy)) {
             log.debug("Retrieval preflight skipped all external sources, questionChars:{}",
                     StringUtils.length(queryText));
             return List.of();
         }
-        ContextualQueryRewriter.Result resolvedQuery = filteredKb.isEmpty()
-                ? new ContextualQueryRewriter.Result(queryText, queryText, false, false,
-                "no attached knowledge base")
-                : SpringUtil.getBean(ContextualQueryRewriter.class).resolve(queryText, memoryId, llmService);
+        ContextualQueryRewriter.Result resolvedQuery = resolveRetrievalQuery(
+                queryText, filteredKb, memoryId, llmService, modelAuthoredQuery);
         String retrievalQuery = resolvedQuery.retrievalQuery();
         RetrievalQueryContext queryContext = RetrievalQueryContext.create(retrievalQuery, embeddingModel);
         List<Embedding> scopeEmbeddings = new ArrayList<>();
@@ -276,6 +299,34 @@ public class CharacterChatHelper {
             }
         }
         return retrieverWrappers;
+    }
+
+    /**
+     * 解析最终检索查询：常规路径（用户原话）经 ContextualQueryRewriter 结合对话上下文改写；
+     * modelAuthoredQuery=true（Agentic 工具路径，query 由循环中的模型带全上下文自拟）时
+     * 跳过改写直接透传——改写器本身是一次 LLM 调用，对模型自拟 query 属于重复消费，
+     * 且该调用游离于计费链路之外（评审 M-3）。
+     * <p>
+     * Resolve the final retrieval query: the regular path (raw user wording)
+     * rewrites through ContextualQueryRewriter with conversation context; when
+     * modelAuthoredQuery is true (the agentic tool path, where the loop's model
+     * authored the query with full context) the rewrite is skipped and the query
+     * passes through — the rewriter is itself an LLM call, redundant for a
+     * model-authored query, and that call sits outside the billing chain
+     * (review finding M-3).
+     */
+    static ContextualQueryRewriter.Result resolveRetrievalQuery(String queryText, List<KbInfoResp> filteredKb,
+                                                                String memoryId, AbstractLLMService llmService,
+                                                                boolean modelAuthoredQuery) {
+        if (filteredKb.isEmpty()) {
+            return new ContextualQueryRewriter.Result(queryText, queryText, false, false,
+                    "no attached knowledge base");
+        }
+        if (modelAuthoredQuery) {
+            return new ContextualQueryRewriter.Result(queryText, queryText, false, false,
+                    "model-authored query");
+        }
+        return SpringUtil.getBean(ContextualQueryRewriter.class).resolve(queryText, memoryId, llmService);
     }
 
     /**

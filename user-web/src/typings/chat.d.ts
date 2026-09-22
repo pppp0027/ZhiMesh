@@ -33,7 +33,20 @@ declare namespace Chat {
 		duration?: number
 
 		//MCP tool call observability
-		toolCalls?: { toolName: string; durationMs: number; success: boolean }[]
+		toolCalls?: ToolCall[]
+	}
+
+	//MCP 工具调用观测（实时 SSE toolCallReceived 与历史回放共用结构）
+	interface ToolCall {
+		toolName: string
+		durationMs: number
+		success: boolean
+		/** 工具入参 JSON 字符串（可能较长，前端摘要展示） */
+		args?: string
+		/** 工具结果摘要（后端已截断约 200 字符） */
+		resultSummary?: string
+		/** 历史回放排序序号（SSE 实时事件不带该字段） */
+		seq?: number
 	}
 
 	interface CharacterPreset {
@@ -63,7 +76,6 @@ declare namespace Chat {
 		uuid: string
 		title: string
 		isMine: boolean
-		isPublic: boolean
 		kbInfo?: KnowledgeBase.Info
 		isEnable: boolean //该知识库是否可用
 		isSystem?: boolean
@@ -102,6 +114,7 @@ declare namespace Chat {
 		isAutoplayAnswer: boolean //聊天时音频类型的响应内容是否自动播放
 		isEnableThinking: boolean //是否启用思考过程
 		isEnableWebSearch: boolean //是否启用网络搜索
+		isAgentic?: boolean //是否启用Agentic模式（自主调用知识库检索等工具完成任务）
 		audioConfig: AudioConfig //语音配置
 	}
 
@@ -179,6 +192,8 @@ declare namespace Chat {
 			isRefGraph?: boolean
 			isRefMemoryEmbedding?: boolean
 			isRefBm25?: boolean
+			//AnswerMeta 事件同样可能携带工具调用数组（结构同 ToolCall）
+			toolCalls?: ToolCall[]
 		},
 		audioInfo: AudioInfo
 	}

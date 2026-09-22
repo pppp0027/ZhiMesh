@@ -1,10 +1,10 @@
 <script setup lang='ts'>
 import { computed, onMounted, ref, watch } from 'vue'
-import { NCollapse, NCollapseItem } from 'naive-ui'
+import { NCollapse, NCollapseItem, NSpin } from 'naive-ui'
 import { useChatStore } from '@/store'
 import api from '@/api'
 import { t } from '@/locales'
-import { SvgIcon } from '@/components/common'
+import EvidenceMarkdown from './components/EvidenceMarkdown.vue'
 
 interface Props {
   msgUuid: string
@@ -53,12 +53,12 @@ watch(() => props.msgUuid, newUuid => load(newUuid))
 <template>
   <div v-show="memoryEmbeddings.length === 0" class="flex items-center justify-center h-64">
     <span v-show="!loading">{{ t('common.noData') }}</span>
-    <SvgIcon v-show="loading" icon="line-md:loading-loop" class="text-2xl text-green-800 w-12 h-12" />
+    <NSpin v-show="loading" size="medium" />
   </div>
   <div v-show="memoryEmbeddings.length > 0">
     <!-- Semantic memory group -->
     <div v-if="semanticMemoryItems.length > 0" class="mb-4">
-      <div class="font-semibold text-sm mb-2 text-gray-700 dark:text-gray-300">
+      <div class="memory-group-title">
         {{ t('chat.semanticMemory') }} ({{ semanticMemoryItems.length }})
       </div>
       <NCollapse :default-expanded-names="['sem_0']">
@@ -67,13 +67,13 @@ watch(() => props.msgUuid, newUuid => load(newUuid))
           :title="`${t('chat.memory')} ${idx + 1}`"
           :name="`sem_${idx}`"
         >
-          {{ reference.text }}
+          <EvidenceMarkdown :text="reference.text" />
         </NCollapseItem>
       </NCollapse>
     </div>
     <!-- Episodic memory group -->
     <div v-if="episodicMemoryItems.length > 0">
-      <div class="font-semibold text-sm mb-2 text-gray-700 dark:text-gray-300">
+      <div class="memory-group-title">
         {{ t('chat.episodicMemory') }} ({{ episodicMemoryItems.length }})
       </div>
       <NCollapse :default-expanded-names="['epi_0']">
@@ -86,9 +86,18 @@ watch(() => props.msgUuid, newUuid => load(newUuid))
               <span>{{ reference.createTime || `${t('chat.episodicMemory')} ${idx + 1}` }}</span>
             </div>
           </template>
-          {{ reference.text }}
+          <EvidenceMarkdown :text="reference.text" />
         </NCollapseItem>
       </NCollapse>
     </div>
   </div>
 </template>
+
+<style scoped lang="less">
+.memory-group-title {
+  margin-bottom: 8px;
+  color: var(--zhimesh-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+</style>

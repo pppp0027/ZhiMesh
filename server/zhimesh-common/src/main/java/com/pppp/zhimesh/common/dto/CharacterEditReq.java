@@ -32,5 +32,7 @@ public class CharacterEditReq {
 
     private Boolean isEnableWebSearch;
 
+    private Boolean isAgentic;
+
     private AudioConfig audioConfig;
 }

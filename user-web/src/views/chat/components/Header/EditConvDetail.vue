@@ -1,14 +1,14 @@
 <script lang="ts" setup>
 import { ref, watch } from 'vue'
-import { NButton, NCheckbox, NCheckboxGroup, NFlex, NIcon, NInput, NPopconfirm, NRadio, NRadioGroup, NTag, NTooltip, useMessage } from 'naive-ui'
+import { NButton, NCheckbox, NCheckboxGroup, NFlex, NIcon, NInput, NModal, NRadio, NRadioGroup, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
 import { QuestionCircle16Regular } from '@vicons/fluent'
 import ConvKnowledgeSelector from '@/views/chat/ConvKnowledgeSelector.vue'
 import { useChatStore, useMcpStore } from '@/store'
 import { router } from '@/router'
-import { debounce } from '@/utils/functions/debounce'
 import { emptyCharacter } from '@/utils/functions'
 import api from '@/api'
 import { t } from '@/locales'
+import { openDeleteDialog } from '@/utils/dialog'
 import { CHAT_MESSAGE_CONTENT_TYPE } from '@/utils/constant'
 interface Props {
   character: Chat.Character
@@ -21,7 +21,10 @@ const props = withDefaults(defineProps<Props>(), {})
 const emit = defineEmits<Emit>()
 const chatStore = useChatStore()
 const mcpStore = useMcpStore()
-const tmpCharacter = ref<Chat.Character>(emptyCharacter())
+const dialog = useDialog()
+// isAgentic 无 UI 开关：角色对话本身即 Agentic 能力（迁移 042 后默认开启），
+// 表单始终随保存发送 true，防止编辑把已有角色意外翻回关闭
+const tmpCharacter = ref<Chat.Character>({ ...emptyCharacter(), isAgentic: true })
 const ms = useMessage()
 const submitting = ref<boolean>(false)
 const knowledgeModalShow = ref<boolean>(false)
@@ -32,6 +35,8 @@ function initEditCharacter(item: Chat.Character) {
   // 语音服务已从后端下线，角色配置统一使用文本回复。
   tmpCharacter.value.answerContentType = CHAT_MESSAGE_CONTENT_TYPE.text
   tmpCharacter.value.isAutoplayAnswer = false
+  // 无开关 UI：回显时恒为 true（角色对话即 Agentic），防止表单复用残留关闭态
+  tmpCharacter.value.isAgentic = true
   tmpCharacter.value.kbIds = []
   tmpCharacter.value.characterKnowledgeList = []
   tmpCharacter.value.kbIds.push(...item.kbIds)
@@ -72,7 +77,7 @@ async function handleEdit(event?: KeyboardEvent) {
       emit('submitted', false, tmpCharacter.value, false)
     }
   } catch (error: any) {
-    console.log('handleEdit error', error)
+    console.error('handleEdit error', error)
     if (error.message) {
       ms.error(error.message, {
         duration: 2000,
@@ -102,8 +107,19 @@ function handleKnowledgeSelectedChanged(knowledgeIds: string[], knowledgeList: C
   tmpCharacter.value.characterKnowledgeList = [...systemKnowledge, ...knowledgeList]
 }
 
-async function handleDelete(uuid: string, event?: MouseEvent | TouchEvent) {
-  event?.stopPropagation()
+function confirmDeleteCharacter() {
+  openDeleteDialog(dialog, {
+    title: t('common.delete'),
+    content: t('chat.editCharacterDetail.confirmDeleteRole', { title: tmpCharacter.value.title }),
+    positiveText: t('common.delete'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: async () => {
+      await handleDelete(tmpCharacter.value.uuid)
+    },
+  })
+}
+
+async function handleDelete(uuid: string) {
   if (submitting.value)
     return
   submitting.value = true
@@ -128,8 +144,6 @@ watch(() => props.character.uuid, (val) => {
   if (val)
     initEditCharacter(props.character)
 }, { immediate: true })
-
-const handleDeleteDebounce = debounce(handleDelete, 600)
 </script>
 
 <template>
@@ -191,11 +205,11 @@ const handleDeleteDebounce = debounce(handleDelete, 600)
         <div class="settings-section">
           <div class="settings-section-title">
             <span>{{ t('chat.editCharacterDetail.knowledgeBase') }}</span>
-            <NButton type="primary" size="tiny" text tag="a" @click="knowledgeModalShow = !knowledgeModalShow">
+            <NButton type="primary" size="tiny" text tag="a" @click="knowledgeModalShow = true">
               {{ t('chat.editCharacterDetail.addMoreKnowledge') }}
             </NButton>
           </div>
-          <div v-if="!knowledgeModalShow">
+          <div>
             <div v-if="tmpCharacter.characterKnowledgeList.length === 0" class="pl-6">
               {{ t('common.noData') }}
             </div>
@@ -206,12 +220,15 @@ const handleDeleteDebounce = debounce(handleDelete, 600)
               {{ characterKnowledge.title }}
             </NTag>
           </div>
-          <div v-show="knowledgeModalShow" class="p-2">
+          <NModal
+            v-model:show="knowledgeModalShow" display-directive="show" style="width: min(860px, 92vw);"
+            preset="card" :title="t('chat.configCharacterKnowledge')"
+          >
             <ConvKnowledgeSelector
               :tmp-save="true" :character="tmpCharacter"
               @selected-changed="handleKnowledgeSelectedChanged"
             />
-          </div>
+          </NModal>
         </div>
         <div class="settings-section">
           <div class="settings-section-title">
@@ -241,18 +258,12 @@ const handleDeleteDebounce = debounce(handleDelete, 600)
       </div>
     </div>
     <NFlex :justify="tmpCharacter.uuid ? 'space-between' : 'flex-end'" class="settings-footer">
-      <NPopconfirm
-        v-if="tmpCharacter.uuid" placement="top" :positive-text="t('common.delete')"
-        :negative-text="t('common.cancel')" :positive-button-props="{ type: 'error' }"
-        @positive-click.stop="handleDeleteDebounce(tmpCharacter.uuid, $event)"
+      <NButton
+        v-if="tmpCharacter.uuid" type="error" text tag="a" :loading="submitting" :disabled="submitting"
+        @click="confirmDeleteCharacter"
       >
-        <template #trigger>
-          <NButton type="error" text tag="a" :loading="submitting" :disabled="submitting">
-            {{ t('common.delete') }}
-          </NButton>
-        </template>
-        {{ t('chat.editCharacterDetail.confirmDeleteRole', { title: tmpCharacter.title }) }}
-      </NPopconfirm>
+        {{ t('common.delete') }}
+      </NButton>
       <NButton type="primary" :loading="submitting" :disabled="submitting" @click="handleEdit()">
         {{ t('common.save') }}
       </NButton>

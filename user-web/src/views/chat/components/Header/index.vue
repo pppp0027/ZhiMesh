@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, nextTick } from 'vue'
+import { computed } from 'vue'
 import { HoverButton, SvgIcon } from '@/components/common'
 import { useAppStore, useChatStore } from '@/store'
 
@@ -10,6 +10,7 @@ interface Props {
 interface Emit {
   (ev: 'export'): void
   (ev: 'toggleUsingContext'): void
+  (ev: 'scrollToTop'): void
 }
 
 defineProps<Props>()
@@ -27,9 +28,8 @@ function handleUpdateCollapsed() {
 }
 
 function onScrollToTop() {
-  const scrollRef = document.querySelector('#scrollRef')
-  if (scrollRef)
-    nextTick(() => scrollRef.scrollTop = 0)
+  // 滚动容器由父页面持有，通过事件让其滚动到顶部（替代 querySelector 找不到元素的旧实现）
+  emit('scrollToTop')
 }
 
 // function handleExport() {
@@ -61,7 +61,7 @@ function toggleUsingContext() {
       </h1>
       <div class="flex items-center space-x-2">
         <HoverButton @click="toggleUsingContext">
-          <span class="text-xl" :class="{ 'text-[#4b9e5f]': usingContext, 'text-[#a8071a]': !usingContext }">
+          <span class="text-xl context-toggle-icon" :class="usingContext ? 'is-on' : 'is-off'">
             <SvgIcon icon="ri:chat-history-line" />
           </span>
         </HoverButton>
@@ -74,3 +74,13 @@ function toggleUsingContext() {
     </div>
   </header>
 </template>
+
+<style scoped lang="less">
+.context-toggle-icon.is-on {
+  color: var(--zhimesh-success-text);
+}
+
+.context-toggle-icon.is-off {
+  color: var(--zhimesh-danger-text);
+}
+</style>

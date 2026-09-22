@@ -38,6 +38,7 @@ public class CharacterDto {
     private Boolean isAutoplayAnswer;
     private Boolean isEnableThinking;
     private Boolean isEnableWebSearch;
+    private Boolean isAgentic;
     private AudioConfig audioConfig;
 
     private LocalDateTime createTime;

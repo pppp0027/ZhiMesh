@@ -27,6 +27,7 @@ const canUploadImage = ref<boolean>(false)
 const isReasoner = ref<boolean>(false)
 const isThinkingClosable = ref<boolean>(false)
 const contextUpdating = ref(false)
+const savingMcps = ref(false)
 const mcpModalShow = ref<boolean>(false)
 const knowledgeModalShow = ref<boolean>(false)
 const tmpMcpIds = ref<string[]>([])
@@ -73,9 +74,7 @@ function handleFinish({ file, event }: { file: UploadFileInfo; event?: ProgressE
   if (res.success) {
     uploadedUuidList.value.push(res.data.uuid)
     uploadedFileInfoList.value.push(file)
-    console.log(`image uuid:${res.data.uuid}`)
   } else {
-    console.log(`handleOriginalFinish err:${res.data}`)
   }
   emit('imagesChange', [...uploadedUuidList.value])
 }
@@ -126,8 +125,11 @@ function handleKnowledgeSave() {
 }
 
 async function handleSaveMcps() {
+  if (savingMcps.value)
+    return
   const previousMcpIds = [...currCharacter.value.mcpIds]
   const nextMcpIds = [...tmpMcpIds.value]
+  savingMcps.value = true
   try {
     await api.characterEdit(currCharacter.value.uuid, { mcpIds: nextMcpIds })
     currCharacter.value.mcpIds = nextMcpIds
@@ -137,6 +139,8 @@ async function handleSaveMcps() {
     console.error('handleSaveMcps error', error)
     currCharacter.value.mcpIds = previousMcpIds
     ms.error(t('chat.operationFailed'))
+  } finally {
+    savingMcps.value = false
   }
 }
 
@@ -170,7 +174,6 @@ async function toggleUsingContext() {
 
 async function toogleThinking() {
   if (!isReasoner.value || !isThinkingClosable.value) {
-    console.log('该模型不支持对深度思考功能的开启或关闭')
     return
   }
   const previousValue = currCharacter.value.isEnableThinking
@@ -191,7 +194,6 @@ async function toogleThinking() {
 
 async function toogleWebSearch() {
   if (!appStore.selectedLLM.isSupportWebSearch) {
-    console.log('该模型不支持联网搜索功能的开启或关闭')
     return
   }
   if (isDeepSeekThinking.value) {
@@ -377,12 +379,12 @@ watch(isDeepSeekThinking, async (newVal) => {
       </NListItem>
     </NList>
     <NModal
-      v-model:show="knowledgeModalShow" display-directive="show" style="width: 90%; max-width: 800px"
+      v-model:show="knowledgeModalShow" display-directive="show" style="width: min(860px, 92vw);"
       preset="card" :title="t('chat.configCharacterKnowledge')"
     >
       <ConvKnowledgeSelector :tmp-save="false" :character="currCharacter" @submitted="handleKnowledgeSave" />
     </NModal>
-    <NModal v-model:show="mcpModalShow" style="width: 90%; max-width: 640px" preset="card" :title="t('chat.configMcp')">
+    <NModal v-model:show="mcpModalShow" style="width: min(640px, 92vw);" preset="card" :title="t('chat.configMcp')">
       <NCheckboxGroup v-model:value="tmpMcpIds" class="my-2 flex flex-wrap space-x-2">
         <NCheckbox
           v-for="userMcp in mcpStore.myUserMcpList" :key="userMcp.uuid" :value="userMcp.mcpInfo.id"
@@ -391,10 +393,10 @@ watch(isDeepSeekThinking, async (newVal) => {
       </NCheckboxGroup>
       <span v-if="mcpStore.myUserMcpList.length === 0" class="mr-1">{{ t('common.noData') }}</span>
       <NFlex justify="space-between" class="mt-4">
-        <NButton type="primary" text tag="a" class="mt-4" @click="gotoMcp">
+        <NButton type="primary" text tag="a" @click="gotoMcp">
           {{ t('chat.goEnableMoreTools') }}
         </NButton>
-        <NButton type="primary" @click="handleSaveMcps()">
+        <NButton type="primary" :loading="savingMcps" :disabled="savingMcps" @click="handleSaveMcps()">
           {{ t('common.save') }}
         </NButton>
       </NFlex>
@@ -529,14 +531,14 @@ watch(isDeepSeekThinking, async (newVal) => {
   height: 7px;
   flex: none;
   border-radius: 999px;
-  background: #94a3b8;
+  background: var(--zhimesh-text-muted);
   box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45), 0 1px 2px rgba(15, 23, 42, 0.22);
   transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .context-pill.active .context-status-light {
-  background: #22c55e;
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), 0 1px 5px rgba(34, 197, 94, 0.58);
+  background: var(--zhimesh-success-text);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), 0 1px 5px color-mix(in srgb, var(--zhimesh-success-text) 55%, transparent);
 }
 
 .capability-pill:disabled {

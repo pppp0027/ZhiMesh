@@ -6,6 +6,7 @@ import { Delete24Regular } from '@vicons/fluent'
 import { Reload } from '@vicons/ionicons5'
 import AvatarComponent from './Avatar.vue'
 import TextComponent from './Text.vue'
+import ToolSteps from './ToolSteps.vue'
 import { SvgIcon } from '@/components/common'
 import { copyText, formatDuration } from '@/utils/format'
 import { useIconRender } from '@/hooks/useIconRender'
@@ -18,6 +19,7 @@ import { openDeleteDialog } from '@/utils/dialog'
 import NoPic from '@/assets/no_pic.png'
 const props = withDefaults(defineProps<Props>(), {
   showAvatar: true,
+  regenerateDisabled: false,
 })
 const emit = defineEmits<Emit>()
 const dialog = useDialog()
@@ -44,7 +46,9 @@ interface Props {
   inputTokens?: number
   outputTokens?: number
   duration?: number
-  toolCalls?: { toolName: string; durationMs: number; success: boolean }[]
+  toolCalls?: Chat.ToolCall[]
+  /** 正在生成/请求中时禁用重新生成入口，避免点击被静默吞掉 */
+  regenerateDisabled?: boolean
 }
 
 interface Emit {
@@ -169,16 +173,17 @@ watch(() => props.thinking, (thinking) => {
     <div class="message-body">
       <p class="message-meta" :class="inversion ? 'text-right' : 'text-left'">
         {{ dateTime }}
-        <span v-if="inputTokens != null" class="ml-1">📥 {{ inputTokens }}</span>
-        <span v-if="outputTokens != null" class="ml-1">📤 {{ outputTokens }}</span>
-        <span v-if="duration != null" class="ml-1">⏱ {{ formatDuration(duration) }}</span>
-        <template v-if="toolCalls?.length">
-          <span class="ml-1">🔧 {{ toolCalls.length }}</span>
-          <span v-for="(tool, idx) in toolCalls" :key="idx" class="ml-1 text-[10px] opacity-70">
-            {{ tool.toolName }}({{ formatDuration(tool.durationMs) }}{{ tool.success ? '' : '✗' }})
-          </span>
-        </template>
+        <span v-if="inputTokens != null" class="message-meta-item">
+          <SvgIcon icon="ri:download-2-line" />{{ inputTokens }}
+        </span>
+        <span v-if="outputTokens != null" class="message-meta-item">
+          <SvgIcon icon="ri:upload-2-line" />{{ outputTokens }}
+        </span>
+        <span v-if="duration != null" class="message-meta-item">
+          <SvgIcon icon="ri:time-line" />{{ formatDuration(duration) }}
+        </span>
       </p>
+      <ToolSteps v-if="toolCalls && toolCalls.length" :tool-calls="toolCalls" class="message-tool-steps" />
       <div class="message-content">
         <!-- 消息框侧边下拉选择列表 -->
         <template v-if="type === 'text' || type === 'text-image'">
@@ -222,7 +227,7 @@ watch(() => props.thinking, (thinking) => {
         <button
           v-if="regenerate"
           type="button" class="message-action-button is-regenerate" :title="t('chat.regenerateAnswer')"
-          @click="handleRegenerate"
+          :disabled="regenerateDisabled" @click="handleRegenerate"
         >
           <SvgIcon icon="ri:restart-line" />
           <span>{{ t('chat.regenerateAnswer') }}</span>
@@ -320,9 +325,24 @@ watch(() => props.thinking, (thinking) => {
 .message-meta {
   min-height: 18px;
   margin: 0 4px 5px;
-  color: #9aa4b2;
+  color: var(--zhimesh-text-muted);
   font-size: 11px;
   line-height: 1.45;
+}
+
+.message-meta-item {
+  display: inline-flex;
+  margin-left: 4px;
+  align-items: center;
+  gap: 3px;
+}
+
+.message-meta-item :deep(.iconify) {
+  font-size: 11px;
+}
+
+.message-tool-steps {
+  margin: -3px 4px 5px;
 }
 
 .message-content {
@@ -376,6 +396,12 @@ watch(() => props.thinking, (thinking) => {
   border-color: var(--zhimesh-primary);
   color: var(--zhimesh-primary);
   background: var(--zhimesh-glass-soft);
+}
+
+.message-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
 }
 
 .message-actions :deep(.message-action-link) {

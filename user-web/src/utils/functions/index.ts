@@ -16,11 +16,12 @@ export function knowledgeBaseEmptyInfo() {
     uuid: '',
     title: '',
     remark: '',
-    isPublic: false,
     isStrict: true,
     starCount: 0,
     ownerUuid: '',
     ownerName: '',
+    ownerType: 'PERSONAL' as const,
+    companyScope: 'STAFF' as const,
     itemCount: 0,
     embeddingCount: 0,
     ingestMaxOverlap: 0,
@@ -233,6 +234,7 @@ export function emptyCharacter(): Chat.Character {
     isAutoplayAnswer: false, // 聊天时音频类型的响应内容是否自动播放
     isEnableThinking: false, // 是否启用思考过程
     isEnableWebSearch: false, // 是否启用网络搜索
+    isAgentic: true, // 是否启用 Agentic 模式（自主工具调用，产品默认开启）
     audioConfig: {
       voice: {
         param_name: '',

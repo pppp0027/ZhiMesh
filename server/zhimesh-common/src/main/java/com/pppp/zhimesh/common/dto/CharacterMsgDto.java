@@ -1,6 +1,7 @@
 package com.pppp.zhimesh.common.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.pppp.zhimesh.common.vo.ToolCallTrace;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -75,4 +76,7 @@ public class CharacterMsgDto {
 
     @Schema(title = "是否引用了 BM25 关键词检索结果 | Whether BM25 Keyword Results are Referenced")
     private Boolean isRefBm25;
+
+    @Schema(title = "Agentic 工具调用轨迹，按 seq 升序；非 Agentic 消息为空 | Agentic tool-call traces ordered by seq; empty for non-agentic messages")
+    private List<ToolCallTrace> toolCalls;
 }

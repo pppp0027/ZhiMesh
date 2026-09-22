@@ -49,7 +49,7 @@ let synthesis: SpeechSynthesis | null = null
 if ('speechSynthesis' in window)
   synthesis = window.speechSynthesis
 else
-  console.log('Browser does not support speech synthesis')
+  console.warn('Browser does not support speech synthesis')
 
 function playAudioByClick() {
   // 如果系统设置的是浏览器端合成音频，则调用浏览器的api播放文本，不需要检查是否有音频文件
@@ -69,7 +69,6 @@ function playAudioByClick() {
     if (!audioPlayState.audio) {
       audioPlayState.audio = new Audio(`/api${audioPlayState.audioUrl}?token=${token.value}`)
       audioPlayState.audio.addEventListener('ended', () => {
-        console.log('Audio playback finished')
         if (durationTimer)
           clearTimeout(durationTimer)
         durationTimer = undefined
@@ -131,7 +130,6 @@ async function speekAudioFrame(audioFrame: string) {
   if (!audioFrame)
     console.warn('audioFrame is empty')
 
-  console.log('Received audio frame of length:', audioFrame.length)
   const binaryString = window.atob(audioFrame) // 使用window.atob()进行Base64解码
   const binaryLen = binaryString.length
   const bytes = new Uint8Array(binaryLen)
@@ -256,8 +254,8 @@ onUnmounted(() => {
   <div ref="messageRef" class="flex w-full mb-6 overflow-hidden" :class="[{ 'flex-row-reverse': inversion }]">
     <div
       v-if="showAvatar"
-      class="flex items-center justify-center flex-shrink-0 h-8 overflow-hidden rounded-full basis-8"
-      :class="[inversion ? 'ml-2' : 'mr-2']"
+      class="audio-message-avatar flex-shrink-0"
+      :class="[inversion ? 'ml-2.5' : 'mr-2.5']"
     >
       <AvatarComponent :name="inversion ? 'user' : aiModelPlatform" :model-id="aiModelId" />
     </div>
@@ -303,6 +301,19 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.audio-message-avatar {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--zhimesh-border-subtle);
+  border-radius: 12px;
+  background: var(--zhimesh-glass);
+  box-shadow: none;
+}
+
 .audio-bars {
   display: inline-flex;
   align-items: center;
@@ -385,5 +396,17 @@ onUnmounted(() => {
   50% {
     transform: scaleY(1);
   }
+}
+
+@media (max-width: 767px) {
+  .audio-message-avatar {
+    width: 32px;
+    height: 32px;
+    flex: 0 0 32px;
+  }
+}
+
+:global(.dark) .audio-message-avatar {
+  background: var(--zhimesh-glass-strong);
 }
 </style>

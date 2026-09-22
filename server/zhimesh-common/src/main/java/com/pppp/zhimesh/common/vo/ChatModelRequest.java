@@ -1,5 +1,6 @@
 package com.pppp.zhimesh.common.vo;
 
+import com.pppp.zhimesh.common.languagemodel.tool.ToolExecutor;
 import dev.langchain4j.mcp.client.McpClient;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -34,6 +35,14 @@ public class ChatModelRequest {
     //Image URL, only effective for multimodal LLM
     private List<String> imageUrls;
     private List<McpClient> mcpClients;
+    /**
+     * 请求级内置工具（如 search_knowledge），与 MCP 工具按名合并后统一执行；可空，
+     * 与 MCP 工具重名时内置工具优先
+     * <p>
+     * Request-scoped builtin tools (e.g. search_knowledge), merged with MCP tools
+     * by name before unified execution; optional. Builtin tools win on name conflicts.
+     */
+    private List<ToolExecutor> builtinTools;
     private String responseFormat;
     private Boolean returnThinking;
     private Boolean enableWebSearch;

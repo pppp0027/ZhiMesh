@@ -10,6 +10,7 @@ import com.pppp.zhimesh.common.helper.LLMContext;
 import com.pppp.zhimesh.common.languagemodel.AbstractLLMService;
 import com.pppp.zhimesh.common.util.CharacterChatHelper;
 import com.pppp.zhimesh.common.util.PromptUtil;
+import com.pppp.zhimesh.common.util.SpringUtil;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryKeyResolver;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryService;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryTurnCoordinator;
@@ -19,6 +20,7 @@ import com.pppp.zhimesh.common.vo.*;
 
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -40,8 +42,10 @@ import static com.pppp.zhimesh.common.enums.ErrorEnum.A_CONVERSATION_CHARACTER_M
  * RAG retrieval → prompt enhancement → LLM call.</p>
  *
  * <p>When {@code manageMemoryTurn} is enabled, this service owns the complete
- * short-memory turn and appends the final AI message. Database message
- * persistence, quota deduction and audio/TTS remain the caller's responsibility.</p>
+ * short-memory turn and appends the final AI message. The LLM consumption is
+ * charged to the initiating user's daily cost here (the workflow agent node
+ * runs under a workflow uuid that no aggregator ever reads), while database
+ * message persistence and audio/TTS remain the caller's responsibility.</p>
  */
 @Slf4j
 @Service
@@ -149,6 +153,7 @@ public class LocalAgentService implements AgentService {
         if (chatResponse.metadata() != null && chatResponse.metadata().tokenUsage() != null) {
             inputTokens = chatResponse.metadata().tokenUsage().inputTokenCount();
             outputTokens = chatResponse.metadata().tokenUsage().outputTokenCount();
+            appendLlmCostToUserSafely(user, llmService, chatResponse.metadata().tokenUsage());
         }
         return AgentResult.builder()
                 .answer(chatResponse.aiMessage().text())
@@ -160,6 +165,34 @@ public class LocalAgentService implements AgentService {
                 .build();
         } finally {
             turnLease.close();
+        }
+    }
+
+    /**
+     * 工作流 Agent 节点的 LLM 消耗计入发起用户日成本：节点跑在工作流 uuid 下、
+     * 该 uuid 的 token 缓存没有任何聚合方读取，若不在此处直接入账则永久漏账；
+     * 入账失败只记日志，不回滚已生成的节点回答（与 WorkflowUtil 入账语义一致）
+     * <p>
+     * Charge the workflow agent node's LLM consumption to the initiating user's
+     * daily cost: the node runs under a workflow uuid whose token cache is never
+     * read by any aggregator, so skipping the charge here leaks the cost
+     * permanently; a ledger failure only logs and never rolls back the generated
+     * node output (same semantics as the WorkflowUtil accounting).
+     */
+    void appendLlmCostToUserSafely(User user, AbstractLLMService llmService, TokenUsage tokenUsage) {
+        if (null == tokenUsage) {
+            return;
+        }
+        Integer totalTokens = tokenUsage.totalTokenCount();
+        int tokens = null != totalTokens ? totalTokens
+                : (null != tokenUsage.inputTokenCount() ? tokenUsage.inputTokenCount() : 0)
+                        + (null != tokenUsage.outputTokenCount() ? tokenUsage.outputTokenCount() : 0);
+        try {
+            boolean isFree = null != llmService && null != llmService.getAiModel()
+                    && Boolean.TRUE.equals(llmService.getAiModel().getIsFree());
+            SpringUtil.getBean(UserDayCostService.class).appendCostToUser(user, tokens, isFree);
+        } catch (Exception e) {
+            log.error("Failed to append workflow agent LLM cost, characterUuid:{}", user.getUuid(), e);
         }
     }
 

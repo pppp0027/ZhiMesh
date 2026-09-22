@@ -141,7 +141,7 @@ function commonSseProcess(
     messageReceived: (chunk: string, eventName: string) => void
     audioDataReceived?: (chunk: string) => void
     stateChanged?: (state: string) => void
-    toolCallReceived?: (data: { toolName: string; durationMs: number; success: boolean }) => void
+    toolCallReceived?: (data: Chat.ToolCall) => void
     doneCallback: (chunk: string) => void
     errorCallback: (error: string) => void
   },
@@ -224,7 +224,7 @@ function sseProcess(params: {
   thinkingDataReceived: (chunk: string) => void
   audioDataReceived?: (pcmPart: any) => void
   stateChanged?: (state: string) => void
-  toolCallReceived?: (data: { toolName: string; durationMs: number; success: boolean }) => void
+  toolCallReceived?: (data: Chat.ToolCall) => void
   doneCallback: (chunk: string) => void
   errorCallback: (error: string) => void
 }): Promise<void> {
@@ -498,18 +498,94 @@ function messageKeywordRef<T = Chat.KeywordReference>(msgUuid: string) {
   })
 }
 
-function knowledgeBaseSearchMine<T>(keyword: string, currentPage: number, pageSize: number, includeOthersPublic?: boolean) {
+function knowledgeBaseSearchMine<T>(keyword: string, currentPage: number, pageSize: number, includeVisible?: boolean) {
   const search = keyword === undefined ? '' : `keyword=${encodeURIComponent(keyword)}&`
-  const includePublic = includeOthersPublic ? '&includeOthersPublic=true' : ''
+  const includeOthers = includeVisible ? '&includeVisible=true' : ''
   return get<T>({
-    url: `/knowledge-base/mine/search?${search}currentPage=${currentPage}&pageSize=${pageSize}${includePublic}`,
+    url: `/knowledge-base/mine/search?${search}currentPage=${currentPage}&pageSize=${pageSize}${includeOthers}`,
   })
 }
 
-function knowledgeBaseSearchPublic<T>(keyword: string, currentPage: number, pageSize: number) {
+function knowledgeBaseSearchTeam<T>(keyword: string, currentPage: number, pageSize: number) {
   const search = keyword === undefined ? '' : `keyword=${encodeURIComponent(keyword)}&`
   return get<T>({
-    url: `/knowledge-base/public/search?${search}currentPage=${currentPage}&pageSize=${pageSize}`,
+    url: `/knowledge-base/team/search?${search}currentPage=${currentPage}&pageSize=${pageSize}`,
+  })
+}
+
+function knowledgeBaseSearchCompany<T>(keyword: string, currentPage: number, pageSize: number) {
+  const search = keyword === undefined ? '' : `keyword=${encodeURIComponent(keyword)}&`
+  return get<T>({
+    url: `/knowledge-base/company/search?${search}currentPage=${currentPage}&pageSize=${pageSize}`,
+  })
+}
+
+function knowledgeBaseTransfer<T = any>(kbUuid: string, ownerType: string, teamUuid?: string) {
+  return post<T>({
+    url: '/knowledge-base/transfer',
+    data: {
+      kbUuid,
+      ownerType,
+      teamUuid,
+    },
+  })
+}
+
+function teamSearchMine<T = any>(keyword: string, currentPage: number, pageSize: number) {
+  const search = keyword === undefined ? '' : `keyword=${encodeURIComponent(keyword)}&`
+  return get<T>({
+    url: `/team/my/search?${search}currentPage=${currentPage}&pageSize=${pageSize}`,
+  })
+}
+
+function teamMyLite<T = any>() {
+  return get<T>({
+    url: '/team/my/lite',
+  })
+}
+
+function teamSaveOrUpdate<T = any>(obj: Team.EditReq) {
+  return post<T>({
+    url: '/team/saveOrUpdate',
+    data: obj,
+  })
+}
+
+function teamDelete<T = any>(uuid: string) {
+  return post<T>({
+    url: `/team/del/${uuid}`,
+  })
+}
+
+function teamMemberList<T = any>(teamUuid: string) {
+  return get<T>({
+    url: `/team/member/list?teamUuid=${teamUuid}`,
+  })
+}
+
+function teamMemberAdd<T = any>(obj: Team.MemberAddReq) {
+  return post<T>({
+    url: '/team/member/add',
+    data: obj,
+  })
+}
+
+function teamMemberUpdateRole<T = any>(obj: Team.MemberUpdateReq) {
+  return post<T>({
+    url: '/team/member/updateRole',
+    data: obj,
+  })
+}
+
+function teamMemberRemove<T = any>(teamUuid: string, userId: string) {
+  return post<T>({
+    url: `/team/member/remove/${teamUuid}/${userId}`,
+  })
+}
+
+function teamLeave<T = any>(uuid: string) {
+  return post<T>({
+    url: `/team/leave/${uuid}`,
   })
 }
 
@@ -631,9 +707,9 @@ function knowledgeBaseQaRecordDel<T = any>(uuid: string) {
   })
 }
 
-function knowledgeBaseQaRecordClear<T = any>() {
+function knowledgeBaseQaRecordClear<T = any>(kbUuid: string) {
   return post<T>({
-    url: '/knowledge-base/qa/clear',
+    url: `/knowledge-base/qa/clear/${kbUuid}`,
   })
 }
 
@@ -901,7 +977,18 @@ export default {
   knowledgeBaseInfo,
   knowledgeBaseStar,
   knowledgeBaseSearchMine,
-  knowledgeBaseSearchPublic,
+  knowledgeBaseSearchTeam,
+  knowledgeBaseSearchCompany,
+  knowledgeBaseTransfer,
+  teamSearchMine,
+  teamMyLite,
+  teamSaveOrUpdate,
+  teamDelete,
+  teamMemberList,
+  teamMemberAdd,
+  teamMemberUpdateRole,
+  teamMemberRemove,
+  teamLeave,
   knowledgeBaseSaveOrUpdate,
   knowledgeBaseDelete,
   knowledgeBaseItemSaveOrUpdate,
