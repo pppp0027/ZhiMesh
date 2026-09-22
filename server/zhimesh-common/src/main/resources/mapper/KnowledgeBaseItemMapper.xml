@@ -29,39 +29,4 @@
         select count(1)
         from adi_knowledge_base_item
     </select>
-
-    <!-- Write privilege: the owner of the item's knowledge base must be the current user -->
-    <select id="checkWritePrivilege" resultType="Integer">
-        select count(1)
-        from adi_knowledge_base_item a
-                 inner join adi_knowledge_base b on a.kb_id = b.id
-        where a.uuid = #{uuid}
-          and b.owner_id = #{userId}
-    </select>
-
-    <!-- Read privilege: the item's knowledge base is owned by the current user, or is public -->
-    <select id="checkReadPrivilege" resultType="Integer">
-        select count(1)
-        from adi_knowledge_base_item a
-                 inner join adi_knowledge_base b on a.kb_id = b.id
-        where a.uuid = #{uuid}
-          and (b.owner_id = #{userId} or b.is_public = true)
-    </select>
-
-    <!-- Write privilege keyed by knowledge-base uuid: the kb owner must be the current user -->
-    <select id="checkWritePrivilegeByKb" resultType="Integer">
-        select count(1)
-        from adi_knowledge_base
-        where uuid = #{kbUuid}
-          and owner_id = #{userId}
-    </select>
-
-    <!-- Write privilege keyed by item id: the owner of the item's knowledge base must be the current user -->
-    <select id="checkWritePrivilegeById" resultType="Integer">
-        select count(1)
-        from adi_knowledge_base_item a
-                 inner join adi_knowledge_base b on a.kb_id = b.id
-        where a.id = #{id}
-          and b.owner_id = #{userId}
-    </select>
 </mapper>

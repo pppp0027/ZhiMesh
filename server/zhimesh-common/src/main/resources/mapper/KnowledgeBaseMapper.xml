@@ -12,26 +12,60 @@
         order by update_time desc
     </select>
 
-    <select id="searchByUser" resultType="com.pppp.zhimesh.common.entity.KnowledgeBase">
-        select *
-        from adi_knowledge_base
+    <select id="searchByUser" resultType="com.pppp.zhimesh.common.dto.KbInfoResp">
+        select a.*, t.name as team_name
+        from adi_knowledge_base a
+                 left join adi_team t on t.id = a.team_id
         <where>
         <!-- Legacy user knowledge bases can have a NULL system flag. Treat NULL
              as a normal user workspace record so existing libraries remain visible. -->
-        COALESCE(is_system, false) = false
+        COALESCE(a.is_system, false) = false
         <choose>
-            <when test="includeOthersPublic">
-                and (is_public = true or owner_id = #{ownerId})
+            <when test="includeVisible">
+                <!-- Mixed picker scope: own personal + my teams' + company rows the
+                     caller may see (STAFF for everyone, EXECUTIVE for admins).
+                     TEAM rows keep owner_id = creator for audit, so the personal
+                     branch must be tier-scoped — a removed member must not keep
+                     metadata visibility through rows they once created. -->
+                and (
+                    (COALESCE(a.owner_type, 'PERSONAL') = 'PERSONAL' and a.owner_id = #{ownerId})
+                    or (a.owner_type = 'TEAM' and a.team_id in (select team_id from adi_team_member where user_id = #{ownerId}))
+                    or (a.owner_type = 'COMPANY' and (a.company_scope = 'STAFF' or #{isAdmin}))
+                )
             </when>
             <otherwise>
-                and owner_id = #{ownerId}
+                <!-- Strict "mine" scope: personal KBs only; team KBs live in the
+                     dedicated team section regardless of who created them. -->
+                and a.owner_id = #{ownerId}
+                and COALESCE(a.owner_type, 'PERSONAL') = 'PERSONAL'
             </otherwise>
         </choose>
         <if test="keyword != null and keyword != ''">
-            and title like CONCAT('%', #{keyword}, '%')
+            and a.title like CONCAT('%', #{keyword}, '%')
         </if>
         </where>
-        order by star_count desc,update_time desc
+        order by a.star_count desc,a.update_time desc
+    </select>
+
+    <!-- Team knowledge bases of the current user's teams, with team identity and
+         the caller's team role. Membership is the access grant: the inner join
+         on adi_team_member both scopes the rows and supplies my_role. -->
+    <select id="searchTeamKbByUser" resultType="com.pppp.zhimesh.common.dto.KbInfoResp">
+        select a.*,
+               t.uuid as team_uuid,
+               t.name as team_name,
+               m.role as my_role
+        from adi_knowledge_base a
+                 inner join adi_team_member m on m.team_id = a.team_id and m.user_id = #{userId}
+                 left join adi_team t on t.id = a.team_id
+        <where>
+            COALESCE(a.is_system, false) = false
+            and a.owner_type = 'TEAM'
+            <if test="keyword != null and keyword != ''">
+                and a.title like CONCAT('%', #{keyword}, '%')
+            </if>
+        </where>
+        order by a.update_time desc
     </select>
 
     <select id="countCreatedByTimePeriod" resultType="Integer">

@@ -15,7 +15,7 @@ const modalContent = ref<string>('')
 const loading = ref(false)
 const paginationReactive = reactive({
   page: 1,
-  pageSize: 10,
+  pageSize: 20,
   itemCount: 0,
 })
 // table相关
@@ -105,7 +105,7 @@ watch(
     :pagination="paginationReactive" :single-line="false" :bordered="true" @update:page="onHandlePageChange"
   />
 
-  <NModal v-model:show="showModal" style="width: 60%;" preset="card" :title="t('common.detail')">
+  <NModal v-model:show="showModal" style="width: 90%; max-width: 700px;" preset="card" :title="t('common.detail')">
     <NScrollbar style="max-height: 400px">
       {{ modalContent }}
     </NScrollbar>

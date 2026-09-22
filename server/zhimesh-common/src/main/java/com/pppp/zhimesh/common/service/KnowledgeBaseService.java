@@ -12,23 +12,30 @@ import com.pppp.zhimesh.common.dto.KbEditReq;
 import com.pppp.zhimesh.common.dto.KbInfoResp;
 import com.pppp.zhimesh.common.dto.KbQaDto;
 import com.pppp.zhimesh.common.dto.KbSearchReq;
+import com.pppp.zhimesh.common.dto.KbTransferReq;
 import com.pppp.zhimesh.common.dto.KbUploadResult;
 import com.pppp.zhimesh.common.dto.RefGraphDto;
 import com.pppp.zhimesh.common.dto.evaluation.RagEvaluationAskReq;
 import com.pppp.zhimesh.common.dto.evaluation.RagEvaluationAskResp;
 import com.pppp.zhimesh.common.dto.evaluation.RetrievalMode;
 import com.pppp.zhimesh.common.entity.*;
+import com.pppp.zhimesh.common.enums.KbAccessType;
+import com.pppp.zhimesh.common.enums.KbCompanyScopeEnum;
+import com.pppp.zhimesh.common.enums.KbOwnerTypeEnum;
 import com.pppp.zhimesh.common.enums.LLMCallRecordSourceType;
+import com.pppp.zhimesh.common.enums.TeamRoleEnum;
 import com.pppp.zhimesh.common.exception.BaseException;
 import com.pppp.zhimesh.common.file.FileOperatorContext;
 import com.pppp.zhimesh.common.helper.LLMContext;
 import com.pppp.zhimesh.common.helper.SseManager;
 import com.pppp.zhimesh.common.languagemodel.AbstractLLMService;
 import com.pppp.zhimesh.common.mapper.KnowledgeBaseMapper;
+import com.pppp.zhimesh.common.mapper.TeamMapper;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryService;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryTurnCoordinator;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryWindow;
 import com.pppp.zhimesh.common.rag.*;
+import com.pppp.zhimesh.common.rag.bm25.Bm25IndexService;
 import com.pppp.zhimesh.common.rag.bm25.Bm25ReadinessService;
 import com.pppp.zhimesh.common.rag.profile.KnowledgeRouteProfileCoordinator;
 import com.pppp.zhimesh.common.rag.intent.ContextualQueryRewriter;
@@ -77,6 +84,7 @@ import java.text.MessageFormat;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.RetrieveContentFrom.KNOWLEDGE_BASE;
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.SSE_TIMEOUT;
@@ -105,6 +113,12 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
 
     @Resource
     private KnowledgeBaseItemService knowledgeBaseItemService;
+
+    @Resource
+    private Bm25IndexService bm25IndexService;
+
+    @Resource
+    private CanonicalChunkIndexService canonicalChunkIndexService;
 
     @Resource
     private KnowledgeBaseQaService knowledgeBaseQaRecordService;
@@ -163,10 +177,19 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
     @Resource
     private KnowledgeRouteProfileCoordinator routeProfileCoordinator;
 
+    @Resource
+    private KnowledgeBaseAccessService knowledgeBaseAccessService;
+
+    // Team lookup goes through TeamMapper (not TeamService): injecting the
+    // service here would close the cycle KnowledgeBaseService -> TeamService ->
+    // UserService -> CharacterService -> ... -> KnowledgeBaseService.
+    @Resource
+    private TeamMapper teamMapper;
+
     @Transactional
     public KnowledgeBase saveOrUpdate(KbEditReq kbEditReq) {
         KnowledgeBase knowledgeBase = new KnowledgeBase();
-        BeanUtils.copyProperties(kbEditReq, knowledgeBase, "id", "uuid", "ingestTokenizer", "ingestEmbeddingModel", "isSystem", "isEnabled");
+        BeanUtils.copyProperties(kbEditReq, knowledgeBase, "id", "uuid", "ingestTokenizer", "ingestEmbeddingModel", "isSystem", "isEnabled", "ownerType", "teamUuid", "companyScope");
         if (null != kbEditReq.getIngestModelId() && kbEditReq.getIngestModelId() > 0) {
             knowledgeBase.setIngestModelName(aiModelService.getByIdOrThrow(kbEditReq.getIngestModelId()).getName());
         } else {
@@ -187,13 +210,12 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
             knowledgeBase.setOwnerName(user.getName());
             knowledgeBase.setIsSystem(Boolean.TRUE.equals(user.getIsAdmin()) && Boolean.TRUE.equals(kbEditReq.getIsSystem()));
             knowledgeBase.setIsEnabled(kbEditReq.getIsEnabled() == null || kbEditReq.getIsEnabled());
-            if (Boolean.TRUE.equals(knowledgeBase.getIsSystem())) {
-                // System KBs are private by design; role binding is the access grant.
-                knowledgeBase.setIsPublic(false);
-            }
+            applyOwnershipOnCreate(knowledgeBase, kbEditReq, user);
             baseMapper.insert(knowledgeBase);
         } else {
-            checkWritePrivilege(kbEditReq.getId(), null);
+            // Settings changes reach every member of a team knowledge base, so
+            // they are management-grade rather than content-write-grade.
+            checkManagePrivilege(kbEditReq.getId(), null);
             knowledgeBase.setId(kbEditReq.getId());
             KnowledgeBase existing = getById(kbEditReq.getId());
             knowledgeBase.setUuid(existing.getUuid());
@@ -205,12 +227,141 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                 knowledgeBase.setIsSystem(existing.getIsSystem());
                 knowledgeBase.setIsEnabled(existing.getIsEnabled());
             }
-            if (Boolean.TRUE.equals(knowledgeBase.getIsSystem())) {
-                knowledgeBase.setIsPublic(false);
-            }
+            applyOwnershipOnEdit(knowledgeBase, kbEditReq, existing, user);
             baseMapper.updateById(knowledgeBase);
         }
         return knowledgeBase;
+    }
+
+    /**
+     * Resolve ownership for a new knowledge base. COMPANY is an administration
+     * tier (only an admin session may create it); TEAM requires the creator to
+     * already be a member of the target team so the new KB is immediately
+     * reachable for them. owner_* keeps recording the creator for audit.
+     */
+    private void applyOwnershipOnCreate(KnowledgeBase knowledgeBase, KbEditReq kbEditReq, User user) {
+        if (Boolean.TRUE.equals(knowledgeBase.getIsSystem())) {
+            // System KBs sit outside the three-tier model; role binding is the grant.
+            knowledgeBase.setOwnerType(KbOwnerTypeEnum.PERSONAL.getValue());
+            knowledgeBase.setTeamId(0L);
+            knowledgeBase.setCompanyScope(KbCompanyScopeEnum.STAFF.getValue());
+            return;
+        }
+        KbOwnerTypeEnum ownerType = parseOwnerType(kbEditReq.getOwnerType());
+        switch (ownerType) {
+            case PERSONAL -> {
+                knowledgeBase.setOwnerType(KbOwnerTypeEnum.PERSONAL.getValue());
+                knowledgeBase.setTeamId(0L);
+                knowledgeBase.setCompanyScope(KbCompanyScopeEnum.STAFF.getValue());
+            }
+            case TEAM -> {
+                if (StringUtils.isBlank(kbEditReq.getTeamUuid())) {
+                    throw new BaseException(A_PARAMS_ERROR);
+                }
+                Team team = getTeamOrThrow(kbEditReq.getTeamUuid());
+                TeamRoleEnum teamRole = knowledgeBaseAccessService.teamRole(team.getId(), user.getId());
+                if (null == teamRole) {
+                    throw new BaseException(A_TEAM_NOT_MEMBER);
+                }
+                // READER resolves to READ only; a team KB created by a READER would
+                // be unwritable by its own creator (WRITE checks reject), so
+                // creation is refused at the entrance.
+                if (TeamRoleEnum.READER == teamRole) {
+                    throw new BaseException(A_USER_NOT_AUTH);
+                }
+                knowledgeBase.setOwnerType(KbOwnerTypeEnum.TEAM.getValue());
+                knowledgeBase.setTeamId(team.getId());
+                knowledgeBase.setCompanyScope(KbCompanyScopeEnum.STAFF.getValue());
+            }
+            case COMPANY -> {
+                if (!Boolean.TRUE.equals(user.getIsAdmin())) {
+                    throw new BaseException(A_USER_NOT_AUTH);
+                }
+                knowledgeBase.setOwnerType(KbOwnerTypeEnum.COMPANY.getValue());
+                knowledgeBase.setTeamId(0L);
+                knowledgeBase.setCompanyScope(parseCompanyScope(kbEditReq.getCompanyScope()).getValue());
+            }
+        }
+    }
+
+    /**
+     * Ownership tier never changes through edit: regular users keep the stored
+     * value (the request field is ignored to prevent tampering) and admins may
+     * only flip between PERSONAL and COMPANY. TEAM ownership moves exclusively
+     * through the user-side transfer endpoint. Company scope follows the tier:
+     * it stays editable on COMPANY rows for admins and is pinned to STAFF
+     * everywhere else (mirroring the ck_kb_company_scope CHECK).
+     */
+    private void applyOwnershipOnEdit(KnowledgeBase knowledgeBase, KbEditReq kbEditReq, KnowledgeBase existing, User user) {
+        if (Boolean.TRUE.equals(knowledgeBase.getIsSystem())) {
+            // System KBs sit outside the three-tier model regardless of the request.
+            knowledgeBase.setOwnerType(KbOwnerTypeEnum.PERSONAL.getValue());
+            knowledgeBase.setTeamId(0L);
+            knowledgeBase.setCompanyScope(KbCompanyScopeEnum.STAFF.getValue());
+            return;
+        }
+        KbOwnerTypeEnum current = parseOwnerType(existing.getOwnerType());
+        KbOwnerTypeEnum requested = StringUtils.isBlank(kbEditReq.getOwnerType())
+                ? current
+                : parseOwnerType(kbEditReq.getOwnerType());
+        if (current == requested || !Boolean.TRUE.equals(user.getIsAdmin())) {
+            knowledgeBase.setOwnerType(current.getValue());
+            knowledgeBase.setTeamId(existing.getTeamId());
+            if (KbOwnerTypeEnum.COMPANY == current && Boolean.TRUE.equals(user.getIsAdmin())) {
+                // Administrators may retune the scope of an existing company KB.
+                knowledgeBase.setCompanyScope(editCompanyScope(kbEditReq.getCompanyScope(), existing.getCompanyScope()));
+            } else {
+                knowledgeBase.setCompanyScope(KbOwnerTypeEnum.COMPANY == current
+                        ? storedScopeOrStaff(existing.getCompanyScope())
+                        : KbCompanyScopeEnum.STAFF.getValue());
+            }
+            return;
+        }
+        if (KbOwnerTypeEnum.TEAM == current || KbOwnerTypeEnum.TEAM == requested) {
+            throw new BaseException(A_KB_TRANSFER_FORBIDDEN);
+        }
+        knowledgeBase.setOwnerType(requested.getValue());
+        knowledgeBase.setTeamId(0L);
+        // Entering COMPANY honors the requested scope; leaving it pins STAFF.
+        knowledgeBase.setCompanyScope(KbOwnerTypeEnum.COMPANY == requested
+                ? editCompanyScope(kbEditReq.getCompanyScope(), existing.getCompanyScope())
+                : KbCompanyScopeEnum.STAFF.getValue());
+    }
+
+    /** Blank owner types mean PERSONAL (legacy default); unknown values are rejected. */
+    private KbOwnerTypeEnum parseOwnerType(String ownerType) {
+        if (StringUtils.isBlank(ownerType)) {
+            return KbOwnerTypeEnum.PERSONAL;
+        }
+        KbOwnerTypeEnum parsed = KbOwnerTypeEnum.getByValue(ownerType);
+        if (null == parsed) {
+            throw new BaseException(A_KB_OWNER_TYPE_INVALID);
+        }
+        return parsed;
+    }
+
+    /** Blank scopes mean STAFF (column default); unknown values are rejected. */
+    private KbCompanyScopeEnum parseCompanyScope(String companyScope) {
+        if (StringUtils.isBlank(companyScope)) {
+            return KbCompanyScopeEnum.STAFF;
+        }
+        KbCompanyScopeEnum parsed = KbCompanyScopeEnum.getByValue(companyScope);
+        if (null == parsed) {
+            throw new BaseException(A_PARAMS_ERROR);
+        }
+        return parsed;
+    }
+
+    /** Edit semantics: a blank request keeps the stored scope, otherwise the parsed one wins. */
+    private String editCompanyScope(String requested, String existing) {
+        return StringUtils.isBlank(requested)
+                ? storedScopeOrStaff(existing)
+                : parseCompanyScope(requested).getValue();
+    }
+
+    private String storedScopeOrStaff(String companyScope) {
+        KbCompanyScopeEnum parsed = KbCompanyScopeEnum.getByValue(companyScope);
+        return null == parsed ? KbCompanyScopeEnum.STAFF.getValue() : parsed.getValue();
     }
 
     /**
@@ -227,6 +378,10 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                 throw new BaseException(A_DATA_NOT_FOUND);
             }
             checkUserWorkspaceWritePrivilege(existing.getUuid());
+        } else if (KbOwnerTypeEnum.COMPANY == parseOwnerType(kbEditReq.getOwnerType())) {
+            // Company KBs are maintained through the admin workbench only; the
+            // user workspace never creates them, not even for an admin session.
+            throw new BaseException(A_USER_NOT_AUTH);
         }
         kbEditReq.setIsSystem(false);
         return saveOrUpdate(kbEditReq);
@@ -395,6 +550,8 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                     .add(itemUuid);
         }
         for (KnowledgeBase knowledgeBase : knowledgeBases.values()) {
+            // Lock key follows the KB creator (ownerId): team KB indexing by any
+            // member is serialized through the creator's single lock.
             String userIndexKey = MessageFormat.format(USER_INDEXING, knowledgeBase.getOwnerId());
             if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(userIndexKey))) {
                 log.warn("Document is being indexed, please avoid frequent operations, userId:{}",
@@ -455,6 +612,10 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
      * @return ???????????????
      */
     public boolean checkIndexIsFinish() {
+        // Keyed by the CURRENT user: only correct for KBs the caller created
+        // themselves. Contributors polling a team KB must use the kbUuid
+        // overload (the detail page already does), whose key follows the KB
+        // creator and thus reflects the shared indexing lock.
         String userIndexKey = MessageFormat.format(USER_INDEXING, ThreadContext.getCurrentUserId());
         return Boolean.FALSE.equals(stringRedisTemplate.hasKey(userIndexKey));
     }
@@ -467,38 +628,81 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
     public boolean checkIndexIsFinish(String kbUuid) {
         checkWritePrivilege(null, kbUuid);
         KnowledgeBase knowledgeBase = getOrThrow(kbUuid);
+        // Creator-keyed lock: correct for personal, team (any member), and
+        // administratively indexed system KBs alike.
         String ownerIndexKey = MessageFormat.format(USER_INDEXING, knowledgeBase.getOwnerId());
         return Boolean.FALSE.equals(stringRedisTemplate.hasKey(ownerIndexKey));
     }
 
-    public Page<KbInfoResp> searchMine(String keyword, Boolean includeOthersPublic, Integer currentPage, Integer pageSize) {
-        Page<KbInfoResp> result = new Page<>();
+    public Page<KbInfoResp> searchMine(String keyword, Boolean includeVisible, Integer currentPage, Integer pageSize) {
         User user = ThreadContext.getCurrentUser();
         // The user workspace never lists system knowledge bases. Administrators
         // manage those through /admin/kb, not through the regular user UI.
-        Page<KnowledgeBase> knowledgeBasePage = baseMapper.searchByUser(
-                new Page<>(currentPage, pageSize), user.getId(), keyword, includeOthersPublic);
-        return MPPageUtil.convertToPage(knowledgeBasePage, result, KbInfoResp.class, null);
+        // KbInfoResp comes straight from the SQL (team rows carry teamName).
+        Page<KbInfoResp> result = baseMapper.searchByUser(
+                new Page<>(currentPage, pageSize), user.getId(), keyword, includeVisible,
+                Boolean.TRUE.equals(user.getIsAdmin()));
+        fillAccessLevel(user, result.getRecords());
+        return result;
     }
 
     /**
-     * Lists public knowledge bases for the user workspace. System knowledge bases
-     * are deliberately excluded here even if an old record was incorrectly marked
-     * public before the administration-only rule was introduced.
+     * Lists the team knowledge bases of the caller's teams. Membership is the
+     * access grant; each row carries the team identity, the caller's team role
+     * and the derived access level for frontend gating.
      */
-    public Page<KbInfoResp> searchPublicForUserWorkspace(String keyword, Integer currentPage, Integer pageSize) {
+    public Page<KbInfoResp> searchTeamForUser(String keyword, Integer currentPage, Integer pageSize) {
+        User user = ThreadContext.getCurrentUser();
+        Page<KbInfoResp> result = baseMapper.searchTeamKbByUser(
+                new Page<>(currentPage, pageSize), user.getId(), keyword);
+        for (KbInfoResp kb : result.getRecords()) {
+            // myRole already came from the join; map it to the access level
+            // without a second membership query per row.
+            TeamRoleEnum role = TeamRoleEnum.getByValue(kb.getMyRole());
+            kb.setAccessLevel(role == null
+                    ? KbAccessType.READ.name()
+                    : switch (role) {
+                        case OWNER -> KbAccessType.MANAGE.name();
+                        case CONTRIBUTOR -> KbAccessType.WRITE.name();
+                        case READER -> KbAccessType.READ.name();
+                    });
+        }
+        return result;
+    }
+
+    /**
+     * Lists company knowledge bases for the user workspace's dedicated company
+     * section. STAFF scope is readable by every logged-in user; EXECUTIVE rows
+     * stay admin-only and are filtered out for everyone else. Only admins manage.
+     */
+    public Page<KbInfoResp> searchCompanyForUserWorkspace(String keyword, Integer currentPage, Integer pageSize) {
         Page<KbInfoResp> result = new Page<>();
         LambdaQueryWrapper<KnowledgeBase> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(KnowledgeBase::getIsPublic, true)
+        User user = ThreadContext.getCurrentUser();
+        boolean isAdmin = user != null && Boolean.TRUE.equals(user.getIsAdmin());
+        wrapper.eq(KnowledgeBase::getOwnerType, KbOwnerTypeEnum.COMPANY.getValue())
                 .and(item -> item.eq(KnowledgeBase::getIsSystem, false)
                         .or()
                         .isNull(KnowledgeBase::getIsSystem));
+        if (!isAdmin) {
+            wrapper.eq(KnowledgeBase::getCompanyScope, KbCompanyScopeEnum.STAFF.getValue());
+        }
         if (StringUtils.isNotBlank(keyword)) {
             wrapper.like(KnowledgeBase::getTitle, keyword);
         }
-        wrapper.orderByDesc(KnowledgeBase::getStarCount, KnowledgeBase::getUpdateTime);
+        wrapper.orderByDesc(KnowledgeBase::getUpdateTime);
         Page<KnowledgeBase> knowledgeBasePage = baseMapper.selectPage(new Page<>(currentPage, pageSize), wrapper);
-        return MPPageUtil.convertToPage(knowledgeBasePage, result, KbInfoResp.class, null);
+        MPPageUtil.convertToPage(knowledgeBasePage, result, KbInfoResp.class, null);
+        String accessLevel = isAdmin ? KbAccessType.MANAGE.name() : KbAccessType.READ.name();
+        result.getRecords().forEach(kb -> kb.setAccessLevel(accessLevel));
+        return result;
+    }
+
+    /** Fills the caller's effective access level so the frontend can gate actions. */
+    private void fillAccessLevel(User user, List<KbInfoResp> records) {
+        for (KbInfoResp kb : records) {
+            kb.setAccessLevel(knowledgeBaseAccessService.resolve(user, kb).name());
+        }
     }
 
     public Page<KbInfoResp> search(KbSearchReq req, Integer currentPage, Integer pageSize) {
@@ -510,14 +714,17 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
         if (StringUtils.isNotBlank(req.getOwnerName())) {
             wrapper.like(KnowledgeBase::getOwnerName, req.getOwnerName());
         }
-        if (null != req.getIsPublic()) {
-            wrapper.eq(KnowledgeBase::getIsPublic, req.getIsPublic());
+        if (StringUtils.isNotBlank(req.getCompanyScope())) {
+            wrapper.eq(KnowledgeBase::getCompanyScope, req.getCompanyScope());
         }
         if (null != req.getIsSystem()) {
             wrapper.eq(KnowledgeBase::getIsSystem, req.getIsSystem());
         }
         if (null != req.getIsEnabled()) {
             wrapper.eq(KnowledgeBase::getIsEnabled, req.getIsEnabled());
+        }
+        if (StringUtils.isNotBlank(req.getOwnerType())) {
+            wrapper.eq(KnowledgeBase::getOwnerType, req.getOwnerType());
         }
         if (null != req.getMinItemCount()) {
             wrapper.ge(KnowledgeBase::getItemCount, req.getMinItemCount());
@@ -533,7 +740,47 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
         }
         wrapper.orderByDesc(KnowledgeBase::getStarCount, KnowledgeBase::getUpdateTime);
         Page<KnowledgeBase> knowledgeBasePage = baseMapper.selectPage(new Page<>(currentPage, pageSize), wrapper);
-        return MPPageUtil.convertToPage(knowledgeBasePage, result, KbInfoResp.class, null);
+        MPPageUtil.convertToPage(knowledgeBasePage, result, KbInfoResp.class, null);
+        fillTeamNames(result.getRecords());
+        return result;
+    }
+
+    /**
+     * Resolves a team by uuid for tier wiring (create/transfer), taking a row
+     * lock (SELECT ... FOR UPDATE) that serializes team-KB creation/transfer
+     * against team deletion and member removal, so a team cannot be deleted
+     * between the ownership check and the KB insert. Mirrors
+     * {@link TeamService#lockOrThrow(String)}; exists to keep this service on
+     * mappers only and out of the TeamService dependency cycle.
+     */
+    private Team getTeamOrThrow(String uuid) {
+        Team team = ChainWrappers.lambdaQueryChain(teamMapper)
+                .eq(Team::getUuid, uuid)
+                .last("for update")
+                .one();
+        if (null == team) {
+            throw new BaseException(A_TEAM_NOT_FOUND);
+        }
+        return team;
+    }
+
+    private void fillTeamNames(List<KbInfoResp> records) {
+        List<Long> teamIds = records.stream()
+                .filter(kb -> KbOwnerTypeEnum.TEAM.getValue().equals(kb.getOwnerType()))
+                .map(KbInfoResp::getTeamId)
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        if (teamIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> teamNames = teamMapper.selectByIds(teamIds).stream()
+                .collect(Collectors.toMap(Team::getId, Team::getName, (a, b) -> a));
+        records.forEach(kb -> {
+            if (KbOwnerTypeEnum.TEAM.getValue().equals(kb.getOwnerType()) && teamNames.containsKey(kb.getTeamId())) {
+                kb.setTeamName(teamNames.get(kb.getTeamId()));
+            }
+        });
     }
 
     public List<KbInfoResp> listByIds(List<Long> ids) {
@@ -561,21 +808,87 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
     }
 
     public boolean softDelete(String uuid) {
-        checkWritePrivilege(null, uuid);
+        // Removing a knowledge base is a management-grade act: for team KBs only
+        // the team OWNER (or an administrator) may delete it.
+        checkManagePrivilege(null, uuid);
         KnowledgeBase knowledgeBase = getOrThrow(uuid);
         if (Boolean.TRUE.equals(knowledgeBase.getIsSystem())) {
             // A system KB may be disabled through edit, but must never be removed.
             throw new BaseException(A_PARAMS_ERROR);
         }
+        // The management action itself must succeed first; every derived store
+        // is cleaned up afterwards, best effort, so its failure can neither
+        // undo the deletion nor affect the returned result.
         boolean deleted = baseMapper.delete(new LambdaQueryWrapper<KnowledgeBase>()
                 .eq(KnowledgeBase::getUuid, uuid)) > 0;
         if (deleted) {
             routeProfileCoordinator.knowledgeBaseDeleted(uuid,
                     knowledgeBase.getRouteProfileActiveGeneration() == null
                             ? 0L : knowledgeBase.getRouteProfileActiveGeneration());
+            // Physical files (adi_file rows plus the local/OSS objects) are
+            // deliberately NOT removed here: files are deduplicated across
+            // knowledge bases by sha256, so shared ownership cannot be decided
+            // from one deleted knowledge base alone.
+            cleanupKnowledgeBaseItems(uuid);
+            cleanupKnowledgeBaseEmbeddings(uuid);
+            cleanupKnowledgeBaseBm25Index(uuid);
+            cleanupKnowledgeBaseCanonicalChunks(uuid);
             cleanupKnowledgeBaseGraph(uuid);
         }
         return deleted;
+    }
+
+    /**
+     * Removes the deleted knowledge base's item rows. Best effort with its own
+     * try/catch so a PostgreSQL hiccup cannot abort the remaining cleanups.
+     */
+    private void cleanupKnowledgeBaseItems(String kbUuid) {
+        try {
+            knowledgeBaseItemService.remove(new LambdaQueryWrapper<KnowledgeBaseItem>()
+                    .eq(KnowledgeBaseItem::getKbUuid, kbUuid));
+        } catch (Exception exception) {
+            log.error("Unable to delete items of deleted knowledge base, kbUuid:{}", kbUuid, exception);
+        }
+    }
+
+    /**
+     * Removes the deleted knowledge base's whole vector footprint (pgvector
+     * rows or neo4j embeddings). Best effort with its own try/catch.
+     */
+    private void cleanupKnowledgeBaseEmbeddings(String kbUuid) {
+        try {
+            embeddingService.deleteByKbUuid(kbUuid);
+        } catch (Exception exception) {
+            log.error("Unable to delete embeddings of deleted knowledge base, kbUuid:{}", kbUuid, exception);
+        }
+    }
+
+    /**
+     * Removes the deleted knowledge base's BM25 lexical index (documents,
+     * postings and FULLTEXT build bookkeeping). Best effort with its own
+     * try/catch.
+     */
+    private void cleanupKnowledgeBaseBm25Index(String kbUuid) {
+        try {
+            bm25IndexService.deleteByKbUuid(kbUuid);
+        } catch (Exception exception) {
+            log.error("Unable to delete BM25 index of deleted knowledge base, kbUuid:{}", kbUuid, exception);
+        }
+    }
+
+    /**
+     * Removes the deleted knowledge base's canonical chunks and chunk sets.
+     * Reuse of equivalent chunk sets never crosses knowledge bases (the unique
+     * key starts at kb_item_uuid, see CanonicalChunkIndexService#deleteByKbUuid),
+     * so this cannot destroy another knowledge base's in-use snapshot. Best
+     * effort with its own try/catch.
+     */
+    private void cleanupKnowledgeBaseCanonicalChunks(String kbUuid) {
+        try {
+            canonicalChunkIndexService.deleteByKbUuid(kbUuid);
+        } catch (Exception exception) {
+            log.error("Unable to delete canonical chunks of deleted knowledge base, kbUuid:{}", kbUuid, exception);
+        }
     }
 
     /**
@@ -600,6 +913,68 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
     public boolean softDeleteForUserWorkspace(String uuid) {
         checkUserWorkspaceWritePrivilege(uuid);
         return softDelete(uuid);
+    }
+
+    /**
+     * Transfers a knowledge base between PERSONAL and TEAM ownership.
+     * PERSONAL→TEAM requires the caller to hold MANAGE on the KB and OWNER in
+     * the target team; TEAM→PERSONAL requires team OWNER and re-points owner_*
+     * to the caller so personal semantics (lists, indexing lock, ext keys)
+     * follow the new owner. COMPANY KBs never participate in transfers.
+     */
+    @Transactional
+    public KnowledgeBase transfer(KbTransferReq transferReq) {
+        User user = ThreadContext.getCurrentUser();
+        if (null == user) {
+            throw new BaseException(A_USER_NOT_EXIST);
+        }
+        KnowledgeBase knowledgeBase = getOrThrow(transferReq.getKbUuid());
+        if (Boolean.TRUE.equals(knowledgeBase.getIsSystem())) {
+            // System KBs sit outside the tier model; do not disclose details.
+            throw new BaseException(A_DATA_NOT_FOUND);
+        }
+        // Indexing is serialized per creator id. Moving a KB mid-index would
+        // orphan the running job's lock and confuse polling clients.
+        String ownerIndexKey = MessageFormat.format(USER_INDEXING, knowledgeBase.getOwnerId());
+        if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(ownerIndexKey))) {
+            throw new BaseException(A_DOC_INDEX_DOING);
+        }
+        KbOwnerTypeEnum from = parseOwnerType(knowledgeBase.getOwnerType());
+        KbOwnerTypeEnum to = parseOwnerType(transferReq.getOwnerType());
+        if (from == to || KbOwnerTypeEnum.COMPANY == from || KbOwnerTypeEnum.COMPANY == to) {
+            throw new BaseException(A_KB_TRANSFER_FORBIDDEN);
+        }
+        if (KbOwnerTypeEnum.PERSONAL == from) {
+            // PERSONAL → TEAM: the KB owner donates their library into a team
+            // they own. Contributors do not get to relocate team scope alone.
+            if (!knowledgeBaseAccessService.canManage(user, knowledgeBase)) {
+                throw new BaseException(A_USER_NOT_AUTH);
+            }
+            if (StringUtils.isBlank(transferReq.getTeamUuid())) {
+                throw new BaseException(A_PARAMS_ERROR);
+            }
+            Team targetTeam = getTeamOrThrow(transferReq.getTeamUuid());
+            if (TeamRoleEnum.OWNER != knowledgeBaseAccessService.teamRole(targetTeam.getId(), user.getId())) {
+                throw new BaseException(A_USER_NOT_AUTH);
+            }
+            knowledgeBase.setOwnerType(KbOwnerTypeEnum.TEAM.getValue());
+            knowledgeBase.setTeamId(targetTeam.getId());
+        } else {
+            // TEAM → PERSONAL: the team OWNER pulls the KB out of the team and
+            // becomes its personal owner (owner_* re-pointed).
+            if (!knowledgeBaseAccessService.canManage(user, knowledgeBase)) {
+                throw new BaseException(A_USER_NOT_AUTH);
+            }
+            knowledgeBase.setOwnerType(KbOwnerTypeEnum.PERSONAL.getValue());
+            knowledgeBase.setTeamId(0L);
+            knowledgeBase.setOwnerId(user.getId());
+            knowledgeBase.setOwnerUuid(user.getUuid());
+            knowledgeBase.setOwnerName(user.getName());
+        }
+        baseMapper.updateById(knowledgeBase);
+        log.info("Knowledge base ownership transferred, kbUuid:{}, {} -> {}, operatorId:{}",
+                knowledgeBase.getUuid(), from.getValue(), to.getValue(), user.getId());
+        return knowledgeBase;
     }
 
     public SseEmitter sseAsk(String qaRecordUuid) {
@@ -924,10 +1299,10 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
 
         TokenEstimatorThreadLocal.setTokenEstimator(knowledgeBase.getIngestTokenEstimator());
         long totalStartedAt = System.currentTimeMillis();
-        long retrievalMs;
+        long retrievalMs = 0L;
         long generationMs = 0L;
         List<Content> selected = List.of();
-        DeduplicatingContentRetriever retriever;
+        DeduplicatingContentRetriever retriever = null;
         ChatResponse chatResponse = null;
         String answer;
         try {
@@ -936,21 +1311,55 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                 throw new IllegalArgumentException(
                         "Specify either retrievalMode or retrievalRoutes, not both");
             }
-            Set<RetrievalRoute> retrievalRoutes = request.effectiveRetrievalRoutes();
-            if (retrievalRoutes.isEmpty()) {
-                throw new IllegalArgumentException("At least one retrieval route is required");
+            boolean intentRouting = request.effectiveIntentRouting();
+            if (intentRouting && (request.retrievalMode() != null
+                    || (request.retrievalRoutes() != null && !request.retrievalRoutes().isEmpty()))) {
+                throw new IllegalArgumentException(
+                        "intentRouting cannot be combined with retrievalMode or retrievalRoutes");
+            }
+            Set<RetrievalRoute> retrievalRoutes;
+            if (intentRouting) {
+                // 意图模式：路由由下方意图决策块赋值（NO_RAG 合法收敛为空集）
+                retrievalRoutes = Set.of();
+            } else {
+                retrievalRoutes = request.effectiveRetrievalRoutes();
+                if (retrievalRoutes.isEmpty()) {
+                    throw new IllegalArgumentException("At least one retrieval route is required");
+                }
             }
             Set<String> kbScope = Set.of(kbUuid);
-            if (retrievalRoutes.contains(RetrievalRoute.BM25)) {
+            if (!intentRouting && retrievalRoutes.contains(RetrievalRoute.BM25)) {
                 // Evaluation is explicit traffic: an unavailable requested branch is
                 // an error instead of silently changing the experiment definition.
                 bm25ReadinessService.requireReady(kbScope);
             }
-            boolean queryEmbeddingRequired = retrievalRoutes.contains(RetrievalRoute.VECTOR)
+            // 意图模式恒需查询向量：前置门 probe 与原型识别器都依赖
+            boolean queryEmbeddingRequired = intentRouting
+                    || retrievalRoutes.contains(RetrievalRoute.VECTOR)
                     || request.effectiveIncludeQueryEmbedding();
             RetrievalQueryContext queryContext = queryEmbeddingRequired
                     ? RetrievalQueryContext.create(request.question(), embeddingModel)
                     : null;
+            Map<String, Object> intentEcho = null;
+            if (intentRouting) {
+                // 与生产 routeKnowledgeQuery 同构的决策序列，内联以捕获 plan。两处受控差异：
+                // 不引入 ContextualQueryRewriter（评测题自包含，改写会改变被测查询并多一次
+                // LLM 调用）；不引入 isDefiniteNoRag 预检（被测变量由路由器自己收敛）。
+                KbInfoResp scopeInfo = new KbInfoResp();
+                BeanUtils.copyProperties(knowledgeBase, scopeInfo);
+                KnowledgeScopeDecision scopeDecision = knowledgeScopePreflightGate
+                        .evaluateDedicatedKnowledgeBase(request.question(),
+                                queryContext.embedding(), List.of(scopeInfo));
+                Set<RetrievalRoute> availableRoutes = scopeDecision.skipKnowledgeBaseRouting()
+                        ? Set.of() : availableKnowledgeRoutes(kbScope);
+                RetrievalPlan routingPlan = availableRoutes.isEmpty() ? null
+                        : intentRoutingService.route(request.question(), queryContext.embedding(),
+                                null, Set.of(KnowledgeSourceType.DOCUMENT_KB), availableRoutes);
+                retrievalRoutes = routingPlan == null ? Set.of()
+                        : intentRoutingService.effectiveRoutes(routingPlan);
+                intentEcho = RagEvaluationResultMapper.intent(routingPlan, scopeDecision,
+                        availableRoutes, adiProperties.getIntentRouting().isEnabled());
+            }
             boolean useReranker = request.useReranker() == null
                     ? knowledgeBase.getRerankModelId() != null && knowledgeBase.getRerankModelId() > 0
                     : request.useReranker();
@@ -961,43 +1370,49 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                                     .temperature(knowledgeBase.getQueryLlmTemperature())
                                     .build())
                     : null;
-            RetrieverCreateParam createParam = RetrieverCreateParam.builder()
-                    .retrievalRoutes(retrievalRoutes)
-                    .knowledgeBaseUuids(kbScope)
-                    .queryEmbedding(queryContext == null ? null : queryContext.embedding())
-                    .tokenEstimator(TokenEstimatorFactory.create(knowledgeBase.getIngestTokenEstimator()))
-                    .chatModel(graphQueryModel)
-                    .filter(new IsEqualTo(ZhiMeshConstant.MetadataKey.KB_UUID, kbUuid))
-                    .maxResults(maxResults)
-                    .minScore(knowledgeBase.getRetrieveMinScore())
-                    .breakIfSearchMissed(Boolean.TRUE.equals(knowledgeBase.getIsStrict()))
-                    .graphHopDepth(knowledgeBase.getGraphHopDepth() == null ? 1 : knowledgeBase.getGraphHopDepth())
-                    .reranker(effectiveReranker)
-                    .rerankTopN(knowledgeBase.getRerankTopN() == null ? 5 : knowledgeBase.getRerankTopN())
-                    .maxInputTokens(maxInputTokens)
-                    .systemMessage(knowledgeBase.getQuerySystemMessage())
-                    .build();
-            List<RetrieverWrapper> wrappers = new CompositeRag(KNOWLEDGE_BASE).createRetriever(createParam);
-            if (wrappers.size() != 1 || !(wrappers.get(0).getRetriever() instanceof DeduplicatingContentRetriever)) {
-                throw new IllegalStateException("Evaluation requires the merged RAG retriever");
-            }
-            retriever = (DeduplicatingContentRetriever) wrappers.get(0).getRetriever();
-
-            long retrievalStartedAt = System.currentTimeMillis();
             boolean noEvidence = false;
-            try {
-                selected = retriever.retrieve(Query.from(request.question()));
-            } catch (BaseException exception) {
-                if (B_BREAK_SEARCH.getCode().equals(exception.getCode())) {
-                    noEvidence = true;
-                } else {
-                    throw exception;
+            if (!retrievalRoutes.isEmpty()) {
+                RetrieverCreateParam createParam = RetrieverCreateParam.builder()
+                        .retrievalRoutes(retrievalRoutes)
+                        .knowledgeBaseUuids(kbScope)
+                        .queryEmbedding(queryContext == null ? null : queryContext.embedding())
+                        .tokenEstimator(TokenEstimatorFactory.create(knowledgeBase.getIngestTokenEstimator()))
+                        .chatModel(graphQueryModel)
+                        .filter(new IsEqualTo(ZhiMeshConstant.MetadataKey.KB_UUID, kbUuid))
+                        .maxResults(maxResults)
+                        .minScore(knowledgeBase.getRetrieveMinScore())
+                        .breakIfSearchMissed(Boolean.TRUE.equals(knowledgeBase.getIsStrict()))
+                        .graphHopDepth(knowledgeBase.getGraphHopDepth() == null ? 1 : knowledgeBase.getGraphHopDepth())
+                        .reranker(effectiveReranker)
+                        .rerankTopN(knowledgeBase.getRerankTopN() == null ? 5 : knowledgeBase.getRerankTopN())
+                        .maxInputTokens(maxInputTokens)
+                        .systemMessage(knowledgeBase.getQuerySystemMessage())
+                        .build();
+                List<RetrieverWrapper> wrappers = new CompositeRag(KNOWLEDGE_BASE).createRetriever(createParam);
+                if (wrappers.size() != 1 || !(wrappers.get(0).getRetriever() instanceof DeduplicatingContentRetriever)) {
+                    throw new IllegalStateException("Evaluation requires the merged RAG retriever");
                 }
+                retriever = (DeduplicatingContentRetriever) wrappers.get(0).getRetriever();
+
+                long retrievalStartedAt = System.currentTimeMillis();
+                try {
+                    selected = retriever.retrieve(Query.from(request.question()));
+                } catch (BaseException exception) {
+                    if (B_BREAK_SEARCH.getCode().equals(exception.getCode())) {
+                        noEvidence = true;
+                    } else {
+                        throw exception;
+                    }
+                }
+                retrievalMs = System.currentTimeMillis() - retrievalStartedAt;
             }
-            retrievalMs = System.currentTimeMillis() - retrievalStartedAt;
 
             if (request.effectiveRetrievalOnly()) {
                 answer = null;
+            } else if (retrievalRoutes.isEmpty()
+                    && Boolean.TRUE.equals(knowledgeBase.getIsStrict())) {
+                // 镜像生产 blockingAsk 的空路由语义：strict 知识库无路由时固定拒答（0 token）
+                answer = NO_KNOWLEDGE_EVIDENCE_ANSWER;
             } else if (noEvidence) {
                 answer = "根据当前知识库无法确定。";
             } else {
@@ -1022,7 +1437,8 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                 answer = chatResponse.aiMessage().text();
             }
 
-            List<Content> candidates = retriever.getCandidateContents();
+            List<Content> candidates = retriever == null
+                    ? List.of() : retriever.getCandidateContents();
             List<String> allDocumentIds = RagEvaluationResultMapper.documentIds(candidates);
             Map<String, String> documentNames = getKnowledgeItemNames(allDocumentIds);
             List<String> retrievedDocumentIds = RagEvaluationResultMapper.documentIds(selected);
@@ -1053,15 +1469,18 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                     .retrievedDocumentNames(retrievedDocumentNames)
                     .retrievedSegmentIds(RagEvaluationResultMapper.segmentIds(selected))
                     .candidates(RagEvaluationResultMapper.candidates(candidates, selected, documentNames, estimator))
-                    .routes(RagEvaluationResultMapper.routes(retriever.getRouteResults()))
-                    .rerank(RagEvaluationResultMapper.rerank(retriever.getLastRerankResult()))
-                    .graphTrace(retriever.getGraphTrace())
+                    .routes(RagEvaluationResultMapper.routes(
+                            retriever == null ? List.of() : retriever.getRouteResults()))
+                    .rerank(RagEvaluationResultMapper.rerank(
+                            retriever == null ? null : retriever.getLastRerankResult()))
+                    .graphTrace(retriever == null ? null : retriever.getGraphTrace())
                     .timingMs(timing)
                     .usage(usage)
                     .configSnapshot(evaluationConfig(knowledgeBase, answerModel, request.effectiveTemperature(),
                             maxResults, request.retrievalMode(), retrievalRoutes, useReranker,
                             request.effectiveRetrievalOnly(),
-                            request.effectiveIncludeQueryEmbedding()))
+                            request.effectiveIncludeQueryEmbedding(), intentRouting))
+                    .intent(intentEcho)
                     .queryEmbedding(request.effectiveIncludeQueryEmbedding() && queryContext != null
                             ? floats(queryContext.embedding().vector()) : null)
                     .build();
@@ -1100,7 +1519,8 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                                                   RetrievalMode retrievalMode,
                                                   Set<RetrievalRoute> retrievalRoutes,
                                                   boolean useReranker,
-                                                  boolean retrievalOnly, boolean includeQueryEmbedding) {
+                                                  boolean retrievalOnly, boolean includeQueryEmbedding,
+                                                  boolean intentRouting) {
         ZhiMeshProperties.Retrieval retrieval = adiProperties.getRetrieval();
         ZhiMeshProperties.Retrieval.Bm25 bm25 = retrieval.getBm25();
         Map<String, Object> config = new LinkedHashMap<>();
@@ -1114,6 +1534,9 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
                 .sorted(Comparator.comparingInt(RetrievalRoute::ordinal))
                 .map(RetrievalRoute::toJson)
                 .toList());
+        if (intentRouting) {
+            config.put("intentRouting", true);
+        }
         config.put("useReranker", useReranker);
         config.put("retrievalOnly", retrievalOnly);
         config.put("queryEmbeddingIncluded", includeQueryEmbedding);
@@ -1577,11 +2000,11 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
     }
 
     /**
-     * Read authorization for a knowledge base's content: allow the owner, an admin,
-     * or anyone when the knowledge base is public. This mirrors the (owner-only)
-     * write-side checkWritePrivilege so that the read endpoints are scoped too. Denials
-     * are reported as A_DATA_NOT_FOUND to avoid leaking the existence of other
-     * users' private knowledge bases.
+     * Read authorization for a knowledge base's content, resolved by the unified
+     * three-tier rule (personal owner / team membership / company-wide read, plus
+     * the public flag). System knowledge bases stay invisible to the user
+     * workspace. Denials are reported as A_DATA_NOT_FOUND to avoid leaking the
+     * existence of other users' private knowledge bases.
      */
     public void checkReadPrivilege(String kbUuid) {
         KnowledgeBase kb = getOrThrow(kbUuid);
@@ -1590,27 +2013,22 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
             // time, but never through the user knowledge-base workspace.
             throw new BaseException(A_DATA_NOT_FOUND);
         }
-        if (Boolean.TRUE.equals(kb.getIsPublic())) {
-            return;
+        if (!knowledgeBaseAccessService.canRead(ThreadContext.getCurrentUser(), kb)) {
+            throw new BaseException(A_DATA_NOT_FOUND);
         }
-        User user = ThreadContext.getCurrentUser();
-        // A user session stays a user session even when that account also has
-        // administrator rights. Cross-user and system-KB access belongs to the
-        // management API, never to the regular user workspace.
-        if (null != user && user.getId().equals(kb.getOwnerId())) {
-            return;
-        }
-        throw new BaseException(A_DATA_NOT_FOUND);
     }
 
-    /** Verify that a write comes from the user workspace and not a system KB. */
+    /**
+     * Write authorization for the user workspace (upload, indexing, item edits),
+     * requiring at least WRITE level under the unified three-tier rule. System
+     * knowledge bases and below-WRITE members (READER, outsiders) are rejected.
+     */
     public void checkUserWorkspaceWritePrivilege(String kbUuid) {
         KnowledgeBase kb = getOrThrow(kbUuid);
         if (Boolean.TRUE.equals(kb.getIsSystem())) {
             throw new BaseException(A_DATA_NOT_FOUND);
         }
-        User user = ThreadContext.getCurrentUser();
-        if (user == null || !user.getId().equals(kb.getOwnerId())) {
+        if (!knowledgeBaseAccessService.canWrite(ThreadContext.getCurrentUser(), kb)) {
             throw new BaseException(A_DATA_NOT_FOUND);
         }
     }
@@ -1659,7 +2077,26 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
         }
     }
 
+    /**
+     * Management-grade authorization for settings changes and deletion. Team
+     * knowledge-base settings affect every member, so only MANAGE level (personal
+     * owner or team OWNER) may change them; administrators keep their bypass.
+     */
+    private void checkManagePrivilege(Long kbId, String kbUuid) {
+        checkPrivilege(kbId, kbUuid, KbAccessType.MANAGE);
+    }
+
+    /** Write-grade authorization for content operations (upload, indexing). */
     private void checkWritePrivilege(Long kbId, String kbUuid) {
+        checkPrivilege(kbId, kbUuid, KbAccessType.WRITE);
+    }
+
+    /**
+     * Unified administrative-path privilege check with the established admin
+     * bypass: administrators serve the /admin/kb workbench (including system
+     * KBs), everyone else is resolved through the three-tier access rules.
+     */
+    private void checkPrivilege(Long kbId, String kbUuid, KbAccessType required) {
         if (null == kbId && StringUtils.isBlank(kbUuid)) {
             throw new BaseException(A_PARAMS_ERROR);
         }
@@ -1667,19 +2104,19 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
         if (null == user) {
             throw new BaseException(A_USER_NOT_EXIST);
         }
-        boolean privilege = user.getIsAdmin();
-        if (privilege) {
+        if (Boolean.TRUE.equals(user.getIsAdmin())) {
             return;
         }
-        LambdaQueryWrapper<KnowledgeBase> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(KnowledgeBase::getOwnerId, user.getId());
+        KnowledgeBase kb;
         if (null != kbId) {
-            wrapper = wrapper.eq(KnowledgeBase::getId, kbId);
-        } else if (StringUtils.isNotBlank(kbUuid)) {
-            wrapper = wrapper.eq(KnowledgeBase::getUuid, kbUuid);
+            kb = getById(kbId);
+        } else {
+            kb = ChainWrappers.lambdaQueryChain(baseMapper)
+                    .eq(KnowledgeBase::getUuid, kbUuid)
+                    .oneOpt()
+                    .orElse(null);
         }
-        boolean exists = baseMapper.exists(wrapper);
-        if (!exists) {
+        if (kb == null || !knowledgeBaseAccessService.resolve(user, kb).satisfies(required)) {
             throw new BaseException(A_USER_NOT_AUTH);
         }
     }

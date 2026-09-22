@@ -1,6 +1,6 @@
 <script setup lang='ts'>
 import type { CSSProperties } from 'vue'
-import { computed, onMounted, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { NButton, NLayoutSider } from 'naive-ui'
 import List from './List.vue'
 import { SiderAccountBar } from '@/components/common'
@@ -52,10 +52,6 @@ watch(
     flush: 'post',
   },
 )
-
-onMounted(async () => {
-  console.info('kb index,onmounted')
-})
 </script>
 
 <template>
@@ -77,12 +73,23 @@ onMounted(async () => {
             <span class="section-sider-collapse__icon" />
           </button>
         </div>
+        <!-- kb-manage 暂不支持 query 直达新建弹窗，仅跳转列表页 -->
+        <div class="knowledge-sider-create">
+          <NButton type="primary" block @click="$router.push({ name: 'KnowledgeBaseManage' })">
+            {{ t('knowledgeBase.createKb') }}
+          </NButton>
+        </div>
         <List class="flex-1 min-h-0" />
       </main>
       <div class="knowledge-sider-footer">
         <div class="knowledge-manage-action">
           <NButton secondary block @click="$router.push({ name: 'KnowledgeBaseManage' })">
             {{ t('chat.knowledgeBaseManage') }}
+          </NButton>
+        </div>
+        <div class="knowledge-manage-action knowledge-manage-action--minor">
+          <NButton quaternary block size="small" @click="$router.push({ name: 'TeamManage' })">
+            {{ t('team.manage') }}
           </NButton>
         </div>
         <SiderAccountBar v-if="isMobile" />
@@ -201,6 +208,11 @@ onMounted(async () => {
   transform: translateX(-2px) rotate(-45deg);
 }
 
+.knowledge-sider-create {
+  padding: 0 16px 8px;
+  flex: none;
+}
+
 .knowledge-sider-footer {
   position: relative;
   z-index: 2;
@@ -211,6 +223,10 @@ onMounted(async () => {
 
 .knowledge-manage-action {
   padding: 12px 16px;
+}
+
+.knowledge-manage-action--minor {
+  padding: 0 16px 10px;
 }
 
 @supports (backdrop-filter: blur(1px)) {

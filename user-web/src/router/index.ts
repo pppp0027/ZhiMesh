@@ -67,6 +67,11 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/knowledge-base-manage/KnowledgeBaseDetail.vue'),
   },
   {
+    path: '/team-manage',
+    name: 'TeamManage',
+    component: () => import('@/views/team-manage/index.vue'),
+  },
+  {
     path: '/workflow',
     component: WorkflowBaseLayout,
     name: 'WfIndex',

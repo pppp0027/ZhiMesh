@@ -22,10 +22,13 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -35,6 +38,9 @@ import static com.pppp.zhimesh.common.util.LocalCache.MODEL_ID_TO_OBJ;
 @Slf4j
 @Service
 public class KnowledgeBaseQaService extends ServiceImpl<KnowledgeBaseQaRecordMapper, KnowledgeBaseQa> {
+
+    /** How long an unanswered record may be reused as "in progress". */
+    private static final Duration PENDING_REUSE_WINDOW = Duration.ofMinutes(10);
 
     @Resource
     private KnowledgeBaseQaRecordReferenceService knowledgeBaseQaRecordReferenceService;
@@ -49,25 +55,39 @@ public class KnowledgeBaseQaService extends ServiceImpl<KnowledgeBaseQaRecordMap
     private LLMCallRecordService llmCallRecordService;
 
     public KbQaDto add(KnowledgeBase knowledgeBase, QARecordReq req) {
+        Long modelId = aiModelService.getIdByName(req.getModelName());
         // A browser can submit the same composer action twice (keypress + click,
         // or a reconnect). Reuse an unfinished personal record instead of
-        // creating a second QA that will race through retrieval.
-        KnowledgeBaseQa pending = lambdaQuery()
+        // creating a second QA that will race through retrieval. Reuse requires
+        // the SAME model and a record still in its answering window; anything
+        // else without an answer is a failed attempt (e.g. upstream 502) and
+        // would otherwise shadow every retry, including model switches.
+        List<KnowledgeBaseQa> unfinished = lambdaQuery()
                 .eq(KnowledgeBaseQa::getKbUuid, knowledgeBase.getUuid())
                 .eq(KnowledgeBaseQa::getUserId, ThreadContext.getCurrentUserId())
                 .eq(KnowledgeBaseQa::getQuestion, req.getQuestion())
                 .and(wrapper -> wrapper.isNull(KnowledgeBaseQa::getAnswer)
                         .or().eq(KnowledgeBaseQa::getAnswer, ""))
                 .orderByDesc(KnowledgeBaseQa::getUpdateTime)
-                .last("limit 1")
-                .one();
+                .list();
+        KnowledgeBaseQa pending = unfinished.stream()
+                .filter(record -> Objects.equals(record.getAiModelId(), modelId))
+                .filter(record -> record.getUpdateTime() != null
+                        && record.getUpdateTime().isAfter(LocalDateTime.now().minus(PENDING_REUSE_WINDOW)))
+                .findFirst()
+                .orElse(null);
+        if (pending == null && !unfinished.isEmpty()) {
+            // Stale unanswered rows are dead weight in the history list; drop
+            // them so the retry starts from a clean record.
+            baseMapper.deleteBatchIds(unfinished.stream().map(KnowledgeBaseQa::getId).toList());
+        }
         if (pending != null) {
             KbQaDto existing = new KbQaDto();
             BeanUtils.copyProperties(pending, existing);
             return existing;
         }
         KnowledgeBaseQa newRecord = new KnowledgeBaseQa();
-        newRecord.setAiModelId(aiModelService.getIdByName(req.getModelName()));
+        newRecord.setAiModelId(modelId);
         newRecord.setQuestion(req.getQuestion());
         newRecord.setKbId(knowledgeBase.getId());
         newRecord.setKbUuid((knowledgeBase.getUuid()));
@@ -204,9 +224,15 @@ public class KnowledgeBaseQaService extends ServiceImpl<KnowledgeBaseQaRecordMap
         return record;
     }
 
-    public void clearByCurrentUser() {
+    /**
+     * Clears the caller's Q&A history for ONE knowledge base only; the front-end
+     * confirm dialog promises exactly that scope and wiping other bases' records
+     * would be data loss.
+     */
+    public void clearByCurrentUser(KnowledgeBase knowledgeBase) {
         baseMapper.delete(new LambdaQueryWrapper<KnowledgeBaseQa>()
-                .eq(KnowledgeBaseQa::getUserId, ThreadContext.getCurrentUserId()));
+                .eq(KnowledgeBaseQa::getUserId, ThreadContext.getCurrentUserId())
+                .eq(KnowledgeBaseQa::getKbId, knowledgeBase.getId()));
     }
 
     public boolean softDelete(String uuid) {

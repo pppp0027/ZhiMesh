@@ -31,9 +31,9 @@ const options = [
 ]
 
 function handleSelect(key: string) {
+  if (!authStore.checkLoginOrShow())
+    return
   if (key === 'detail') {
-    if (!authStore.checkLoginOrShow())
-      return
     showEditModal.value = true
   } else if (key === 'api') {
     showApiKeyModal.value = true

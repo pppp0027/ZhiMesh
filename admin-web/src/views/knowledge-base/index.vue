@@ -47,13 +47,23 @@
             </n-form-item>
 
             <div class="space-y-1">
-              <div>{{ t('common.isPublic') }}</div>
+              <div>{{ t('knowledgeBase.ownerType') }}</div>
               <n-radio-group
-                v-model:value="editFormParams.isPublic"
-                :disabled="editFormParams.isSystem"
+                v-model:value="editFormParams.ownerType"
+                :disabled="ownershipLocked"
               >
-                <n-radio :value="true">{{ t('common.public') }}</n-radio>
-                <n-radio :value="false">{{ t('common.private') }}</n-radio>
+                <n-radio value="PERSONAL">{{ t('knowledgeBase.ownerTypePersonal') }}</n-radio>
+                <n-radio value="COMPANY">{{ t('knowledgeBase.ownerTypeCompany') }}</n-radio>
+                <n-radio value="TEAM" disabled>{{ t('knowledgeBase.ownerTypeTeam') }}</n-radio>
+              </n-radio-group>
+              <div class="text-xs opacity-60">{{ ownershipHint }}</div>
+            </div>
+
+            <div v-if="editFormParams.ownerType === 'COMPANY' && !editFormParams.isSystem" class="space-y-1">
+              <div>{{ t('knowledgeBase.companyScope') }}</div>
+              <n-radio-group v-model:value="editFormParams.companyScope">
+                <n-radio value="STAFF">{{ t('knowledgeBase.companyScopeStaff') }}</n-radio>
+                <n-radio value="EXECUTIVE">{{ t('knowledgeBase.companyScopeExecutive') }}</n-radio>
               </n-radio-group>
             </div>
 
@@ -250,7 +260,7 @@
 </template>
 
 <script lang="ts" setup>
-  import { h, onMounted, reactive, ref } from 'vue'
+  import { h, onMounted, reactive, ref, computed } from 'vue'
   import { BasicTable, TableAction } from '@/components/Table'
   import { BasicForm, FormSchema, useForm } from '@/components/Form/index'
   import api from '@/api/knowledgeBase'
@@ -274,7 +284,8 @@
     uuid: '',
     title: '',
     remark: '',
-    isPublic: false,
+    ownerType: 'PERSONAL' as 'PERSONAL' | 'TEAM' | 'COMPANY',
+    companyScope: 'STAFF' as 'STAFF' | 'EXECUTIVE',
     isSystem: false,
     isEnabled: true,
     isStrict: false,
@@ -292,15 +303,24 @@
     queryLlmTemperature: 0.0,
     querySystemMessage: '',
   })
-  const publicOpts = [
-    {
-      label: t('common.yes'),
-      value: 1,
-    },
-    {
-      label: t('common.no'),
-      value: 0,
-    },
+  // 编辑打开时的原始归属：团队库归属由用户侧管理，管理端只读展示
+  const origOwnerType = ref<'PERSONAL' | 'TEAM' | 'COMPANY'>('PERSONAL')
+  const ownershipLocked = computed(
+    () => editFormParams.isSystem || origOwnerType.value === 'TEAM'
+  )
+  const ownershipHint = computed(() => {
+    if (editFormParams.isSystem) return t('knowledgeBase.ownerTypeSystemHint')
+    if (origOwnerType.value === 'TEAM') return t('knowledgeBase.ownerTypeTeamHint')
+    return t('knowledgeBase.ownerTypeCompanyHint')
+  })
+  const companyScopeOpts = [
+    { label: t('knowledgeBase.companyScopeStaff'), value: 'STAFF' },
+    { label: t('knowledgeBase.companyScopeExecutive'), value: 'EXECUTIVE' },
+  ]
+  const ownerTypeOpts = [
+    { label: t('knowledgeBase.ownerTypePersonal'), value: 'PERSONAL' },
+    { label: t('knowledgeBase.ownerTypeTeam'), value: 'TEAM' },
+    { label: t('knowledgeBase.ownerTypeCompany'), value: 'COMPANY' },
   ]
   const tokenEstimatorOpts = [
     { label: 'OpenAI', value: 'openai' },
@@ -349,11 +369,21 @@
       },
     },
     {
-      field: 'isPublic',
+      field: 'ownerType',
       component: 'NSelect',
-      label: t('common.isPublic'),
+      label: t('knowledgeBase.ownerType'),
       componentProps: {
-        options: publicOpts,
+        options: ownerTypeOpts,
+        clearable: true,
+      },
+    },
+    {
+      field: 'companyScope',
+      component: 'NSelect',
+      label: t('knowledgeBase.companyScope'),
+      componentProps: {
+        options: companyScopeOpts,
+        clearable: true,
       },
     },
     {
@@ -444,7 +474,8 @@
       uuid: '',
       title: '',
       remark: '',
-      isPublic: false,
+      ownerType: 'PERSONAL',
+      companyScope: 'STAFF',
       isSystem: false,
       isEnabled: true,
       isStrict: false,
@@ -462,6 +493,7 @@
       queryLlmTemperature: 0,
       querySystemMessage: '',
     })
+    origOwnerType.value = 'PERSONAL'
     showEditModal.value = true
   }
 
@@ -481,7 +513,13 @@
         }
         await api.edit({
           ...editFormParams,
-          isPublic: editFormParams.isSystem ? false : editFormParams.isPublic,
+          // 系统库固定个人归属；scope 仅对企业库有意义，其余归属一律 STAFF
+          // （后端 CHECK 约束同口径，这里保证表单语义一致）
+          ownerType: editFormParams.isSystem ? 'PERSONAL' : editFormParams.ownerType,
+          companyScope:
+            !editFormParams.isSystem && editFormParams.ownerType === 'COMPANY'
+              ? editFormParams.companyScope
+              : 'STAFF',
         })
         window['$message'].success(
           editFormParams.id ? t('common.editSuccess') : t('common.createSuccess')
@@ -499,13 +537,18 @@
 
   function handleEdit(record: Recordable) {
     showEditModal.value = true
+    // 旧行 ownerType 可能为空，统一按 PERSONAL 处理
+    const recordOwnerType = (record.ownerType || 'PERSONAL') as 'PERSONAL' | 'TEAM' | 'COMPANY'
     Object.assign(editFormParams, {
       ...record,
+      ownerType: recordOwnerType,
+      companyScope: (record.companyScope as 'STAFF' | 'EXECUTIVE') || 'STAFF',
       ingestTokenEstimator: record.ingestTokenEstimator || 'openai',
       graphHopDepth: Number(record.graphHopDepth) || 1,
       rerankModelId: Number(record.rerankModelId) || 0,
       rerankTopN: Number(record.rerankTopN) || 5,
     })
+    origOwnerType.value = recordOwnerType
   }
 
   async function handleDelete(record: Recordable) {

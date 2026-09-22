@@ -26,9 +26,9 @@ public class KnowledgeBase extends BaseEntity {
     @TableField("remark")
     private String remark;
 
-    @Schema(title = "是否公开 | Is Public")
-    @TableField("is_public")
-    private Boolean isPublic;
+    /** 企业库可见范围：STAFF 全员 / EXECUTIVE 仅管理员；非 COMPANY 归属恒为 STAFF。 */
+    @TableField("company_scope")
+    private String companyScope;
 
     /** 仅供管理员维护并由系统角色按白名单绑定的知识库。 */
     @TableField("is_system")
@@ -94,6 +94,14 @@ public class KnowledgeBase extends BaseEntity {
     @Schema(title = "所属人名称 | Owner Name")
     @TableField("owner_name")
     private String ownerName;
+
+    /** 归属层级：PERSONAL/TEAM/COMPANY；存量数据与默认值均为 PERSONAL。 */
+    @TableField("owner_type")
+    private String ownerType;
+
+    /** TEAM 归属时的 adi_team.id，其余归属为 0；owner_* 三列始终保留创建者信息。 */
+    @TableField("team_id")
+    private Long teamId;
 
     @Schema(title = "文档切割时重叠数量(按token来计) | Document Chunking Overlap Count (by Token)")
     @TableField("ingest_max_overlap")

@@ -9,7 +9,14 @@ export interface KbInfoData {
   remark: string
   ownerUuid: string
   ownerName: string
-  isPublic: boolean
+  /** 归属层级 PERSONAL/TEAM/COMPANY；旧行未回填时按 PERSONAL 处理。 */
+  ownerType?: 'PERSONAL' | 'TEAM' | 'COMPANY'
+  /** TEAM 归属的团队 id。 */
+  teamId?: string
+  /** TEAM 归属的团队名称（后端批量填充）。 */
+  teamName?: string
+  /** 企业库可见范围 STAFF/EXECUTIVE；非 COMPANY 归属恒为 STAFF。 */
+  companyScope?: 'STAFF' | 'EXECUTIVE'
   isSystem: boolean
   isEnabled: boolean
   isStrict: boolean
@@ -53,6 +60,33 @@ export function getColumns(): BasicColumn<KbInfoData>[] {
       width: 150,
     },
     {
+      title: t('knowledgeBase.ownerType'),
+      key: 'ownerType',
+      width: 120,
+      render(row) {
+        if (row.ownerType === 'TEAM')
+          return row.teamName
+            ? `${t('knowledgeBase.ownerTypeTeam')}·${row.teamName}`
+            : t('knowledgeBase.ownerTypeTeam')
+        if (row.ownerType === 'COMPANY')
+          return t('knowledgeBase.ownerTypeCompany')
+        return t('knowledgeBase.ownerTypePersonal')
+      },
+    },
+    {
+      title: t('knowledgeBase.companyScope'),
+      key: 'companyScope',
+      width: 110,
+      render(row) {
+        // 仅企业库有分级语义；其余归属恒为 STAFF，不展示避免噪音
+        if (row.ownerType !== 'COMPANY')
+          return '-'
+        return row.companyScope === 'EXECUTIVE'
+          ? t('knowledgeBase.companyScopeExecutive')
+          : t('knowledgeBase.companyScopeStaff')
+      },
+    },
+    {
       title: t('columns.itemCount'),
       key: 'itemCount',
       width: 80,
@@ -66,14 +100,6 @@ export function getColumns(): BasicColumn<KbInfoData>[] {
       title: t('columns.starCount'),
       key: 'starCount',
       width: 80,
-    },
-    {
-      title: t('columns.isPublic'),
-      key: 'isPublic',
-      width: 80,
-      render(row) {
-        return row.isPublic ? t('common.yes') : t('common.no')
-      },
     },
     {
       title: t('knowledgeBase.isSystem'),

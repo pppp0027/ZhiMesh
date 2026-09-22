@@ -1,13 +1,15 @@
 <script setup lang='ts'>
 import type { Ref } from 'vue'
-import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCollapse, NCollapseItem, NDrawer, NDrawerContent, NInput, NModal, useDialog, useLoadingBar, useMessage } from 'naive-ui'
+import { NButton, NCollapse, NCollapseItem, NDrawer, NDrawerContent, NInput, NModal, NSpin, useDialog, useLoadingBar, useMessage } from 'naive-ui'
 import { Message } from '../chat/components'
 import { useScroll } from '../chat/hooks/useScroll'
 import HeaderComponent from './Header/index.vue'
 import PCHeader from './Header/pc.vue'
 import RefGraph from './RefGraph.vue'
+import EvidenceMarkdown from '../chat/components/EvidenceMarkdown.vue'
+import { useCopyCode } from '../chat/hooks/useCopyCode'
 import LoginTip from '@/views/user/LoginTip.vue'
 import { LLMSelector, SvgIcon } from '@/components/common'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
@@ -33,8 +35,9 @@ const authStore = useAuthStore()
 const loaddingBar = useLoadingBar()
 const { isMobile } = useBasicLayout()
 const { scrollRef, scrollToBottom, scrollToBottomIfAtBottom, scrollTo } = useScroll()
+// 证据弹窗里的代码块渲染后绑定复制按钮
+useCopyCode()
 const { kbUuid: currKbUuid } = route.params as { kbUuid: string }
-console.log('currKbUUid', currKbUuid)
 const showReferenceModal = ref<boolean>(false)
 const showReferenceRecordUuid = ref<string>('')
 const references = ref<KnowledgeBase.QaRecordEmbeddingRef[]>([])
@@ -98,8 +101,8 @@ async function handleSubmit() {
         kbStore.updateRecord(currKbUuid, qaRecord.uuid, qaRecord)
       },
       thinkingDataReceived: (chunk) => {
-        // 处理思考数据
-        console.log('Thinking data received:', chunk)
+        // 思考数据暂不展示，仅保留回调占位
+        void chunk
       },
       messageReceived: (chunk) => {
         if (requestId !== qaRequestGeneration)
@@ -133,7 +136,6 @@ async function handleSubmit() {
             activeQaRecord = null
             return
           }
-          console.info('metaData', metaData)
           qaRecord.inputTokens = metaData.answer.inputTokens
           qaRecord.outputTokens = metaData.answer.outputTokens
           qaRecord.duration = metaData.answer.duration
@@ -191,7 +193,6 @@ async function loadMoreMessage(callback?: Function) {
     kbStore.setLoadingRecords(currKbUuid, true)
 
     const { data } = await api.knowledgeBaseQaRecordSearch<KnowledgeBase.QaRecordListResp>(currKbUuid, '', currentPage, pageSize)
-    console.log('kb record response:', data)
     const records = data.records || []
     kbStore.appendRecords(currKbUuid, records)
 
@@ -305,7 +306,6 @@ async function handleGraphClick(qaRecordUuid: string) {
 }
 
 const qaRecords = computed(() => {
-  console.log('qaRecords computed')
   return kbStore.getRecords(currKbUuid)
 })
 
@@ -314,7 +314,10 @@ const buttonDisabled = computed(() => {
 })
 
 const hasPrompt = computed(() => prompt.value.trim().length > 0)
-const composerActionDisabled = computed(() => isMobile.value ? sseRequesting.value : buttonDisabled.value)
+const loadingCurrRecords = computed(() => !!kbStore.loadingRecords.get(currKbUuid))
+// 登录但三组分区均无库：路由停留在 'default' 占位，给出新建引导并禁用输入
+const noKbAvailable = computed(() => !!authStore.token && currKbUuid === 'default' && kbStore.kbListLoaded && !kbStore.loaddingKbList)
+const composerActionDisabled = computed(() => noKbAvailable.value || (isMobile.value ? sseRequesting.value : buttonDisabled.value))
 const composerActionIcon = computed(() => {
   if (!isMobile.value || hasPrompt.value)
     return 'ri:send-plane-fill'
@@ -367,6 +370,10 @@ function openMobileTools() {
   router.push({ name: 'Mcp' })
 }
 
+function goCreateKb() {
+  router.push({ name: 'KnowledgeBaseManage' })
+}
+
 function openMobilePromptStore() {
   closeMobileTools()
   openPromptStore()
@@ -403,17 +410,11 @@ watch(
     // kb uuid and router.replace re-creates this component, so fetching here
     // would only send a doomed qa/search?kbUuid=default request that pops an
     // error toast on first entry.
-    if (authStore.token && currKbUuid !== 'default') {
-      console.log('kb first load')
+    if (authStore.token && currKbUuid !== 'default')
       firstLoad()
-    }
   },
   { immediate: true },
 )
-
-onMounted(async () => {
-  console.log('knowledge-base onmounted', currKbUuid)
-})
 
 onUnmounted(() => {
   handleStop()
@@ -436,13 +437,25 @@ onActivated(async () => {
     <main class="flex-1 overflow-hidden">
       <div id="scrollRef" ref="scrollRef" class="h-full overflow-hidden overflow-y-auto" @scroll="handleScroll">
         <div
-          id="image-wrapper" class="w-full max-w-screen-xl m-auto knowledge-message-surface"
+          id="image-wrapper" class="m-auto knowledge-message-surface" style="width: min(980px, 100%);"
           :class="[isMobile ? 'p-2' : 'p-4']"
         >
           <LoginTip v-if="!authStore.token" />
-          <template v-else-if="!qaRecords.length">
-            <div class="mt-4 text-center text-neutral-400">{{ t('knowledgeBase.emptyRecords') }}</div>
-          </template>
+          <div v-else-if="noKbAvailable" class="resource-list-empty flex flex-col items-center mt-16 text-center">
+            <SvgIcon icon="ri:book-2-line" class="mb-2 text-3xl" />
+            <span>{{ t('knowledgeBase.emptyNoKbTitle') }}</span>
+            <span class="mt-1 mb-4 text-xs">{{ t('knowledgeBase.emptyNoKbDesc') }}</span>
+            <NButton type="primary" @click="goCreateKb">
+              {{ t('knowledgeBase.goCreateKb') }}
+            </NButton>
+          </div>
+          <div v-else-if="loadingCurrRecords && !qaRecords.length" class="flex justify-center py-8">
+            <NSpin size="small" />
+          </div>
+          <div v-else-if="!qaRecords.length" class="resource-list-empty flex flex-col items-center mt-4 text-center">
+            <SvgIcon icon="ri:inbox-line" class="mb-2 text-3xl" />
+            <span>{{ t('knowledgeBase.emptyRecords') }}</span>
+          </div>
 
           <template v-else>
             <div v-for="qaRecord of qaRecords" :key="qaRecord.uuid">
@@ -497,7 +510,7 @@ onActivated(async () => {
         <div class="knowledge-composer">
           <NInput
             ref="inputRef" v-model:value="prompt" class="knowledge-composer-input" type="textarea" placeholder=""
-            :autosize="{ minRows: 1, maxRows: isMobile ? 4 : 8 }" @keypress="handleEnter"
+            :autosize="{ minRows: 1, maxRows: isMobile ? 4 : 8 }" :disabled="noKbAvailable" @keypress="handleEnter"
           />
           <NButton
             class="knowledge-composer-send" type="primary" circle size="large" :title="t('chat.sendMessage')"
@@ -542,7 +555,7 @@ onActivated(async () => {
       </NDrawerContent>
     </NDrawer>
 
-    <NModal v-model:show="showReferenceModal" style="max-width: 80%;" preset="card" :title="t('chat.referenceMaterial')">
+    <NModal v-model:show="showReferenceModal" style="width: min(640px, 92vw);" preset="card" :title="t('chat.referenceMaterial')">
       <div v-show="references.length === 0">
         {{ t('common.none') }}
       </div>
@@ -551,12 +564,13 @@ onActivated(async () => {
           v-for="(reference, idx) of references" :key="reference.embeddingId" :title="`${t('chat.reference')}${idx + 1}`"
           :name="`refer_${idx}`"
         >
-          {{ reference.text }}
+          <!-- 证据原文可能来自 Markdown 文档，按 Markdown 渲染；纯文本回落为段落 -->
+          <EvidenceMarkdown :text="reference.text" />
         </NCollapseItem>
       </NCollapse>
     </NModal>
 
-    <NModal v-model:show="showRefGraphModal" class="graph-modal" display-directive="show" style="max-width: 80%;" preset="card" :title="t('chat.referenceGraph')">
+    <NModal v-model:show="showRefGraphModal" class="graph-modal" display-directive="show" style="width: min(860px, 92vw);" preset="card" :title="t('chat.referenceGraph')">
       <RefGraph :qa-record-uuid="showRefGraphRecordUuid" />
     </NModal>
   </div>

@@ -41,11 +41,16 @@ public class ExtApiService {
     @Resource
     private UserExtApiKeyService userExtApiKeyService;
 
+    @Resource
+    private KnowledgeBaseAccessService knowledgeBaseAccessService;
+
     // ========== 资源级 API Key 方法 ==========
 
     /**
      * Generate an API key for the specified resource.
-     * The caller must be the resource owner or an admin.
+     * The caller must be the resource owner or an admin; for knowledge bases
+     * the unified three-tier MANAGE privilege applies (personal owner, team
+     * OWNER, or admin on company KBs).
      *
      * @param type resource type
      * @param uuid resource uuid
@@ -68,7 +73,7 @@ public class ExtApiService {
             }
             case KNOWLEDGE -> {
                 KnowledgeBase kb = getKbOrThrow(uuid);
-                checkOwnership(kb.getOwnerId(), currentUser);
+                checkKbManagePrivilege(kb, currentUser);
                 knowledgeBaseService.lambdaUpdate()
                         .eq(KnowledgeBase::getId, kb.getId())
                         .set(KnowledgeBase::getApiKey, encryptedValue)
@@ -119,7 +124,8 @@ public class ExtApiService {
 
     /**
      * Reveal the full API key.
-     * The caller must be the resource owner or an admin.
+     * The caller must be the resource owner or an admin; for knowledge bases
+     * the unified three-tier MANAGE privilege applies.
      *
      * @param type resource type
      * @param uuid resource uuid
@@ -145,6 +151,11 @@ public class ExtApiService {
     /**
      * Validate an API key from an external request.
      * Encrypts the raw key and searches the corresponding table for a match.
+     *
+     * Trade-off: knowledge-base keys keep executing with the creator's identity
+     * (kb.ownerId) rather than re-deriving three-tier access per request, so a
+     * key stays valid even after its holder leaves the owning team, until a
+     * personal owner / team OWNER resets it via generateApiKey.
      *
      * @param rawKey the API key from the request header
      * @param type   resource type
@@ -321,7 +332,7 @@ public class ExtApiService {
             }
             case KNOWLEDGE -> {
                 KnowledgeBase kb = getKbOrThrow(uuid);
-                checkOwnership(kb.getOwnerId(), currentUser);
+                checkKbManagePrivilege(kb, currentUser);
                 yield kb.getApiKey();
             }
             case WORKFLOW -> {
@@ -339,17 +350,26 @@ public class ExtApiService {
         }
     }
 
+    /**
+     * Knowledge-base keys follow the three-tier ownership rules: the personal
+     * owner, the owning team's OWNER, or an admin may manage them.
+     */
+    private void checkKbManagePrivilege(KnowledgeBase kb, User currentUser) {
+        if (!currentUser.getIsAdmin() && !knowledgeBaseAccessService.canManage(currentUser, kb)) {
+            throw new BaseException(A_USER_NOT_AUTH);
+        }
+    }
+
     private boolean checkOwnershipSilent(ExtApiResourceType resourceType, String uuid, User currentUser) {
         if (currentUser.getIsAdmin()) {
             return true;
         }
-        Long resourceUserId = switch (resourceType) {
-            case CHARACTER -> getCharacterOrThrow(uuid).getUserId();
-            case KNOWLEDGE -> getKbOrThrow(uuid).getOwnerId();
-            case WORKFLOW -> getWfOrThrow(uuid).getUserId();
-            default -> null;
+        return switch (resourceType) {
+            case CHARACTER -> currentUser.getId().equals(getCharacterOrThrow(uuid).getUserId());
+            case KNOWLEDGE -> knowledgeBaseAccessService.canManage(currentUser, getKbOrThrow(uuid));
+            case WORKFLOW -> currentUser.getId().equals(getWfOrThrow(uuid).getUserId());
+            default -> false;
         };
-        return currentUser.getId().equals(resourceUserId);
     }
 
     private String resolveApiKeyNoAuth(ExtApiResourceType resourceType, String uuid) {

@@ -22,6 +22,7 @@ const ms = useMessage()
 const userStore = useUserStore()
 const chatStore = useChatStore()
 const loading = ref(false)
+const saving = ref(false)
 const knowledgeList = ref<KnowledgeBase.Info[]>([])
 const paginationReactive = reactive({
   page: 1,
@@ -49,6 +50,23 @@ function isSelectionDisabled(row: KnowledgeBase.Info) {
 }
 
 // table相关
+// 归属标签：团队库显示团队名、企业库显示企业标记，其余沿用创建者/我的
+function ownerTierTag(row: KnowledgeBase.Info) {
+  if (row.ownerType === 'TEAM') {
+    return h(NTag, { tertiary: true, size: 'small', type: 'info' }, {
+      default: () => row.teamName ? `${t('knowledgeBase.ownerTypeTeam')}·${row.teamName}` : t('knowledgeBase.ownerTypeTeam'),
+    })
+  }
+  if (row.ownerType === 'COMPANY') {
+    return h(NTag, { tertiary: true, size: 'small', type: 'warning' }, {
+      default: () => t('knowledgeBase.ownerTypeCompany'),
+    })
+  }
+  return h(NTag, { tertiary: true, size: 'small' }, {
+    default: () => row.ownerName === userStore.userInfo?.name ? t('common.mine') : row.ownerName,
+  })
+}
+
 const createColumns = (): DataTableColumns<KnowledgeBase.Info> => {
   return [
     {
@@ -69,23 +87,7 @@ const createColumns = (): DataTableColumns<KnowledgeBase.Info> => {
       key: 'remark',
       render(row) {
         return h('div', { class: 'flex items-center space-x-1' }, {
-          default: () => [h(
-            NTag,
-            {
-              tertiary: true,
-              size: 'small',
-            },
-            { default: () => row.ownerName === userStore.userInfo?.name ? t('common.mine') : row.ownerName },
-          ),
-          h(
-            NTag,
-            {
-              tertiary: true,
-              size: 'small',
-            },
-            { default: () => row.isPublic ? t('common.public') : t('common.private') },
-          ),
-          ],
+          default: () => [ownerTierTag(row)],
         })
       },
     },
@@ -152,7 +154,6 @@ function onHandleCheck(rowKeys: DataTableRowKey[], rows: DataTableRowData[]) {
     uuid: knowledge.uuid,
     title: knowledge.title,
     isMine: knowledge.ownerUuid === userStore.userInfo.uuid,
-    isPublic: knowledge.isPublic,
     kbInfo: knowledge,
     isEnable: true,
   }))
@@ -160,6 +161,9 @@ function onHandleCheck(rowKeys: DataTableRowKey[], rows: DataTableRowData[]) {
 }
 
 async function handleSubmit() {
+  if (saving.value)
+    return
+  saving.value = true
   try {
     await api.characterEdit(props.character.uuid, {
       kbIds: tmpKnowledgeIds.value,
@@ -174,11 +178,12 @@ async function handleSubmit() {
     ms.error(t('chat.characterKnowledgeSaveFailed'), {
       duration: 3000,
     })
+  } finally {
+    saving.value = false
   }
 }
 
 watch(() => props.character.kbIds, (newVal) => {
-  console.log('watch newVal', newVal)
   tmpCharacterKnowledgeList.value = props.character.characterKnowledgeList || []
   tmpKnowledgeIds.value = (newVal || []).map(String).slice(0, userKnowledgeLimit.value)
   checkedRowKeysRef.value = tmpKnowledgeIds.value
@@ -218,7 +223,7 @@ watch(() => props.character.kbIds, (newVal) => {
         :bordered="true" @update:page="onHandlePageChange" @update:checked-row-keys="onHandleCheck"
       />
       <div v-if="!tmpSave" class="flex justify-end mt-4">
-        <NButton type="primary" @click="handleSubmit">
+        <NButton type="primary" :loading="saving" :disabled="saving" @click="handleSubmit">
           {{ t('common.save') }}
         </NButton>
       </div>

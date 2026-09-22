@@ -29,6 +29,13 @@
         where metadata ->> 'kb_item_uuid' = #{kbItemUuid}
     </delete>
 
+    <delete id="deleteByKbUuid">
+        delete
+        from
+        <include refid="getTableName"/>
+        where metadata ->> 'kb_uuid' = #{kbUuid}
+    </delete>
+
     <sql id="getTableName">
         <if test="tableSuffix != null and tableSuffix != ''">
             adi_knowledge_base_embedding_${tableSuffix}

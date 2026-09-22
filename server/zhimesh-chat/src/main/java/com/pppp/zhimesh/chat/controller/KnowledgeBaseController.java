@@ -5,6 +5,7 @@ import com.pppp.zhimesh.common.base.ThreadContext;
 import com.pppp.zhimesh.common.dto.KbEditReq;
 import com.pppp.zhimesh.common.dto.KbInfoResp;
 import com.pppp.zhimesh.common.dto.KbItemIndexBatchReq;
+import com.pppp.zhimesh.common.dto.KbTransferReq;
 import com.pppp.zhimesh.common.dto.KbUploadResult;
 import com.pppp.zhimesh.common.entity.ZhiMeshFile;
 import com.pppp.zhimesh.common.entity.KnowledgeBase;
@@ -71,34 +72,59 @@ public class KnowledgeBaseController {
 * Search my knowledge bases
      * 搜索我的知识库
      *
-* @param keyword             搜索关键词 / Search keyword
-* @param includeOthersPublic 是否包含其他人公开的知识库 / Whether to include other users' public knowledge bases
-* @param currentPage         当前页数 / Current page number
-* @param pageSize            每页数量 / Page size
+* @param keyword        搜索关键词 / Search keyword
+* @param includeVisible 是否包含可见的团队/企业知识库 / Whether to include visible team and company knowledge bases
+* @param currentPage    当前页数 / Current page number
+* @param pageSize       每页数量 / Page size
      * @return 我的知识库列表
      */
     @GetMapping("/mine/search")
     public Page<KbInfoResp> searchMine(@RequestParam(defaultValue = "") String keyword,
-                                       @RequestParam(defaultValue = "false") Boolean includeOthersPublic,
+                                       @RequestParam(defaultValue = "false") Boolean includeVisible,
                                        @NotNull @Min(1) Integer currentPage,
                                        @NotNull @Min(10) Integer pageSize) {
-        return knowledgeBaseService.searchMine(keyword, includeOthersPublic, currentPage, pageSize);
+        return knowledgeBaseService.searchMine(keyword, includeVisible, currentPage, pageSize);
     }
 
     /**
-* Search public knowledge bases
-     * 搜索公开的知识库
+     * Search the team knowledge bases of my teams
+     * 搜索我所在团队的团队知识库
      *
-* @param keyword     搜索关键词 / Search keyword
-* @param currentPage 当前页数 / Current page number
-* @param pageSize    每页数量 / Page size
-     * @return 知识库列表
+     * @param keyword     搜索关键词 / Search keyword
+     * @param currentPage 当前页数 / Current page number
+     * @param pageSize    每页数量 / Page size
+     * @return 团队知识库列表（含 teamName/myRole/accessLevel）
      */
-    @GetMapping("/public/search")
-    public Page<KbInfoResp> searchPublic(@RequestParam(defaultValue = "") String keyword,
-                                         @NotNull @Min(1) Integer currentPage,
-                                         @NotNull @Min(10) Integer pageSize) {
-        return knowledgeBaseService.searchPublicForUserWorkspace(keyword, currentPage, pageSize);
+    @GetMapping("/team/search")
+    public Page<KbInfoResp> searchTeam(@RequestParam(defaultValue = "") String keyword,
+                                       @NotNull @Min(1) Integer currentPage,
+                                       @NotNull @Min(10) Integer pageSize) {
+        return knowledgeBaseService.searchTeamForUser(keyword, currentPage, pageSize);
+    }
+
+    /**
+     * Search company knowledge bases (dedicated read-only section)
+     * 搜索企业知识库（独立分区，全员只读）
+     *
+     * @param keyword     搜索关键词 / Search keyword
+     * @param currentPage 当前页数 / Current page number
+     * @param pageSize    每页数量 / Page size
+     * @return 企业知识库列表
+     */
+    @GetMapping("/company/search")
+    public Page<KbInfoResp> searchCompany(@RequestParam(defaultValue = "") String keyword,
+                                          @NotNull @Min(1) Integer currentPage,
+                                          @NotNull @Min(10) Integer pageSize) {
+        return knowledgeBaseService.searchCompanyForUserWorkspace(keyword, currentPage, pageSize);
+    }
+
+    /**
+     * Transfer a knowledge base between personal and team ownership
+     * 个人库与团队库之间转移归属（企业库不参与）
+     */
+    @PostMapping("/transfer")
+    public KnowledgeBase transfer(@RequestBody @Validated KbTransferReq transferReq) {
+        return knowledgeBaseService.transfer(transferReq);
     }
 
     /**

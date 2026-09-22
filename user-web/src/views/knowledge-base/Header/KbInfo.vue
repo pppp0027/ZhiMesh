@@ -1,6 +1,6 @@
 <script setup lang='ts'>
 import { ref, watch } from 'vue'
-import { NAvatar, NButton, NDivider, NFlex, NIcon, NModal, NPopconfirm, NTag, NTooltip } from 'naive-ui'
+import { NAvatar, NButton, NDivider, NFlex, NIcon, NModal, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
 import { Star24Filled, Star24Regular } from '@vicons/fluent'
 import { Bookmarks, VectorBeizer2 } from '@vicons/tabler'
 import { useKbStore } from '@/store'
@@ -8,6 +8,7 @@ import { knowledgeBaseEmptyInfo } from '@/utils/functions'
 import api from '@/api'
 import { t } from '@/locales'
 import { getAvatarPoolUrl, getUserAvatarUrl } from '@/utils/avatar'
+import { openDeleteDialog } from '@/utils/dialog'
 
 interface Props {
   showModal: boolean
@@ -22,17 +23,44 @@ const props = withDefaults(defineProps<Props>(), {
 })
 const emit = defineEmits<Emit>()
 const kbStore = useKbStore()
+const dialog = useDialog()
+const ms = useMessage()
 const innerShow = ref<boolean>(props.showModal)
 
-async function clearHistory(kbInfo: KnowledgeBase.Info) {
-  await api.knowledgeBaseQaRecordClear<boolean>()
-  kbStore.clearRecords(kbInfo.uuid)
+function handleClearHistory(kbInfo: KnowledgeBase.Info) {
+  openDeleteDialog(dialog, {
+    title: t('knowledgeBase.clearHistory'),
+    content: t('knowledgeBase.clearKbHistoryConfirm'),
+    positiveText: t('common.clear'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: async () => {
+      try {
+        await api.knowledgeBaseQaRecordClear(kbInfo.uuid)
+        kbStore.clearRecords(kbInfo.uuid)
+        ms.success(t('common.success'))
+      } catch (error: any) {
+        ms.error(error?.message || t('common.wrong'))
+        return false
+      }
+    },
+  })
 }
 async function handleClickStar(kbInfo: KnowledgeBase.Info) {
   const starOrUnstarResp = await api.knowledgeBaseStar<boolean>(kbInfo.uuid)
   const starOrUnstar = starOrUnstarResp.data
   kbStore.insertOrUpdateStarInfo({ kbUuid: kbInfo.uuid, kbTitle: kbInfo.title, star: starOrUnstar })
   kbInfo.starCount = starOrUnstar ? kbInfo.starCount + 1 : kbInfo.starCount - 1
+}
+
+// 归属标签：可见性按归属推导，团队库带团队名、企业库按可见范围标注
+function ownerTierLabel(kbInfo: KnowledgeBase.Info) {
+  if (kbInfo.ownerType === 'TEAM')
+    return kbInfo.teamName ? `${t('knowledgeBase.ownerTypeTeam')}·${kbInfo.teamName}` : t('knowledgeBase.ownerTypeTeam')
+  if (kbInfo.ownerType === 'COMPANY')
+    return kbInfo.companyScope === 'EXECUTIVE'
+      ? `${t('knowledgeBase.ownerTypeCompany')}·${t('knowledgeBase.companyScopeExecutive')}`
+      : `${t('knowledgeBase.ownerTypeCompany')}·${t('knowledgeBase.companyScopeStaff')}`
+  return t('knowledgeBase.ownerTypePersonal')
 }
 
 watch(() => props.showModal, (val) => {
@@ -48,20 +76,19 @@ watch(() => innerShow.value, (val) => {
   <NModal v-model:show="innerShow" :title="knowledgeBase.title" style="width: 90%; max-width: 640px" preset="card">
     <NFlex vertical>
       <NFlex justify="space-between">
-        <NTag size="large" :bordered="false" :color="{ color: '#ff000000' }">
+        <NTag size="medium" :bordered="false" round>
           {{ knowledgeBase.ownerName }}
           <template #avatar>
             <NAvatar
               :src="getUserAvatarUrl(knowledgeBase.ownerUuid)" size="large"
               :fallback-src="getAvatarPoolUrl(knowledgeBase.ownerUuid || knowledgeBase.ownerName)"
-              color="#ff0000000"
             />
           </template>
         </NTag>
         <NFlex>
           <NTooltip trigger="hover">
             <template #trigger>
-              <NTag size="medium" :bordered="false" round :color="{ color: '#ff000000' }">
+              <NTag size="medium" :bordered="false" round>
                 {{ knowledgeBase.itemCount }}
                 <template #icon>
                   <NIcon :component="Bookmarks" depth="2" />
@@ -72,7 +99,7 @@ watch(() => innerShow.value, (val) => {
           </NTooltip>
           <NTooltip trigger="hover">
             <template #trigger>
-              <NTag size="medium" :bordered="false" round :color="{ color: '#ff000000' }">
+              <NTag size="medium" :bordered="false" round>
                 {{ knowledgeBase.embeddingCount }}
                 <template #icon>
                   <NIcon :component="VectorBeizer2" depth="2" />
@@ -82,7 +109,7 @@ watch(() => innerShow.value, (val) => {
             {{ t('knowledgeBase.vector') }}
           </NTooltip>
           <NTag
-            size="medium" :bordered="false" round :color="{ color: '#ff000000' }" checkable
+            size="medium" :bordered="false" round checkable
             @click="handleClickStar(knowledgeBase)"
           >
             {{ knowledgeBase.starCount }}
@@ -100,11 +127,10 @@ watch(() => innerShow.value, (val) => {
         <NTooltip trigger="hover">
           <template #trigger>
             <NTag size="small" :bordered="false">
-              {{ knowledgeBase.isPublic ? t('common.public') : t('common.private') }}
+              {{ ownerTierLabel(knowledgeBase) }}
             </NTag>
           </template>
-          {{ t('knowledgeBase.publicDesc') }}<br>
-          {{ t('knowledgeBase.privateDesc') }}
+          {{ t('knowledgeBase.ownerTierDesc') }}
         </NTooltip>
         <NTooltip trigger="hover">
           <template #trigger>
@@ -112,8 +138,7 @@ watch(() => innerShow.value, (val) => {
               {{ knowledgeBase.isStrict ? t('knowledgeBase.strictMode') : t('knowledgeBase.looseMode') }}
             </NTag>
           </template>
-          {{ t('knowledgeBase.strictModeDescShort') }}<br>
-          {{ t('knowledgeBase.looseModeDescShort') }}
+          {{ knowledgeBase.isStrict ? t('knowledgeBase.strictModeDescShort') : t('knowledgeBase.looseModeDescShort') }}
         </NTooltip>
         <NTooltip trigger="hover">
           <template #trigger>
@@ -121,7 +146,7 @@ watch(() => innerShow.value, (val) => {
               {{ t('knowledgeBase.maxRecallCount') }}{{ knowledgeBase.retrieveMaxResults === 0 ? '-' : knowledgeBase.retrieveMaxResults }}
             </NTag>
           </template>
-          {{ t('knowledgeBase.maxRecallCountTip') }}<br>
+          {{ t('knowledgeBase.maxRecallCountTip') }}
         </NTooltip>
         <NTooltip trigger="hover">
           <template #trigger>
@@ -136,17 +161,9 @@ watch(() => innerShow.value, (val) => {
       <div>{{ knowledgeBase.remark }}</div>
     </NFlex>
     <template #footer>
-      <NPopconfirm
-        placement="top" :positive-text="t('common.clear')" :negative-text="t('common.cancel')"
-        :positive-button-props="{ type: 'error' }" @positive-click="clearHistory(knowledgeBase)"
-      >
-        <template #trigger>
-          <NButton size="small" text type="primary">
-            {{ t('knowledgeBase.clearHistory') }}
-          </NButton>
-        </template>
-        {{ t('knowledgeBase.deleteNotRecoverCaution') }}
-      </NPopconfirm>
+      <NButton size="small" text type="primary" @click="handleClearHistory(knowledgeBase)">
+        {{ t('knowledgeBase.clearHistory') }}
+      </NButton>
     </template>
   </NModal>
 </template>

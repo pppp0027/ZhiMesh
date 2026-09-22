@@ -25,10 +25,8 @@ async function loadGraph(maxVertexId: number, maxEdgeId: number) {
   if (loading.value)
     return
 
-  if (!props.kbItemUuid) {
-    console.log('loadGraph kbItemUuid is empty')
+  if (!props.kbItemUuid)
     return
-  }
 
   loading.value = true
   try {
@@ -55,7 +53,6 @@ watch(() => props.kbItemUuid, (nextUuid, previousUuid) => {
 })
 
 onMounted(() => {
-  console.log('ItemGraph onMounted')
   nextTick(() => {
     initCy()
     if (graphContainer.value) {
@@ -100,7 +97,6 @@ function initCy() {
 }
 
 function renderGraph(nodes: any, edges: any) {
-  console.log('renderGraph')
   if (nodes.length > 0) {
     cy.add(nodes)
     cy.nodes().on('click', (e: any) => {

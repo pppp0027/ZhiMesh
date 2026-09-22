@@ -90,7 +90,6 @@ async function loadGraph() {
 }
 
 function initCy() {
-  console.log('ref graph initCy')
   const isMobile = window.matchMedia('(max-width: 767px)').matches
   cy = cytoscape({
     container: graphContainer.value,
@@ -153,7 +152,6 @@ watch(() => props.qaRecordUuid, (nextUuid, previousUuid) => {
 })
 
 onMounted(() => {
-  console.log('RefGraph onMounted')
   nextTick(() => {
     initCy()
     if (graphContainer.value) {

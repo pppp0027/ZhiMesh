@@ -1,8 +1,8 @@
 <script setup lang='ts'>
-import { onActivated, onUnmounted, ref } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NIcon } from 'naive-ui'
-import { Cloud32Regular, LockClosed32Regular } from '@vicons/fluent'
+import { NButton, NIcon, NSpin } from 'naive-ui'
+import { Building24Regular, PeopleTeam24Regular, Person24Regular } from '@vicons/fluent'
 import { useKbStore } from '@/store'
 import { SvgIcon } from '@/components/common'
 import { useScroll } from '@/views/chat/hooks/useScroll'
@@ -14,7 +14,7 @@ import { t } from '@/locales'
 const props = defineProps<Props>()
 const router = useRouter()
 const kbStore = useKbStore()
-const { scrollRef, scrollTo } = useScroll()
+const { scrollRef } = useScroll()
 const { isMobile } = useBasicLayout()
 const mouseEnterKbUuid = ref<string>('')
 const showModal = ref<boolean>(false)
@@ -30,10 +30,6 @@ async function handleSelect({ uuid }: KnowledgeBase.Info) {
   kbStore.setActive(uuid)
   router.replace({ name: 'QADetail', params: { kbUuid: uuid } })
 }
-async function handleScroll(event: any) {
-  const scrollTop = event.target.scrollTop
-  localStorage.setItem('subListScrollPosition', scrollTop)
-}
 function handleMouseEnter({ uuid }: KnowledgeBase.Info) {
   mouseEnterKbUuid.value = uuid
 }
@@ -44,20 +40,15 @@ function showKb(item: KnowledgeBase.Info) {
   showModal.value = true
   tmpKb.value = item
 }
-onActivated(async () => {
-  const savedPosition = localStorage.getItem('subListScrollPosition')
-  if (savedPosition)
-    scrollTo(savedPosition as unknown as number)
-})
-onUnmounted(() => {
-  // 组件卸载前，可以清除之前保存的滚动位置
-  localStorage.removeItem('subListScrollPosition')
-})
 </script>
 
 <template>
-  <div ref="scrollRef" class="px-4 h-full overflow-y-auto" @scroll="handleScroll">
-    <template v-if="!list.length">
+  <div ref="scrollRef" class="px-4 h-full overflow-y-auto">
+    <!-- 拉取期间显示加载态，不闪"暂无数据" -->
+    <div v-if="kbStore.loaddingKbList && !list.length" class="flex justify-center py-8">
+      <NSpin size="small" />
+    </div>
+    <template v-else-if="!list.length">
       <div class="resource-list-empty flex flex-col items-center mt-4 text-center">
         <SvgIcon icon="ri:inbox-line" class="mb-2 text-3xl" />
         <span>{{ t('common.noData') }}</span>
@@ -74,8 +65,9 @@ onUnmounted(() => {
           @click="handleSelect(item)" @mouseenter="handleMouseEnter(item)" @mouseleave="handleMouseLeave"
         >
           <span>
-            <NIcon v-if="item.isPublic" :component="Cloud32Regular" />
-            <NIcon v-if="!item.isPublic" :component="LockClosed32Regular" />
+            <NIcon v-if="item.ownerType === 'COMPANY'" :component="Building24Regular" />
+            <NIcon v-else-if="item.ownerType === 'TEAM'" :component="PeopleTeam24Regular" />
+            <NIcon v-else :component="Person24Regular" />
           </span>
           <div class="relative flex-1 overflow-hidden break-all text-ellipsis whitespace-nowrap">
             <span>{{ item.title }}</span>

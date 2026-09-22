@@ -10,7 +10,8 @@ public class KbInfoResp {
     private String uuid;
     private String title;
     private String remark;
-    private Boolean isPublic;
+    /** 企业库可见范围 STAFF/EXECUTIVE；非 COMPANY 归属恒为 STAFF。 */
+    private String companyScope;
     private Boolean isSystem;
     private Boolean isEnabled;
     private Boolean isStrict;
@@ -32,6 +33,18 @@ public class KbInfoResp {
     private String querySystemMessage;
     private String ownerUuid;
     private String ownerName;
+    /** 归属层级 PERSONAL/TEAM/COMPANY；旧行未回填时按 PERSONAL 处理。 */
+    private String ownerType;
+    /** TEAM 归属的团队 id，其余为 0 或 null。 */
+    private Long teamId;
+    /** TEAM 归属的团队 uuid（列表查询联表填充）。 */
+    private String teamUuid;
+    /** TEAM 归属的团队名称（列表查询联表填充）。 */
+    private String teamName;
+    /** 当前用户在该库所属团队中的角色，仅 TEAM 归属且为成员时返回。 */
+    private String myRole;
+    /** 当前用户的访问级别 READ/WRITE/MANAGE，由 KnowledgeBaseAccessService 裁决后填充。 */
+    private String accessLevel;
     private Integer itemCount;
     private Integer embeddingCount;
     private String routeProfileStatus;

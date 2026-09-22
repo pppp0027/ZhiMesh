@@ -72,8 +72,10 @@ public class KnowledgeBaseQAController {
         return knowledgeBaseQaRefGraphService.getByQaUuid(uuid);
     }
 
-    @PostMapping("/clear")
-    public void recordDel() {
-        knowledgeBaseQaService.clearByCurrentUser();
+    @PostMapping("/clear/{kbUuid}")
+    public void recordClear(@PathVariable String kbUuid) {
+        knowledgeBaseService.checkReadPrivilege(kbUuid);
+        KnowledgeBase knowledgeBase = knowledgeBaseService.getOrThrow(kbUuid);
+        knowledgeBaseQaService.clearByCurrentUser(knowledgeBase);
     }
 }

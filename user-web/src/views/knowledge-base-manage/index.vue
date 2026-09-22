@@ -1,8 +1,8 @@
 <script setup lang='ts'>
-import type { DataTableColumns } from 'naive-ui'
+import type { DataTableColumns, DropdownOption } from 'naive-ui'
 import { computed, h, reactive, ref, watch } from 'vue'
-import { NBreadcrumb, NBreadcrumbItem, NButton, NCollapse, NCollapseItem, NDataTable, NIcon, NInput, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NTooltip, useDialog, useMessage } from 'naive-ui'
-import { RouterLink, useRouter } from 'vue-router'
+import { NBreadcrumb, NBreadcrumbItem, NButton, NCollapse, NCollapseItem, NDataTable, NDropdown, NIcon, NInput, NInputNumber, NModal, NRadio, NRadioButton, NRadioGroup, NSelect, NTag, NTooltip, useDialog, useMessage } from 'naive-ui'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { QuestionCircle16Regular } from '@vicons/fluent'
 import { ApiKeyModal } from '@/components/common'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
@@ -14,6 +14,7 @@ import api from '@/api'
 import { openDeleteDialog } from '@/utils/dialog'
 
 const router = useRouter()
+const route = useRoute()
 const dialog = useDialog()
 const ms = useMessage()
 const appStore = useAppStore()
@@ -43,10 +44,44 @@ const showApiKeyModal = ref(false)
 const activeKb = ref<KnowledgeBase.Info>(knowledgeBaseEmptyInfo())
 let searchGeneration = 0
 
+// 三级归属：本页管理「我的个人库」与「我所在团队的团队库」两个分区；
+// 企业库由管理端维护，不在此出现。
+const ownerScope = ref<'mine' | 'team'>('mine')
+// 详情页返回时通过 ?scope=team 保持原分区
+if (route.query.scope === 'team')
+  ownerScope.value = 'team'
+const myTeams = ref<Team.Info[]>([])
+// 新建/编辑弹窗中的归属选择（编辑时只读展示）
+const tmpOwnerType = ref<'PERSONAL' | 'TEAM'>('PERSONAL')
+const tmpTeamUuid = ref<string>('')
+// 转移弹窗状态
+const showTransferModal = ref(false)
+const transferKb = ref<KnowledgeBase.Info | null>(null)
+const transferTeamUuid = ref<string>('')
+const transferSubmitting = ref(false)
+
+const teamOptions = computed(() => myTeams.value.map(team => ({
+  label: team.name,
+  value: team.uuid,
+})))
+
+async function loadMyTeams() {
+  try {
+    const resp = await api.teamMyLite<Team.Info[]>()
+    myTeams.value = resp.data || []
+  } catch (error) {
+    console.error('load my teams failed', error)
+    myTeams.value = []
+  }
+}
+
 const changeShowModal = (selected: KnowledgeBase.Info = knowledgeBaseEmptyInfo()) => {
   Object.assign(tmpKb, selected)
   tmpKb.rerankModelId = String(selected.rerankModelId || '0')
   tmpKb.rerankTopN = selected.rerankTopN || 5
+  const isNew = !selected.uuid || selected.uuid === 'default'
+  tmpOwnerType.value = isNew && ownerScope.value === 'team' ? 'TEAM' : 'PERSONAL'
+  tmpTeamUuid.value = selected.teamUuid || ''
   showModal.value = !showModal.value
   if (!tmpKb.ingestModelName) {
     const firstEnableModel = appStore.llms.find((item: { enable: any }) => item.enable)
@@ -88,11 +123,16 @@ const createColumns = (): DataTableColumns<KnowledgeBase.Info> => {
       key: 'remark',
     },
     {
-      title: t('knowledgeBase.isPublic'),
-      key: 'isPublic',
-      width: 100,
+      title: t('knowledgeBase.ownership'),
+      key: 'ownerType',
+      width: 110,
       render(row) {
-        return row.isPublic ? t('common.yes') : t('common.no')
+        // 三档归属统一 NTag：个人 default / 团队 info / 企业 warning
+        if (row.ownerType === 'TEAM')
+          return h(NTag, { size: 'small', type: 'info', bordered: false }, { default: () => row.teamName || t('knowledgeBase.ownerTypeTeam') })
+        if (row.ownerType === 'COMPANY')
+          return h(NTag, { size: 'small', type: 'warning', bordered: false }, { default: () => t('knowledgeBase.ownerTypeCompany') })
+        return h(NTag, { size: 'small', type: 'default', bordered: false }, { default: () => t('knowledgeBase.ownerTypePersonal') })
       },
     },
     {
@@ -100,46 +140,45 @@ const createColumns = (): DataTableColumns<KnowledgeBase.Info> => {
       key: 'isStrict',
       width: 100,
       render(row) {
-        return row.isStrict ? t('common.yes') : t('common.no')
+        return h(NTag, { size: 'small', type: row.isStrict ? 'success' : 'default', bordered: false }, { default: () => row.isStrict ? t('common.yes') : t('common.no') })
       },
     },
     {
       title: t('common.action'),
       key: 'actions',
-      width: 100,
+      width: 200,
       align: 'center',
       render(row) {
-        return h('div', { class: 'grid gap-1' }, {
+        // Settings change and deletion are management-grade; the backend
+        // resolves the effective access level per tier. Actions the current
+        // user lacks permission for are simply not rendered.
+        const canManage = row.accessLevel === 'MANAGE'
+        const canTransferToTeam = row.ownerType !== 'TEAM' && row.ownerType !== 'COMPANY' && myTeams.value.length > 0
+        const canTransferToPersonal = row.ownerType === 'TEAM' && row.myRole === 'OWNER'
+        const moreOptions: DropdownOption[] = []
+        if (canManage) {
+          moreOptions.push({ label: t('extApi.apiAccess'), key: 'api' })
+          moreOptions.push({ label: t('common.delete'), key: 'delete' })
+        }
+        if (canTransferToTeam)
+          moreOptions.push({ label: t('knowledgeBase.transferToTeam'), key: 'transferTeam' })
+        if (canTransferToPersonal)
+          moreOptions.push({ label: t('knowledgeBase.transferToPersonal'), key: 'transferPersonal' })
+        return h('div', { class: 'flex items-center justify-center gap-1' }, {
           default: () => [
-            h('div', { class: 'flex gap-1' }, [
-              h(
-                NButton,
-                {
-                  tertiary: true,
-                  class: 'readable-accent-button',
-                  size: 'tiny',
-                  type: 'info',
-                  onClick: () => router.push({ name: 'KnowledgeBaseManageDetail', params: { kbUuid: row.uuid } }),
-                },
-                { default: () => t('common.view') },
-              ),
-              h(
-                NButton,
-                {
-                  tertiary: true,
-                  class: 'readable-accent-button',
-                  size: 'tiny',
-                  type: 'info',
-                  onClick: () => {
-                    activeKb.value = row
-                    showApiKeyModal.value = true
-                  },
-                },
-                { default: () => t('extApi.apiAccess') },
-              ),
-            ]),
-            h('div', { class: 'flex gap-1' }, [
-              h(
+            h(
+              NButton,
+              {
+                tertiary: true,
+                class: 'readable-accent-button',
+                size: 'tiny',
+                type: 'info',
+                onClick: () => router.push({ name: 'KnowledgeBaseManageDetail', params: { kbUuid: row.uuid } }),
+              },
+              { default: () => t('common.view') },
+            ),
+            ...(canManage
+              ? [h(
                 NButton,
                 {
                   tertiary: true,
@@ -149,23 +188,44 @@ const createColumns = (): DataTableColumns<KnowledgeBase.Info> => {
                   onClick: () => changeShowModal(row),
                 },
                 { default: () => t('common.edit') },
-              ),
-              h(
-                NButton,
+              )]
+              : []),
+            ...(moreOptions.length > 0
+              ? [h(
+                NDropdown,
                 {
-                  tertiary: true,
-                  size: 'tiny',
-                  type: 'error',
-                  onClick: () => deleteKb(row),
+                  trigger: 'click',
+                  options: moreOptions,
+                  onSelect: (key: string | number) => onKbActionSelect(key, row),
                 },
-                { default: () => t('common.delete') },
-              ),
-            ]),
+                { default: () => h(NButton, { tertiary: true, class: 'readable-accent-button', size: 'tiny', type: 'info' }, { default: () => t('common.more') }) },
+              )]
+              : []),
           ],
         })
       },
     },
   ]
+}
+
+function onKbActionSelect(key: string | number, row: KnowledgeBase.Info) {
+  switch (key) {
+    case 'api':
+      activeKb.value = row
+      showApiKeyModal.value = true
+      break
+    case 'delete':
+      deleteKb(row)
+      break
+    case 'transferTeam':
+      transferKb.value = row
+      transferTeamUuid.value = ''
+      showTransferModal.value = true
+      break
+    case 'transferPersonal':
+      transferToPersonal(row)
+      break
+  }
 }
 
 const columns = createColumns()
@@ -185,7 +245,9 @@ async function search(currentPage: number) {
   const requestId = ++searchGeneration
   loading.value = true
   try {
-    const resp = await api.knowledgeBaseSearchMine<KnowledgeBase.InfoListResp>(searchValue.value, currentPage, paginationReactive.pageSize)
+    const resp = ownerScope.value === 'team'
+      ? await api.knowledgeBaseSearchTeam<KnowledgeBase.InfoListResp>(searchValue.value, currentPage, paginationReactive.pageSize)
+      : await api.knowledgeBaseSearchMine<KnowledgeBase.InfoListResp>(searchValue.value, currentPage, paginationReactive.pageSize)
     if (requestId !== searchGeneration)
       return
     infoList.value = resp.data.records
@@ -207,16 +269,25 @@ async function saveOrUpdateKb() {
     ms.warning(t('knowledgeBase.customSeparatorRequired'))
     return
   }
+  if (tmpOwnerType.value === 'TEAM' && !tmpTeamUuid.value) {
+    ms.warning(t('knowledgeBase.teamSelectRequired'))
+    return
+  }
   try {
     submitting.value = true
-    // The user workspace only supports private or public libraries. Do not send
-    // administration-only flags even if a stale browser state contains them.
+    // Defensive strip: the user workspace must not send administration-only
+    // flags (isSystem/isEnabled) even if stale browser state contains them.
     const userWorkspaceKb = { ...tmpKb } as KnowledgeBase.Info & {
       isSystem?: boolean
       isEnabled?: boolean
+      ownerType?: string
+      teamUuid?: string
     }
     delete userWorkspaceKb.isSystem
     delete userWorkspaceKb.isEnabled
+    // Ownership applies on create only; the backend ignores it on edit.
+    userWorkspaceKb.ownerType = tmpOwnerType.value
+    userWorkspaceKb.teamUuid = tmpOwnerType.value === 'TEAM' ? tmpTeamUuid.value : undefined
     const res = await api.knowledgeBaseSaveOrUpdate<KnowledgeBase.Info>(userWorkspaceKb)
     if (tmpKb.id && tmpKb.id !== '0') {
       const hit = infoList.value.find(item => item.id === tmpKb.id)
@@ -225,11 +296,18 @@ async function saveOrUpdateKb() {
     } else {
       infoList.value.push(res.data)
     }
-    kbStore.upsertMyKbInfo(res.data)
+    kbStore.upsertKbInfo(res.data)
     Object.assign(tmpKb, res.data)
 
     kbStore.setReloadKbInfosSignal(true)
-    await search(1)
+    // 新建库归属与当前分区不一致时跳到归属分区，保证新库保存后可见
+    const resultScope = res.data.ownerType === 'TEAM' ? 'team' : 'mine'
+    if (ownerScope.value !== resultScope) {
+      ownerScope.value = resultScope
+      // ownerScope watcher 已触发 search(1)
+    } else {
+      await search(1)
+    }
     showModal.value = false
   } catch (error: any) {
     console.error('save knowledge base failed', error)
@@ -237,6 +315,52 @@ async function saveOrUpdateKb() {
   } finally {
     submitting.value = false
   }
+}
+
+async function confirmTransferToTeam() {
+  if (!transferKb.value || !transferTeamUuid.value) {
+    ms.warning(t('knowledgeBase.teamSelectRequired'))
+    return
+  }
+  try {
+    transferSubmitting.value = true
+    await api.knowledgeBaseTransfer(transferKb.value.uuid, 'TEAM', transferTeamUuid.value)
+    ms.success(t('knowledgeBase.transferToTeam'))
+    showTransferModal.value = false
+    kbStore.setReloadKbInfosSignal(true)
+    await search(1)
+  } catch (error: any) {
+    console.error('transfer knowledge base failed', error)
+    ms.error(error?.message || t('common.wrong'))
+  } finally {
+    transferSubmitting.value = false
+  }
+}
+
+function transferToPersonal(row: KnowledgeBase.Info) {
+  // 非破坏性操作：普通确认弹窗（主色确认键），不借用红色删除弹窗
+  const instance = dialog.create({
+    title: t('knowledgeBase.transfer'),
+    content: t('knowledgeBase.transferToPersonalTip'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    async onPositiveClick() {
+      if (instance.loading)
+        return false
+      instance.loading = true
+      try {
+        await api.knowledgeBaseTransfer(row.uuid, 'PERSONAL')
+        ms.success(t('knowledgeBase.transferToPersonal'))
+        kbStore.setReloadKbInfosSignal(true)
+        await search(1)
+      } catch (error: any) {
+        ms.error(error?.message || t('common.wrong'))
+        return false
+      } finally {
+        instance.loading = false
+      }
+    },
+  })
 }
 
 function deleteKb(row: KnowledgeBase.Info) {
@@ -300,8 +424,13 @@ async function initData() {
   await Promise.all([
     search(1),
     loadRerankModels(),
+    loadMyTeams(),
   ])
 }
+
+watch(ownerScope, () => {
+  search(1)
+})
 
 watch(
   () => authStore.token,
@@ -324,16 +453,24 @@ watch(
         {{ t('menu.knowledgeBase') }}
       </NBreadcrumbItem>
       <NBreadcrumbItem :clickable="false">
-        {{ t('knowledgeBase.myKnowledgeBase') }}
+        {{ ownerScope === 'team' ? t('team.myTeams') : t('knowledgeBase.myKnowledgeBase') }}
       </NBreadcrumbItem>
     </NBreadcrumb>
     <div class="flex gap-3 mb-2 mt-1" :class="[isMobile ? 'flex-col' : 'flex-row justify-between']">
       <div class="flex items-center space-x-4">
+        <NRadioGroup v-model:value="ownerScope" name="owner-scope" size="small">
+          <NRadioButton value="mine">
+            {{ t('knowledgeBase.ownerTypePersonal') }}
+          </NRadioButton>
+          <NRadioButton value="team">
+            {{ t('knowledgeBase.ownerTypeTeam') }}
+          </NRadioButton>
+        </NRadioGroup>
         <NButton type="primary" size="small" @click="changeShowModal()">
           {{ t('common.add') }}
         </NButton>
       </div>
-      <div class="flex justify-between">
+      <div class="flex justify-between gap-2">
         <NInput v-model:value="searchValue" style="width: 100%" @keyup="onKeyUpSearch" />
         <NButton type="primary" ghost @click="search(1)">
           {{ t('common.search') }}
@@ -364,15 +501,38 @@ watch(
           />
         </div>
         <div :class="itemBoxClass">
-          <div>{{ t('knowledgeBase.isPublic') }}</div>
-          <NRadioGroup v-model:value="tmpKb.isPublic" name="radiogroup">
-            <NRadio key="public_yes" :value="true">
-              {{ t('common.public') }}
-            </NRadio>
-            <NRadio key="public_no" :value="false">
-              {{ t('common.private') }}
-            </NRadio>
-          </NRadioGroup>
+          <div>{{ t('knowledgeBase.ownership') }}</div>
+          <!-- 归属仅创建时可选；编辑时只读展示，变更归属走“转移”操作 -->
+          <template v-if="String(tmpKb.id) !== '0'">
+            <NTag v-if="tmpKb.ownerType === 'TEAM'" size="small" type="info" :bordered="false">
+              {{ tmpKb.teamName || t('knowledgeBase.ownerTypeTeam') }}
+            </NTag>
+            <NTag v-else-if="tmpKb.ownerType === 'COMPANY'" size="small" type="warning" :bordered="false">
+              {{ t('knowledgeBase.ownerTypeCompany') }}
+            </NTag>
+            <NTag v-else size="small" type="default" :bordered="false">
+              {{ t('knowledgeBase.ownerTypePersonal') }}
+            </NTag>
+          </template>
+          <template v-else>
+            <NRadioGroup v-model:value="tmpOwnerType" name="kb-owner-type" size="small">
+              <NRadio value="PERSONAL">
+                {{ t('knowledgeBase.ownerTypePersonal') }}
+              </NRadio>
+              <NRadio value="TEAM">
+                {{ t('knowledgeBase.ownerTypeTeam') }}
+              </NRadio>
+            </NRadioGroup>
+            <div v-if="tmpOwnerType === 'TEAM'" class="space-y-1">
+              <NSelect
+                v-model:value="tmpTeamUuid" :options="teamOptions"
+                :placeholder="t('knowledgeBase.transferSelectTeam')"
+              />
+              <div v-if="myTeams.length === 0" class="text-xs text-red-400">
+                {{ t('knowledgeBase.noTeamHint') }}
+              </div>
+            </div>
+          </template>
         </div>
         <div :class="itemBoxClass">
           <div>
@@ -506,4 +666,33 @@ watch(
   </NModal>
 
   <ApiKeyModal v-model:show="showApiKeyModal" type="knowledge" :uuid="activeKb.uuid" :title="activeKb.title" />
+
+  <NModal
+    v-model:show="showTransferModal" :title="t('knowledgeBase.transferToTeam')"
+    style="width: 90%; max-width: 440px;" preset="card"
+  >
+    <div class="flex flex-col space-y-2">
+      <div class="text-sm">
+        {{ transferKb?.title }}
+      </div>
+      <div>{{ t('knowledgeBase.transferSelectTeam') }}</div>
+      <NSelect
+        v-model:value="transferTeamUuid" :options="teamOptions"
+        :placeholder="t('knowledgeBase.transferSelectTeam')"
+      />
+      <div class="text-xs opacity-60">
+        {{ t('knowledgeBase.transferToTeamTip') }}
+      </div>
+    </div>
+    <template #footer>
+      <div class="flex space-x-2 justify-end">
+        <NButton type="primary" size="small" :disabled="transferSubmitting" @click="confirmTransferToTeam">
+          {{ t('common.confirm') }}
+        </NButton>
+        <NButton size="small" :disabled="transferSubmitting" @click="showTransferModal = false">
+          {{ t('common.cancel') }}
+        </NButton>
+      </div>
+    </template>
+  </NModal>
 </template>

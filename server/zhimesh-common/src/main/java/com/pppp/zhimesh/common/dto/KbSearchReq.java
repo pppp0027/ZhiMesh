@@ -11,7 +11,8 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class KbSearchReq {
     private String title;
-    private Boolean isPublic;
+    /** 企业库可见范围筛选 STAFF/EXECUTIVE（管理端）。 */
+    private String companyScope;
     private Boolean isSystem;
     private Boolean isEnabled;
     private Integer minItemCount;
@@ -19,4 +20,6 @@ public class KbSearchReq {
     private Long[] createTime;
     private Long[] updateTime;
     private String ownerName;
+    /** 归属层级筛选 PERSONAL/TEAM/COMPANY（管理端）。 */
+    private String ownerType;
 }

@@ -2,14 +2,14 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { NAlert, NBreadcrumb, NBreadcrumbItem, NButton, NCard, NCheckbox, NCheckboxGroup, NDataTable, NFlex, NIcon, NInput, NModal, NP, NSpace, NTag, NText, NUpload, NUploadDragger, useDialog, useMessage } from 'naive-ui'
 import { ArchiveOutline } from '@vicons/ionicons5'
-import { Cloud32Regular, LockClosed32Regular } from '@vicons/fluent'
+import { Building24Regular, PeopleTeam24Regular, Person24Regular } from '@vicons/fluent'
 import { useRoute } from 'vue-router'
 import type { UploadFileInfo, UploadInst } from 'naive-ui'
 import ItemEmbeddingList from './ItemEmbeddingList.vue'
 import ItemGraph from './ItemGraph.vue'
 import { createColumns } from './itemColumns'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
-import { useAuthStore } from '@/store'
+import { useAuthStore, useKbStore, useUserStore } from '@/store'
 import { knowledgeBaseEmptyInfo, knowledgeBaseEmptyItem } from '@/utils/functions'
 import { t } from '@/locales'
 import api from '@/api'
@@ -19,7 +19,6 @@ const ms = useMessage()
 const dialog = useDialog()
 const route = useRoute()
 const { kbUuid: curKbUuid } = route.params as { kbUuid: string; kbId: string }
-console.log('knowledge-base uuid', curKbUuid)
 
 const showEmbeddingListModal = ref<boolean>(false)
 const showGraphModal = ref<boolean>(false)
@@ -48,9 +47,11 @@ const uploadRef = ref<UploadInst | null>(null)
 const headers = { Authorization: '' }
 const fileListLength = ref(0)
 const fileList = ref<UploadFileInfo[]>([])
+// 提交后是否有文件仍在上传中；全部 settle 后才自动关窗刷新
+const uploadInFlight = ref(false)
 const paginationReactive = reactive({
   page: 1,
-  pageSize: 10,
+  pageSize: 20,
   itemCount: 0,
 })
 const searchValue = ref<string>('')
@@ -59,10 +60,50 @@ const tmpItem = reactive<KnowledgeBase.Item>(knowledgeBaseEmptyItem())
 const inputStatus = computed(() => tmpItem.title.trim().length < 1 || submitting.value)
 const { isMobile } = useBasicLayout()
 const authStore = useAuthStore()
+const userStore = useUserStore()
+const kbStore = useKbStore()
 const token = ref<string>(authStore.token)
 const checkedItemRowKeys = ref<string[]>([])
 const checkedItems = ref<KnowledgeBase.Item[]>([])
 const curKnowledgeBase: KnowledgeBase.Info = reactive<KnowledgeBase.Info>(knowledgeBaseEmptyInfo())
+const itemBoxClass = 'space-y-1'
+
+// 面包屑按归属动态展示列表分区，返回时保留原分区（scope 入 query）
+const listScopeLabel = computed(() => {
+  if (curKnowledgeBase.ownerType === 'TEAM')
+    return t('team.myTeams')
+  if (curKnowledgeBase.ownerType === 'COMPANY')
+    return t('knowledgeBase.ownerTypeCompany')
+  return t('knowledgeBase.myKnowledgeBase')
+})
+const listScopeHref = computed(() =>
+  curKnowledgeBase.ownerType === 'TEAM' ? '/#/kb-manage?scope=team' : '/#/kb-manage')
+
+// 归属标签：可见性按归属推导，团队库带团队名、企业库按可见范围标注
+function ownerTierLabel(kbInfo: KnowledgeBase.Info) {
+  if (kbInfo.ownerType === 'TEAM')
+    return kbInfo.teamName ? `${t('knowledgeBase.ownerTypeTeam')}·${kbInfo.teamName}` : t('knowledgeBase.ownerTypeTeam')
+  if (kbInfo.ownerType === 'COMPANY')
+    return kbInfo.companyScope === 'EXECUTIVE'
+      ? `${t('knowledgeBase.ownerTypeCompany')}·${t('knowledgeBase.companyScopeExecutive')}`
+      : t('knowledgeBase.ownerTypeCompany')
+  return t('knowledgeBase.ownerTypePersonal')
+}
+
+// 分级访问门控（纯 UX，后端已强制）：优先取列表行携带的 accessLevel；
+// 直接输 URL 进入时按实体字段推导，推导不出的一律落到只读安全侧。
+const canWrite = computed<boolean>(() => {
+  if (curKnowledgeBase.isSystem)
+    return true
+  const listRow = [kbStore.myKbInfos, kbStore.teamKbInfos, kbStore.companyKbInfos]
+    .flatMap(list => list)
+    .find(item => item.uuid === curKnowledgeBase.uuid && item.accessLevel)
+  if (listRow)
+    return listRow.accessLevel === 'WRITE' || listRow.accessLevel === 'MANAGE'
+  if (curKnowledgeBase.ownerType === 'TEAM' || curKnowledgeBase.ownerType === 'COMPANY')
+    return false
+  return !!curKnowledgeBase.ownerUuid && curKnowledgeBase.ownerUuid === (userStore.userInfo?.uuid || '')
+})
 
 // 文件预览
 const showFileContentModal = ref<boolean>(false)
@@ -72,7 +113,6 @@ const previewFileContent = ref<string>('')
 const previewFileName = ref<string>('')
 let previewRequestId = 0
 let indexingTimer: ReturnType<typeof setTimeout> | undefined
-let uploadRefreshTimer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 let indexingPollStartedAt = 0
 let indexingCheckInFlight = false
@@ -105,7 +145,6 @@ const showFileContent = (selected: KnowledgeBase.Item = knowledgeBaseEmptyItem()
   const fileUrl = `${selected.sourceFileUrl}?token=${token.value}`
   previewFileUrl.value = fileUrl
   previewFileName.value = selected.sourceFileName
-  console.log('previewFileUrl', previewFileUrl.value)
   const ext = selected.sourceFileName.substring(selected.sourceFileName.lastIndexOf('.') + 1)
   switch (ext) {
     case 'pdf':
@@ -129,7 +168,6 @@ const showFileContent = (selected: KnowledgeBase.Item = knowledgeBaseEmptyItem()
     case 'txt':
       previewMimeType.value = 'text/plain'
       api.loadFileContent(fileUrl).then((resp) => {
-        console.log('loadFileContent', resp)
         if (requestId === previewRequestId)
           previewFileContent.value = resp.data
       }).catch((err) => {
@@ -167,15 +205,36 @@ function rowKey(row: KnowledgeBase.Item) {
   return row.uuid
 }
 
-const columns = createColumns(showEmbeddingList, showGraph, showFileContent, changeEditModal, deleteKbItem)
+// canWrite 变化时（实体/列表行加载完成）需要重建列以显隐勾选列与行内写操作
+const columns = computed(() => createColumns(showEmbeddingList, showGraph, showFileContent, changeEditModal, deleteKbItem, retryItemIndex, () => canWrite.value))
 
 function changeIndexModal() {
   showIndexModal.value = true
 }
 
 /**
- * 索引文档
+ * 索引文档（批量选中与失败重试共用）
  */
+async function triggerIndexing(uuids: string[], indexTypes: string[]) {
+  if (loading.value) {
+    ms.warning(t('knowledgeBase.indexTaskRunning'))
+    return
+  }
+  loading.value = true
+  indexingPollingDisabled = false
+  try {
+    await api.knowledgeBaseItemsIndexing(uuids, indexTypes)
+    indexingPollStartedAt = Date.now()
+    indexingCheck()
+    ms.success(t('knowledgeBase.indexTaskRunning'))
+    search(1)
+  } catch (error: any) {
+    ms.error(error?.message || t('common.wrong'))
+  } finally {
+    loading.value = false
+  }
+}
+
 async function textIndexing() {
   if (checkedItemRowKeys.value.length === 0) {
     ms.warning(t('knowledgeBase.selectAtLeastOneRow'))
@@ -185,25 +244,19 @@ async function textIndexing() {
     ms.warning(t('knowledgeBase.selectAtLeastOneIndexType'))
     return
   }
-  if (loading.value) {
-    ms.warning('indexing')
-    return
-  }
   showIndexModal.value = false
-  loading.value = true
-  indexingPollingDisabled = false
   try {
-    await api.knowledgeBaseItemsIndexing(checkedItemRowKeys.value, indexTypeSelected.value)
-    indexingPollStartedAt = Date.now()
-    indexingCheck()
-    ms.success(t('knowledgeBase.indexTaskRunning'))
-    search(1)
-  } catch (error: any) {
-    ms.error(error.message ?? 'error')
+    await triggerIndexing(checkedItemRowKeys.value, indexTypeSelected.value)
   } finally {
-    loading.value = false
     kbItemUuidForGraph.value = ''
   }
+}
+
+/**
+ * 状态列失败重试：仅重建该条目的对应索引类型
+ */
+function retryItemIndex(row: KnowledgeBase.Item, indexType: 'embedding' | 'graphical' | 'fulltext') {
+  triggerIndexing([row.uuid], [indexType])
 }
 
 /**
@@ -222,7 +275,7 @@ async function indexingCheck() {
     // issuing requests when a backend or Redis task is stale.
     await search(paginationReactive.page, false)
     if (!disposed)
-      ms.warning('索引任务状态检查超时，请查看文档状态或重新发起索引')
+      ms.warning(t('knowledgeBase.indexCheckTimeout'))
     return
   }
   indexingCheckInFlight = true
@@ -291,9 +344,23 @@ async function onUploadBefore(data: {
   return true
 }
 
-function onUploadChange(options: { fileList: UploadFileInfo[] }) {
-  console.log('onUploadChange')
-  fileListLength.value = options.fileList.length
+function onUploadChange({ fileList: currentFileList }: { file: UploadFileInfo, fileList: UploadFileInfo[] }) {
+  fileList.value = currentFileList
+  fileListLength.value = currentFileList.filter(file => file.status !== 'removed').length
+  if (!uploadInFlight.value)
+    return
+  // 全部文件 finish/error 后才关窗刷新；失败文件保留在列表供重传
+  const unsettled = currentFileList.filter(file => file.status === 'pending' || file.status === 'uploading')
+  if (unsettled.length > 0)
+    return
+  uploadInFlight.value = false
+  const failed = currentFileList.filter(file => file.status === 'error')
+  if (failed.length > 0) {
+    ms.error(t('common.uploadFailed'))
+    return
+  }
+  showUploadModal.value = false
+  search(1)
 }
 
 function onUploadSubmit() {
@@ -301,14 +368,14 @@ function onUploadSubmit() {
     ms.warning(t('knowledgeBase.selectAtLeastOneIndexType'))
     return
   }
-  uploadRef.value?.submit()
-  if (uploadRefreshTimer)
-    clearTimeout(uploadRefreshTimer)
-  uploadRefreshTimer = setTimeout(() => {
-    uploadRefreshTimer = undefined
-    showUploadModal.value = false
-    search(1)
-  }, 3000)
+  // 待上传 + 失败待重传的文件一起提交（naive-ui 需按 id 逐个重提交失败项）
+  const targets = fileList.value.filter(file => file.status === 'pending' || file.status === 'error')
+  if (targets.length === 0)
+    return
+  uploadInFlight.value = true
+  targets.forEach((file) => {
+    uploadRef.value?.submit(file.id)
+  })
 }
 
 function onUploadFinish({
@@ -325,20 +392,20 @@ function onUploadFinish({
   } catch (error) {
     console.error('upload response parse failed', error)
     ms.error(t('knowledgeBase.uploadFailedResponseError'))
-    return
+    return { ...file, status: 'error' as const }
   }
   if (!respData) {
     ms.error(t('knowledgeBase.uploadFailedResponseError'))
-    return
+    return { ...file, status: 'error' as const }
   }
   const { success, message } = respData
-  console.log('onUploadFinish', success, message)
-  if (success)
+  if (success) {
     ms.success(t('common.uploadSuccess'))
-  else
-    ms.error(message || t('common.uploadFailed'))
-
-  return file
+    return file
+  }
+  ms.error(message || t('common.uploadFailed'))
+  // 标记为 error 使文件保留在列表中，可通过内置重试按钮或再次提交重传
+  return { ...file, status: 'error' as const }
 }
 
 async function search(currentPage: number, allowAutoPolling = true) {
@@ -388,7 +455,7 @@ async function saveOrUpdate() {
 function deleteKbItem(row: KnowledgeBase.Item) {
   openDeleteDialog(dialog, {
     title: t('knowledgeBase.deleteConfirmTitle'),
-    content: t('common.deleteNotRecover'),
+    content: t('knowledgeBase.deleteItemConfirm', { title: row.title }),
     positiveText: t('common.delete'),
     negativeText: t('common.cancel'),
     onPositiveClick: async () => {
@@ -439,10 +506,16 @@ onUnmounted(() => {
   previewRequestId++
   if (indexingTimer)
     clearTimeout(indexingTimer)
-  if (uploadRefreshTimer)
-    clearTimeout(uploadRefreshTimer)
   indexingTimer = undefined
-  uploadRefreshTimer = undefined
+})
+
+// 关闭上传弹窗时重置文件列表，避免下次打开携带旧文件重复上传
+watch(showUploadModal, (show) => {
+  if (show)
+    return
+  fileList.value = []
+  fileListLength.value = 0
+  uploadInFlight.value = false
 })
 </script>
 
@@ -452,8 +525,8 @@ onUnmounted(() => {
       <NBreadcrumbItem href="/">
         {{ t('common.home') }}
       </NBreadcrumbItem>
-      <NBreadcrumbItem href="/#/kb-manage">
-        {{ t('knowledgeBase.myKnowledgeBase') }}
+      <NBreadcrumbItem :href="listScopeHref">
+        {{ listScopeLabel }}
       </NBreadcrumbItem>
       <NBreadcrumbItem :clickable="false">
         {{ curKnowledgeBase.title }}
@@ -461,31 +534,35 @@ onUnmounted(() => {
     </NBreadcrumb>
     <NCard
       style="margin-top: 12px"
-      :title="`${t('knowledgeBase.knowledgeBase')}: ${curKnowledgeBase.title}(${curKnowledgeBase.isPublic ? t('common.public') : t('common.private')})`" hoverable
+      :title="`${t('knowledgeBase.knowledgeBase')}: ${curKnowledgeBase.title}(${ownerTierLabel(curKnowledgeBase)})`" hoverable
     >
       <template #header-extra>
-        <NIcon v-if="curKnowledgeBase.isPublic" :component="Cloud32Regular" />
-        <NIcon v-if="!curKnowledgeBase.isPublic" :component="LockClosed32Regular" />
+        <NTag v-if="!canWrite" size="small" type="warning" class="mr-2">
+          {{ t('knowledgeBase.readOnlyKb') }}
+        </NTag>
+        <NIcon v-if="curKnowledgeBase.ownerType === 'COMPANY'" :component="Building24Regular" />
+        <NIcon v-else-if="curKnowledgeBase.ownerType === 'TEAM'" :component="PeopleTeam24Regular" />
+        <NIcon v-else :component="Person24Regular" />
       </template>
       {{ curKnowledgeBase.remark }}
     </NCard>
     <NCard style="margin-top: 12px" :title="t('knowledgeBase.generatedKnowledge')" hoverable>
       <div class="flex gap-3 mb-4" :class="[isMobile ? 'flex-col' : 'flex-row justify-between']">
         <div class="flex items-left gap-2">
-          <NButton type="primary" size="small" @click="changeEditModal()">
+          <NButton v-if="canWrite" type="primary" size="small" @click="changeEditModal()">
             {{ t('knowledgeBase.addByForm') }}
           </NButton>
-          <NButton type="primary" size="small" @click="() => showUploadModal = !showUploadModal">
+          <NButton v-if="canWrite" type="primary" size="small" @click="() => showUploadModal = !showUploadModal">
             {{ t('knowledgeBase.addByFile') }}
           </NButton>
-          <NButton type="primary" size="small" @click="changeIndexModal()">
+          <NButton v-if="canWrite" type="primary" size="small" @click="changeIndexModal()">
             {{ t('knowledgeBase.indexSelected') }}
             <template v-if="checkedItemRowKeys.length > 0">
               ({{ checkedItemRowKeys.length }}{{ t('knowledgeBase.item') }})
             </template>
           </NButton>
         </div>
-        <div class="flex items-center">
+        <div class="flex items-center gap-2">
           <NInput v-model:value="searchValue" style="width: 100%" @keyup="onKeyUpSearch" />
           <NButton type="primary" ghost @click="search(1)">
             {{ t('common.search') }}
@@ -494,40 +571,50 @@ onUnmounted(() => {
       </div>
       <NDataTable
         remote :loading="loading" :max-height="tableMaxHeight" :columns="columns" :data="itemList" :pagination="paginationReactive"
-        :single-line="false" :bordered="true" :scroll-x="1420" :row-key="rowKey" :checked-row-keys="checkedItemRowKeys"
+        :single-line="false" :bordered="true" :scroll-x="1240" :row-key="rowKey" :checked-row-keys="checkedItemRowKeys"
         @update:checked-row-keys="onHandleCheckedRowKeys" @update:page="onHandlePageChange"
       />
     </NCard>
   </div>
 
   <NModal
-    v-model:show="showItemEditModal" style="width: 90%" preset="card"
+    v-model:show="showItemEditModal" style="width: 90%; max-width: 550px;" preset="card"
     :title="t('knowledgeBase.knowledgeItemAddEdit')"
   >
-    <NSpace vertical>
-      {{ t('store.title') }}
-      <NInput v-model:value="tmpItem.title" maxlength="100" show-count />
-      {{ t('knowledgeBase.brief') }}
-      <NInput v-model:value="tmpItem.brief" type="textarea" show-count :autosize="{ minRows: 2, maxRows: 5 }" />
-      {{ t('common.content') }}
-      <NInput v-model:value="tmpItem.remark" type="textarea" show-count :rows="10" />
-    </NSpace>
+    <div class="flex flex-col space-y-2">
+      <div :class="itemBoxClass">
+        <div>{{ t('common.title') }}<span class="text-red-400"> *</span></div>
+        <NInput v-model:value="tmpItem.title" maxlength="100" show-count />
+      </div>
+      <div :class="itemBoxClass">
+        <div>{{ t('knowledgeBase.brief') }}</div>
+        <NInput v-model:value="tmpItem.brief" type="textarea" show-count :autosize="{ minRows: 2, maxRows: 5 }" />
+      </div>
+      <div :class="itemBoxClass">
+        <div>{{ t('common.content') }}</div>
+        <NInput v-model:value="tmpItem.remark" type="textarea" show-count :rows="10" />
+      </div>
+    </div>
     <template #footer>
-      <div class="flex justify-end">
+      <div class="flex space-x-2 justify-end">
         <NButton type="primary" :disabled="inputStatus" @click="() => { saveOrUpdate() }">
           {{ t('common.confirm') }}
+        </NButton>
+        <NButton :disabled="submitting" @click="showItemEditModal = false">
+          {{ t('common.cancel') }}
         </NButton>
       </div>
     </template>
   </NModal>
 
   <!-- Upload files -->
-  <NModal v-model:show="showUploadModal" style="width: 90%;  min-height: 700px;" preset="card" :title="t('knowledgeBase.knowledgeItemUpload')">
+  <NModal v-model:show="showUploadModal" style="width: 90%; max-width: 700px;" preset="card" :title="t('knowledgeBase.knowledgeItemUpload')">
     <NCard style="margin-top: 12px" :title="t('knowledgeBase.uploadDocToGenerate')" hoverable>
       <NSpace vertical>
         <NUpload
-          ref="uploadRef" multiple :default-file-list="fileList" directory-dnd
+          ref="uploadRef" multiple v-model:file-list="fileList" directory-dnd
           :action="uploadAction"
+          :file-list-style="{ maxHeight: '260px', overflowY: 'auto' }"
           :default-upload="false" :max="20" :headers="headers" @before-upload="onUploadBefore" @finish="onUploadFinish"
           @change="onUploadChange"
         >
@@ -566,6 +653,7 @@ onUnmounted(() => {
         <NFlex>
           <NButton
             type="primary"
+            :loading="uploadInFlight"
             :disabled="!fileListLength || (indexAfterUpload && indexTypeSelected.length === 0)"
             @click="onUploadSubmit"
           >
@@ -576,10 +664,10 @@ onUnmounted(() => {
     </NCard>
   </NModal>
 
-  <NModal v-model:show="showEmbeddingListModal" style="width: 90%; " preset="card" :title="t('knowledgeBase.embeddingList')">
+  <NModal v-model:show="showEmbeddingListModal" style="width: 90%; max-width: 700px;" preset="card" :title="t('knowledgeBase.embeddingList')">
     <ItemEmbeddingList :kb-item-uuid="kbItemUuidForEmbeddingList" />
   </NModal>
-  <NModal v-model:show="showGraphModal" class="graph-modal" style="width: 90%;" display-directive="show" preset="card" :title="t('knowledgeBase.graphLabel')">
+  <NModal v-model:show="showGraphModal" class="graph-modal" style="width: 90%; max-width: 700px;" display-directive="show" preset="card" :title="t('knowledgeBase.graphLabel')">
     <ItemGraph :kb-item-uuid="kbItemUuidForGraph" />
   </NModal>
   <NModal v-model:show="showIndexModal" style="width: 90%; max-width:550px" preset="card" :title="t('knowledgeBase.selectIndexType')">
@@ -613,7 +701,7 @@ onUnmounted(() => {
       </NButton>
     </NFlex>
   </NModal>
-  <NModal v-model:show="showFileContentModal" style="width: 90%; " preset="card" :title="`${t('workflow.filePreviewTitle')}${previewFileName}`">
+  <NModal v-model:show="showFileContentModal" style="width: 90%; max-width: 700px;" preset="card" :title="`${t('workflow.filePreviewTitle')}${previewFileName}`">
     <div style="text-align: center;max-height:700px;overflow-y: auto">
       <div v-if="previewFileUrl && previewMimeType === 'text/plain'">
         {{ previewFileContent }}

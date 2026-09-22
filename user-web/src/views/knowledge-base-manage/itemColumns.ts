@@ -1,14 +1,19 @@
-import type { DataTableColumns } from 'naive-ui'
+import type { DataTableColumn, DataTableColumns } from 'naive-ui'
 import { h } from 'vue'
-import type { VNode } from 'vue'
-import { NButton, NEllipsis } from 'naive-ui'
+import { NButton, NEllipsis, NTag, NTooltip } from 'naive-ui'
 import { t } from '@/locales'
 
-export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Function, showFileContentFn: Function, changeItemShowModalFn: Function, deleteKbItemFn: Function): DataTableColumns<KnowledgeBase.Item> => {
+type ItemIndexType = 'embedding' | 'graphical' | 'fulltext'
+
+export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Function, showFileContentFn: Function, changeItemShowModalFn: Function, deleteKbItemFn: Function, retryIndexFn: ((row: KnowledgeBase.Item, indexType: ItemIndexType) => void) | null = null, canWriteFn: () => boolean = () => true): DataTableColumns<KnowledgeBase.Item> => {
+  const writable = canWriteFn()
   return [
-    {
-      type: 'selection',
-    },
+    // 批量勾选仅服务索引/写操作，只读知识库不展示
+    ...(writable
+      ? [{
+          type: 'selection' as const,
+        }]
+      : []),
     {
       title: t('knowledgeBase.itemTitle'),
       key: 'title',
@@ -21,79 +26,38 @@ export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Functi
         return row.brief.substring(0, 50)
       },
     },
-    {
+    createIndexStatusColumn({
       title: t('knowledgeBase.vectorize'),
       key: 'embeddingStatus',
-      width: 150,
-      render(row) {
-        const renderElements: VNode[] = []
-        if (row.embeddingStatus === 'NONE') {
-          renderElements.push(createText(t('knowledgeBase.statusPending')))
-        } else if (row.embeddingStatus === 'DOING') {
-          renderElements.push(createShowListButton(showEmbeddingListFn, row))
-          renderElements.push(createText(t('knowledgeBase.statusProcessing')))
-          renderElements.push(createText(row.embeddingStatusChangeTime))
-        } else if (row.embeddingStatus === 'DONE') {
-          renderElements.push(createShowListButton(showEmbeddingListFn, row))
-          renderElements.push(createText(t('knowledgeBase.statusVectorized')))
-          renderElements.push(createText(row.embeddingStatusChangeTime))
-        } else if (row.embeddingStatus === 'FAIL') {
-          renderElements.push(createText(t('knowledgeBase.statusFailed')))
-          renderElements.push(createText(row.embeddingStatusChangeTime))
-        }
-        return h('div', { class: 'flex flex-col' }, {
-          default: () => renderElements,
-        })
-      },
-    },
-    {
+      doneLabel: t('knowledgeBase.statusVectorized'),
+      getStatus: row => row.embeddingStatus,
+      getTime: row => row.embeddingStatusChangeTime,
+      // 处理中/已完成均可查看已生成的嵌入
+      canView: row => row.embeddingStatus === 'DOING' || row.embeddingStatus === 'DONE',
+      onView: row => showEmbeddingListFn(row),
+      retryHandler: retryIndexFn && writable ? (row => retryIndexFn!(row, 'embedding')) : null,
+    }),
+    createIndexStatusColumn({
       title: t('knowledgeBase.graphLabel'),
       key: 'graphicalStatus',
-      width: 150,
-      render(row) {
-        const renderElements: VNode[] = []
-        if (row.graphicalStatus === 'NONE') {
-          renderElements.push(createText(t('knowledgeBase.statusPending')))
-        } else if (row.graphicalStatus === 'DOING') {
-          renderElements.push(createShowListButton(showGraphFn, row))
-          renderElements.push(createText(t('knowledgeBase.statusProcessing')))
-          renderElements.push(createText(row.graphicalStatusChangeTime))
-        } else if (row.graphicalStatus === 'DONE') {
-          renderElements.push(createShowListButton(showGraphFn, row))
-          renderElements.push(createText(t('knowledgeBase.statusGraphitized')))
-          renderElements.push(createText(row.graphicalStatusChangeTime))
-        } else if (row.graphicalStatus === 'FAIL') {
-          renderElements.push(createText(t('knowledgeBase.statusFailed')))
-          renderElements.push(createText(row.graphicalStatusChangeTime))
-        }
-        return h('div', { class: 'flex flex-col' }, {
-          default: () => renderElements,
-        })
-      },
-    },
-    {
+      doneLabel: t('knowledgeBase.statusGraphitized'),
+      getStatus: row => row.graphicalStatus,
+      getTime: row => row.graphicalStatusChangeTime,
+      canView: row => row.graphicalStatus === 'DOING' || row.graphicalStatus === 'DONE',
+      onView: row => showGraphFn(row),
+      retryHandler: retryIndexFn && writable ? (row => retryIndexFn!(row, 'graphical')) : null,
+    }),
+    createIndexStatusColumn({
       title: t('knowledgeBase.fulltextStatus'),
       key: 'fulltextStatus',
-      width: 160,
-      render(row) {
-        const renderElements: VNode[] = []
-        if (!row.fulltextStatus || row.fulltextStatus === 'NONE') {
-          renderElements.push(createText(t('knowledgeBase.statusPending')))
-        } else if (row.fulltextStatus === 'DOING') {
-          renderElements.push(createText(t('knowledgeBase.statusProcessing')))
-          renderElements.push(createText(row.fulltextStatusChangeTime))
-        } else if (row.fulltextStatus === 'DONE') {
-          renderElements.push(createText(t('knowledgeBase.statusFulltextIndexed')))
-          renderElements.push(createText(row.fulltextStatusChangeTime))
-        } else if (row.fulltextStatus === 'FAIL') {
-          renderElements.push(createText(t('knowledgeBase.statusFailed')))
-          renderElements.push(createText(row.fulltextStatusChangeTime))
-        }
-        return h('div', { class: 'flex flex-col' }, {
-          default: () => renderElements,
-        })
+      doneLabel: t('knowledgeBase.statusFulltextIndexed'),
+      getStatus: row => row.fulltextStatus || 'NONE',
+      getTime: row => row.fulltextStatusChangeTime,
+      canView: () => false,
+      onView: () => {
       },
-    },
+      retryHandler: retryIndexFn && writable ? (row => retryIndexFn!(row, 'fulltext')) : null,
+    }),
     {
       title: t('knowledgeBase.attachment'),
       key: 'sourceFileName',
@@ -110,7 +74,7 @@ export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Functi
               NEllipsis,
               {
                 lineClamp: 3,
-                style: 'color:#2080f0;cursor:pointer',
+                style: 'color:var(--zhimesh-primary);cursor:pointer',
               },
               { default: () => row.sourceFileName || row.title },
             ),
@@ -122,11 +86,7 @@ export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Functi
       },
     },
     {
-      title: t('knowledgeBase.createTime'),
-      key: 'createTime',
-      width: 180,
-    },
-    {
+      // 创建/更新时间信息重复，仅保留更新时间
       title: t('knowledgeBase.updateTime'),
       key: 'updateTime',
       width: 180,
@@ -134,16 +94,19 @@ export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Functi
     {
       title: t('common.action'),
       key: 'actions',
-      width: 100,
+      width: 110,
       align: 'center',
       render(row) {
-        return h('div', { class: 'flex items-center flex-col gap-2' }, {
+        // 只读访问级别（READER / 非成员公开库 / 企业库）不提供条目写操作
+        if (!canWriteFn())
+          return '-'
+        return h('div', { class: 'flex items-center justify-center gap-1' }, {
           default: () => [
             h(
               NButton,
               {
                 tertiary: true,
-                size: 'small',
+                size: 'tiny',
                 type: 'info',
                 onClick: () => changeItemShowModalFn(row),
               },
@@ -153,7 +116,7 @@ export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Functi
               NButton,
               {
                 tertiary: true,
-                size: 'small',
+                size: 'tiny',
                 type: 'error',
                 onClick: () => deleteKbItemFn(row),
               },
@@ -166,26 +129,69 @@ export const createColumns = (showEmbeddingListFn: Function, showGraphFn: Functi
   ]
 }
 
-function createShowListButton(showListFn: Function, row: KnowledgeBase.Item) {
+/**
+ * 索引状态列：单行 NTag（待处理 default / 处理中 info / 成功 success / 失败 error，
+ * 对齐 admin-web statusTagType 映射），时间戳移入 tooltip；
+ * 失败行内提供“重试”入口（携带该列默认索引类型）。
+ */
+function createIndexStatusColumn(options: {
+  title: string
+  key: string
+  doneLabel: string
+  getStatus: (row: KnowledgeBase.Item) => string
+  getTime: (row: KnowledgeBase.Item) => string
+  canView: (row: KnowledgeBase.Item) => boolean
+  onView: (row: KnowledgeBase.Item) => void
+  retryHandler: ((row: KnowledgeBase.Item) => void) | null
+}): DataTableColumn<KnowledgeBase.Item> {
+  return {
+    title: options.title,
+    key: options.key,
+    width: 150,
+    render(row) {
+      const status = options.getStatus(row)
+      let tagType: 'default' | 'info' | 'success' | 'error' = 'default'
+      let label = t('knowledgeBase.statusPending')
+      if (status === 'DOING') {
+        tagType = 'info'
+        label = t('knowledgeBase.statusProcessing')
+      } else if (status === 'DONE') {
+        tagType = 'success'
+        label = options.doneLabel
+      } else if (status === 'FAIL') {
+        tagType = 'error'
+        label = t('knowledgeBase.statusFailed')
+      }
+      const children = [
+        h(NTag, { size: 'small', bordered: false, type: tagType }, { default: () => label }),
+      ]
+      if (options.canView(row)) {
+        children.push(createInlineActionButton(t('common.view'), () => options.onView(row)))
+      }
+      if (status === 'FAIL' && options.retryHandler) {
+        children.push(createInlineActionButton(t('common.retry'), () => options.retryHandler!(row)))
+      }
+      const cell = h('div', { class: 'flex items-center gap-1' }, { default: () => children })
+      const time = options.getTime(row)
+      if (!time)
+        return cell
+      return h(NTooltip, { trigger: 'hover' }, {
+        trigger: () => cell,
+        default: () => time,
+      })
+    },
+  }
+}
+
+function createInlineActionButton(label: string, onClick: () => void) {
   return h(
     NButton,
     {
       text: true,
       size: 'small',
       type: 'info',
-      onClick: () => showListFn(row),
+      onClick,
     },
-    { default: () => t('common.view') },
-  )
-}
-
-function createText(txt: string) {
-  return h(
-    'div',
-    {
-      style: 'font-size: 10px',
-      class: 'mt-1',
-    },
-    { default: () => txt },
+    { default: () => label },
   )
 }

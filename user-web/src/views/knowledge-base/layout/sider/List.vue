@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { NTabPane, NTabs, useMessage } from 'naive-ui'
 import SubList from './SubList.vue'
+import LoginTip from '@/views/user/LoginTip.vue'
 import { useAuthStore, useKbStore } from '@/store'
 import { t } from '@/locales'
 import api from '@/api'
@@ -13,12 +14,11 @@ const router = useRouter()
 const currentPage = ref<number>(1)
 const pageSize = 20
 const kbStore = useKbStore()
-const { activeKbUuid, myKbInfos, publicKbInfos, selectedKbType } = storeToRefs<any>(kbStore)
+const { activeKbUuid, myKbInfos, teamKbInfos, companyKbInfos, selectedKbType } = storeToRefs<any>(kbStore)
 const authStore = useAuthStore()
 const authStoreRef = ref<AuthState>(authStore)
 const message = useMessage()
-const privateListLoaded = ref(false)
-const publicListLoaded = ref(false)
+const kbListLoaded = ref(false)
 let listGeneration = 0
 const { kbUuid: currKbUuid } = route.params as { kbUuid: string }
 
@@ -27,20 +27,30 @@ if (currKbUuid !== 'default' && kbStore.activeKbUuid === 'default')
   kbStore.setActive(currKbUuid)
 
 async function selectAvailableKb() {
-  if (!privateListLoaded.value || !publicListLoaded.value)
+  if (!kbListLoaded.value)
     return
 
   const activeMine = myKbInfos.value.find((item: KnowledgeBase.Info) => item.uuid === activeKbUuid.value)
-  const activePublic = publicKbInfos.value.find((item: KnowledgeBase.Info) => item.uuid === activeKbUuid.value)
-  if (activeMine || activePublic) {
-    kbStore.selectedKbType = activeMine ? 'mine' : 'public'
+  if (activeMine) {
+    kbStore.selectedKbType = 'mine'
+    return
+  }
+  const activeTeam = teamKbInfos.value.find((item: KnowledgeBase.Info) => item.uuid === activeKbUuid.value)
+  if (activeTeam) {
+    kbStore.selectedKbType = 'team'
+    return
+  }
+  const activeCompany = companyKbInfos.value.find((item: KnowledgeBase.Info) => item.uuid === activeKbUuid.value)
+  if (activeCompany) {
+    kbStore.selectedKbType = 'company'
     return
   }
 
-  const firstMine = myKbInfos.value[0]
-  const firstPublic = publicKbInfos.value[0]
-  const nextKb = firstMine || firstPublic
-  kbStore.selectedKbType = firstMine ? 'mine' : 'public'
+  // Fallback chain: personal first, then team, then company.
+  const nextKb = myKbInfos.value[0] || teamKbInfos.value[0] || companyKbInfos.value[0]
+  kbStore.selectedKbType = myKbInfos.value[0]
+    ? 'mine'
+    : teamKbInfos.value[0] ? 'team' : 'company'
   kbStore.setActive(nextKb?.uuid || 'default')
 
   const nextUuid = nextKb?.uuid || 'default'
@@ -58,36 +68,51 @@ async function initStarredList() {
 }
 
 async function refreshLists(force = false) {
-  if (!force && privateListLoaded.value && publicListLoaded.value) {
+  if (!force && kbListLoaded.value) {
     await selectAvailableKb()
     return
   }
 
   const requestId = ++listGeneration
   kbStore.setLoadingKbList(true)
-  const mineRequest = authStoreRef.value.token
+  // All three sections derive visibility from the caller's identity, so
+  // nothing is fetchable without a signed-in session; the empty state with
+  // the login hint is all an anonymous visitor gets.
+  const loggedIn = !!authStoreRef.value.token
+  const mineRequest = loggedIn
     ? api.knowledgeBaseSearchMine<KnowledgeBase.InfoListResp>('', currentPage.value, pageSize)
     : Promise.resolve(null)
-  const publicRequest = api.knowledgeBaseSearchPublic<KnowledgeBase.InfoListResp>('', currentPage.value, pageSize)
+  const teamRequest = loggedIn
+    ? api.knowledgeBaseSearchTeam<KnowledgeBase.InfoListResp>('', currentPage.value, pageSize)
+    : Promise.resolve(null)
+  const companyRequest = loggedIn
+    ? api.knowledgeBaseSearchCompany<KnowledgeBase.InfoListResp>('', currentPage.value, pageSize)
+    : Promise.resolve(null)
 
   try {
-    const [mineResult, publicResult] = await Promise.allSettled([mineRequest, publicRequest])
+    const [mineResult, teamResult, companyResult] = await Promise.allSettled(
+      [mineRequest, teamRequest, companyRequest])
     if (requestId !== listGeneration)
       return
 
     if (mineResult.status === 'fulfilled')
       kbStore.setMyKbInfos(mineResult.value?.data.records || [])
     else
-      console.error('load private knowledge bases failed', mineResult.reason)
-    privateListLoaded.value = true
+      console.error('load my knowledge bases failed', mineResult.reason)
+    kbListLoaded.value = true
+    kbStore.setKbListLoaded(true)
 
-    if (publicResult.status === 'fulfilled')
-      kbStore.setPublicKbInfos(publicResult.value.data.records || [])
+    if (teamResult.status === 'fulfilled')
+      kbStore.setTeamKbInfos(teamResult.value?.data.records || [])
     else
-      console.error('load public knowledge bases failed', publicResult.reason)
-    publicListLoaded.value = true
+      console.error('load team knowledge bases failed', teamResult.reason)
 
-    if (mineResult.status === 'rejected' || publicResult.status === 'rejected')
+    if (companyResult.status === 'fulfilled')
+      kbStore.setCompanyKbInfos(companyResult.value?.data.records || [])
+    else
+      console.error('load company knowledge bases failed', companyResult.reason)
+
+    if (mineResult.status === 'rejected' || teamResult.status === 'rejected' || companyResult.status === 'rejected')
       message.error(t('common.wrong'))
 
     await selectAvailableKb()
@@ -101,11 +126,15 @@ watch(
   () => authStoreRef.value.token,
   async (newVal) => {
     if (newVal) {
-      privateListLoaded.value = false
+      kbListLoaded.value = false
+      kbStore.setKbListLoaded(false)
       await Promise.all([refreshLists(true), initStarredList()])
     } else {
       kbStore.setMyKbInfos([])
-      privateListLoaded.value = true
+      kbStore.setTeamKbInfos([])
+      kbStore.setCompanyKbInfos([])
+      kbListLoaded.value = true
+      kbStore.setKbListLoaded(true)
       await refreshLists(true)
     }
   },
@@ -125,8 +154,10 @@ watch(
 )
 
 onMounted(async () => {
-  if (!authStoreRef.value.token)
-    privateListLoaded.value = true
+  if (!authStoreRef.value.token) {
+    kbListLoaded.value = true
+    kbStore.setKbListLoaded(true)
+  }
   await Promise.all([
     refreshLists(),
     authStoreRef.value.token ? initStarredList() : Promise.resolve(),
@@ -135,12 +166,19 @@ onMounted(async () => {
 </script>
 
 <template>
-  <NTabs v-model:value="selectedKbType" tab-class="h-10" pane-class="h-full" type="line" justify-content="space-evenly" class="kb-sider-tabs">
-    <NTabPane name="mine" :tab="t('common.mine')" size="small">
+  <!-- 未登录：三组分区均依赖登录身份，整体替换为登录引导，不渲染空 Tab 壳 -->
+  <div v-if="!authStoreRef.token" class="kb-sider-login">
+    <LoginTip />
+  </div>
+  <NTabs v-else v-model:value="selectedKbType" tab-class="h-10" pane-class="h-full" type="line" justify-content="space-evenly" class="kb-sider-tabs">
+    <NTabPane name="mine" :tab="t('common.mine')">
       <SubList :list="myKbInfos" :active-kb-uuid="activeKbUuid" />
     </NTabPane>
-    <NTabPane name="public" :tab="t('common.public')">
-      <SubList :list="publicKbInfos" :active-kb-uuid="activeKbUuid" />
+    <NTabPane name="team" :tab="t('common.team')">
+      <SubList :list="teamKbInfos" :active-kb-uuid="activeKbUuid" />
+    </NTabPane>
+    <NTabPane name="company" :tab="t('common.company')">
+      <SubList :list="companyKbInfos" :active-kb-uuid="activeKbUuid" />
     </NTabPane>
   </NTabs>
 </template>
@@ -150,6 +188,10 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+.kb-sider-login {
+  padding: 12px 12px 0;
 }
 </style>
 
