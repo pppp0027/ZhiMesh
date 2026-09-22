@@ -34,7 +34,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.HashSet;
 
 @Slf4j
@@ -50,6 +53,42 @@ public class WorkflowNodeService extends ServiceImpl<WorkflowNodeMapper, Workflo
 
     public WorkflowNode getStartNode(long workflowId) {
         return baseMapper.getStartNode(workflowId);
+    }
+
+    /**
+     * 批量解析一组工作流起始节点的输入参数定义（一次 in 查询），供 run_workflow 内置
+     * 工具把文本 input 包装成起始节点期望的参数名；无起始节点的工作流不在返回 Map 中，
+     * 起始组件不可用时返回空 Map（工具侧按"无文本输入"处理，不阻断聊天）
+     * <p>
+     * Batch-resolve the start nodes' input parameter definitions of the given
+     * workflows (one in-query) so the run_workflow builtin tool can wrap the
+     * text input under the parameter name the start node expects; workflows
+     * without a start node are absent from the returned map, and an unavailable
+     * start component yields an empty map (the tool treats it as "no text
+     * input" instead of failing the chat).
+     */
+    public Map<Long, WfNodeInputConfig> getStartNodeInputConfigs(Collection<Long> workflowIds) {
+        Map<Long, WfNodeInputConfig> result = new HashMap<>();
+        if (CollectionUtils.isEmpty(workflowIds)) {
+            return result;
+        }
+        WorkflowComponent startComponent;
+        try {
+            startComponent = workflowComponentService.getStartComponent();
+        } catch (Exception e) {
+            log.warn("Start component unavailable, skip start node input resolution", e);
+            return result;
+        }
+        if (null == startComponent || null == startComponent.getId()) {
+            return result;
+        }
+        ChainWrappers.lambdaQueryChain(baseMapper)
+                .in(WorkflowNode::getWorkflowId, workflowIds)
+                .eq(WorkflowNode::getWorkflowComponentId, startComponent.getId())
+                .list()
+                .forEach(node -> result.put(node.getWorkflowId(),
+                        null != node.getInputConfig() ? node.getInputConfig() : new WfNodeInputConfig()));
+        return result;
     }
 
     public List<WfNodeDto> listDtoByWfId(long workflowId) {

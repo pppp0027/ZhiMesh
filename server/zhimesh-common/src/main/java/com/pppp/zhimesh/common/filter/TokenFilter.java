@@ -33,7 +33,6 @@ public class TokenFilter extends OncePerRequestFilter {
             "/draw/public/",
             "/draw/detail/",
             "/draw/comment/list",
-            "/knowledge-base/public/",
             "/workflow/public",
             "/mcp/public",
             "/sys/config/public/",

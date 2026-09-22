@@ -7,6 +7,7 @@ import com.pppp.zhimesh.common.enums.WfIODataTypeEnum;
 import com.pppp.zhimesh.common.helper.LLMContext;
 import com.pppp.zhimesh.common.languagemodel.AbstractLLMService;
 import com.pppp.zhimesh.common.service.LLMCallRecordService;
+import com.pppp.zhimesh.common.service.UserDayCostService;
 import com.pppp.zhimesh.common.util.LLMTokenUtil;
 import com.pppp.zhimesh.common.util.SpringUtil;
 import com.pppp.zhimesh.common.util.UuidUtil;
@@ -94,6 +95,9 @@ public class WorkflowUtil {
                     }
                     //Save LLM call record
                     saveLLMCallRecord(wfState, node, modelPlatform, modelName, tokenUsage);
+                    //工作流内 LLM 消耗计入发起用户日成本（设计验收标准 4）
+                    //Charge the in-workflow LLM consumption to the initiating user's daily cost
+                    appendWorkflowLlmCost(wfState, llmService, tokenUsage);
                     NodeIOData output = NodeIOData.createByText(DEFAULT_OUTPUT_PARAM_NAME, "", responseTxt);
                     wfState.getNodeStateByNodeUuid(node.getUuid()).ifPresent(item -> {
                         item.getOutputs().add(output);
@@ -160,6 +164,9 @@ public class WorkflowUtil {
             nodeMetrics.setModelPlatform(modelPlatform);
             //Save LLM call record
             saveLLMCallRecord(wfState, null, modelPlatform, modelName, tokenUsage);
+            //工作流内 LLM 消耗计入发起用户日成本（设计验收标准 4）
+            //Charge the in-workflow LLM consumption to the initiating user's daily cost
+            appendWorkflowLlmCost(wfState, llmService, tokenUsage);
         }
         return NodeIOData.createByText(DEFAULT_OUTPUT_PARAM_NAME, "", response.aiMessage().text());
     }
@@ -192,6 +199,42 @@ public class WorkflowUtil {
         SpringUtil.getBean(LLMCallRecordService.class).saveRecord(record);
         } catch (Exception e) {
             log.error("Failed to save LLM call record for workflow node", e);
+        }
+    }
+
+    /**
+     * 工作流内 LLM 消耗计入发起用户日成本（设计验收标准 4）：工作流节点跑在 dummy
+     * sseUuid 下、token 不经外层聊天入账，这里按解析出的模型 isFree 属性直接入用户
+     * 账本；入账失败只记日志，不回滚已生成的节点输出
+     * <p>
+     * Charge LLM consumption inside a workflow to the initiating user's daily
+     * cost (design acceptance criterion 4): workflow nodes run under a dummy
+     * sseUuid and their tokens bypass the outer chat accounting, so the user
+     * ledger is appended here directly using the resolved model's isFree flag;
+     * a ledger failure only logs and never rolls back the generated node output
+     */
+    private static void appendWorkflowLlmCost(WfState wfState, AbstractLLMService llmService, TokenUsage tokenUsage) {
+        if (null == tokenUsage) {
+            return;
+        }
+        // totalTokenCount 个别提供商会缺省，回退 input+output，保证不漏账
+        // Some providers omit totalTokenCount; fall back to input+output so the
+        // charge is never missed
+        Integer totalTokens = tokenUsage.totalTokenCount();
+        int tokens = null != totalTokens ? totalTokens
+                : (null != tokenUsage.inputTokenCount() ? tokenUsage.inputTokenCount() : 0)
+                        + (null != tokenUsage.outputTokenCount() ? tokenUsage.outputTokenCount() : 0);
+        try {
+            // 与 LLM 记录同一模型解析来源：getServiceOrDefault 兜底时可能换成首个可用
+            // 免费模型，isFree 必须取解析后服务携带的 AiModel，而不是请求参数里的名字
+            // Same model-resolution source as the call record: getServiceOrDefault
+            // may fall back to the first available free model, so isFree must come
+            // from the resolved service's AiModel rather than the requested names
+            boolean isFree = null != llmService && null != llmService.getAiModel()
+                    && Boolean.TRUE.equals(llmService.getAiModel().getIsFree());
+            SpringUtil.getBean(UserDayCostService.class).appendCostToUser(wfState.getUser(), tokens, isFree);
+        } catch (Exception e) {
+            log.error("Failed to append workflow LLM cost, workflowUuid:{}", wfState.getUuid(), e);
         }
     }
 }

@@ -266,6 +266,34 @@ public class WorkflowService extends ServiceImpl<WorkflowMapper, Workflow> {
         return result;
     }
 
+    /**
+     * 查询用户可调用（可运行）的工作流：可见性口径与 user-web 工作流选择器一致——
+     * mine（user_id=当前用户）∪ public（is_public=true），且额外要求 is_enable=true
+     * （public 页本就要求启用；mine 侧再收窄到可直接运行的子集，绝不提权、绝不全库）。
+     * 按更新时间倒序、最多 limit 条，供 run_workflow 内置工具按请求构造可见清单。
+     * <p>
+     * Query the workflows the user may run: the visibility scope matches the
+     * user-web workflow selector — mine (user_id = current user) ∪ public
+     * (is_public = true) — additionally requiring is_enable = true (the public
+     * tab already requires it; the mine side is narrowed to the runnable
+     * subset). Never full-library, never privilege escalation. Ordered by
+     * update time desc with a limit, used to build the per-request visible
+     * catalog for the run_workflow builtin tool.
+     */
+    public List<Workflow> listRunnableForUser(User user, int limit) {
+        if (null == user || null == user.getId()) {
+            return new ArrayList<>();
+        }
+        return ChainWrappers.lambdaQueryChain(baseMapper)
+                .eq(Workflow::getIsEnable, true)
+                .and(query -> query.eq(Workflow::getUserId, user.getId())
+                        .or()
+                        .eq(Workflow::getIsPublic, true))
+                .orderByDesc(Workflow::getUpdateTime)
+                .last("limit " + Math.max(1, limit))
+                .list();
+    }
+
     public void softDelete(String uuid) {
         Workflow workflow = PrivilegeUtil.checkAndGetByUuid(uuid, this.query(), ErrorEnum.A_WF_NOT_FOUND);
         baseMapper.deleteById(workflow.getId());
