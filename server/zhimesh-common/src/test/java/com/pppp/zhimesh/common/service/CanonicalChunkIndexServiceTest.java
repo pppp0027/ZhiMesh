@@ -16,10 +16,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
@@ -138,6 +140,28 @@ class CanonicalChunkIndexServiceTest {
         order.verify(chunkMapper).delete(any());
         order.verify(chunkSetMapper).delete(any());
         order.verify(itemMapper).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    void deletesWholeKnowledgeBaseChunksBeforeSetsScopedByKbUuid() {
+        service.deleteByKbUuid("kb000000000000000000000000000001");
+
+        var order = inOrder(chunkMapper, chunkSetMapper);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<KnowledgeBaseChunk>> chunkWrapper =
+                ArgumentCaptor.forClass(Wrapper.class);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<KnowledgeBaseChunkSet>> setWrapper =
+                ArgumentCaptor.forClass(Wrapper.class);
+        order.verify(chunkMapper).delete(chunkWrapper.capture());
+        order.verify(chunkSetMapper).delete(setWrapper.capture());
+
+        // 复用作用域以条目为界，按 kb_uuid 过滤只会命中本库自己的快照
+        assertThat(chunkWrapper.getValue().getSqlSegment()).contains("kb_uuid");
+        assertThat(setWrapper.getValue().getSqlSegment()).contains("kb_uuid");
+        // 条目行由删库流程另行移除，这里不再回写条目指针
+        verify(itemMapper, never()).update(isNull(), any(Wrapper.class));
+        assertThrows(IllegalArgumentException.class, () -> service.deleteByKbUuid("  "));
     }
 
     private static KnowledgeBase knowledgeBase() {

@@ -55,6 +55,20 @@ class Bm25RepositorySqlTest {
                 "Orphan posting cleanup must not depend on a surviving document row");
     }
 
+    @Test
+    void knowledgeBasePostingCleanupFiltersByKbOwnershipThroughBuilds() {
+        String sql = Bm25Repository.DELETE_POSTINGS_FOR_KB_SQL
+                .replaceAll("\\s+", " ").toLowerCase();
+
+        assertContains(sql, "delete from adi_knowledge_base_bm25_posting p");
+        assertContains(sql, "using adi_knowledge_base_index_build ib");
+        assertContains(sql, "p.index_build_uuid = ib.uuid");
+        assertContains(sql, "ib.kb_uuid = :kbuuid");
+        assertContains(sql, "ib.index_type = 'fulltext'");
+        assertTrue(!sql.contains("adi_knowledge_base_bm25_document"),
+                "Orphan posting cleanup must not depend on a surviving document row");
+    }
+
     private static void assertContains(String sql, String expected) {
         assertTrue(sql.contains(expected), () -> "Expected SQL fragment: " + expected + "\nActual SQL: " + sql);
     }

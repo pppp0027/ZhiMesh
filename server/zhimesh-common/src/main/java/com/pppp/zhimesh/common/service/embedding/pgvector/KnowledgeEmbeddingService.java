@@ -54,6 +54,18 @@ public class KnowledgeEmbeddingService extends ServiceImpl<KnowledgeBaseEmbeddin
         return baseMapper.deleteByItemUuid(kbItemUuid, ZhiMeshPropertiesUtil.EMBEDDING_TABLE_SUFFIX);
     }
 
+    /**
+     * 删除{kbUuid}这个知识库的全部向量
+     * Delete every embedding of the whole knowledge base {kbUuid}.
+     *
+     * @param kbUuid 知识库uuid
+     * @return
+     */
+    @Override
+    public boolean deleteByKbUuid(String kbUuid) {
+        return baseMapper.deleteByKbUuid(kbUuid, ZhiMeshPropertiesUtil.EMBEDDING_TABLE_SUFFIX);
+    }
+
     @Override
     public Integer countByKbUuid(String kbUuid) {
         return baseMapper.countByKbUuid(kbUuid, ZhiMeshPropertiesUtil.EMBEDDING_TABLE_SUFFIX);

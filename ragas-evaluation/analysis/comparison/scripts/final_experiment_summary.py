@@ -1,3 +1,30 @@
+"""Build the final B0/E1-E4 (or custom) experiment comparison report.
+
+Running without arguments reproduces the built-in B0/E1-E4 report exactly.
+
+Custom experiment sets (server deployment example; each DIR must contain
+predictions.jsonl and scores.jsonl, relative to --evaluation-root unless
+absolute; typical pairs are N2->N3 for the BM25 increment, N3->N4 for the
+rerank increment and N1->N4 for the overall improvement; every pair delta is
+RIGHT - LEFT)::
+
+    python analysis/comparison/scripts/final_experiment_summary.py \
+        --experiment N1=experiments/current-system/n1-vector \
+        --experiment N2=experiments/current-system/n2-vector-graph \
+        --experiment N3=experiments/current-system/n3-three-route \
+        --experiment N4=experiments/current-system/n4-three-route-rerank \
+        --experiment N5=experiments/current-system/n5-vector-rerank \
+        --pair N2:N3 \
+        --pair N3:N4 \
+        --pair N1:N4 \
+        --output-dir analysis/comparison/results/current-system
+
+Passing any --experiment replaces the built-in experiment set entirely.
+Without --pair, a custom experiment set falls back to adjacent pairs in the
+given order. --pair names must be defined by --experiment (or, when only
+--pair is passed, by the built-in set).
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -60,6 +87,12 @@ EXPERIMENTS = [
         "scores": "experiments/after-optimization/results/e4-hybrid-rerank-final/scores.jsonl",
     },
 ]
+DEFAULT_PAIRS = [
+    ("B0", "E1"),
+    ("E1", "E3"),
+    ("E2", "E3"),
+    ("E3", "E4"),
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,7 +111,78 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--bootstrap-iterations", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20260728)
+    parser.add_argument(
+        "--experiment",
+        action="append",
+        metavar="NAME=DIR",
+        help=(
+            "custom experiment NAME=DIR; DIR holds predictions.jsonl and scores.jsonl "
+            "(relative to --evaluation-root unless absolute); repeatable. "
+            "Passing any --experiment replaces the built-in B0/E1-E4 experiment set."
+        ),
+    )
+    parser.add_argument(
+        "--pair",
+        action="append",
+        metavar="LEFT:RIGHT",
+        help=(
+            "paired comparison LEFT:RIGHT with delta = RIGHT - LEFT; repeatable; "
+            "names must be defined by --experiment or the built-in set. "
+            "Without --pair, a custom experiment set falls back to adjacent pairs "
+            "in the given order."
+        ),
+    )
     return parser.parse_args()
+
+
+def parse_experiment_specs(values: list[str], root: Path) -> list[dict[str, str]]:
+    specs: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        if "=" not in value:
+            raise SystemExit(f"Invalid --experiment {value!r}; expected NAME=DIR")
+        name, directory = value.split("=", 1)
+        name = name.strip()
+        if not name:
+            raise SystemExit(f"Invalid --experiment {value!r}; experiment name is empty")
+        if name in seen:
+            raise SystemExit(f"Duplicate --experiment name {name!r}")
+        seen.add(name)
+        directory_path = Path(directory)
+        if not directory_path.is_absolute():
+            directory_path = root / directory_path
+        specs.append(
+            {
+                "id": name,
+                "label": name,
+                "predictions": str(directory_path / "predictions.jsonl"),
+                "scores": str(directory_path / "scores.jsonl"),
+            }
+        )
+    return specs
+
+
+def parse_pairs(values: list[str], valid_ids: list[str]) -> list[tuple[str, str]]:
+    known = set(valid_ids)
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if ":" not in value:
+            raise SystemExit(f"Invalid --pair {value!r}; expected LEFT:RIGHT")
+        left, right = (part.strip() for part in value.split(":", 1))
+        for name in (left, right):
+            if name not in known:
+                raise SystemExit(
+                    f"--pair references unknown experiment {name!r} in {value!r}; "
+                    f"known experiments: {', '.join(valid_ids)}"
+                )
+        if left == right:
+            raise SystemExit(f"Invalid --pair {value!r}; LEFT and RIGHT must differ")
+        if (left, right) in seen:
+            raise SystemExit(f"Duplicate --pair {value!r}")
+        seen.add((left, right))
+        pairs.append((left, right))
+    return pairs
 
 
 def read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
@@ -461,6 +565,177 @@ def build_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+GROUP_COUNT_LABELS = {2: "两组", 3: "三组", 4: "四组", 5: "五组", 6: "六组", 7: "七组", 8: "八组"}
+
+
+def group_count_label(count: int) -> str:
+    return GROUP_COUNT_LABELS.get(count, f"{count} 组")
+
+
+def build_custom_markdown(report: dict[str, Any]) -> str:
+    by_id = {experiment["id"]: experiment for experiment in report["experiments"]}
+    count_label = group_count_label(len(report["experiments"]))
+    pair_reports = report["paired_comparisons"]
+
+    lines: list[str] = [
+        f"# RAG {count_label}实验最终汇总报告",
+        "",
+        "## 结论摘要",
+        "",
+    ]
+    scored = [
+        experiment
+        for experiment in report["experiments"]
+        if experiment["common"]["metrics"]["overall_score"]["mean"] is not None
+    ]
+    if scored:
+        best = max(
+            scored, key=lambda item: item["common"]["metrics"]["overall_score"]["mean"]
+        )
+        lines.append(
+            f"- {best['label']} 在共同 {report['common_sample_count']} 题上的总体综合分最高："
+            f"{fmt(best['common']['metrics']['overall_score']['mean'])}。"
+        )
+    for pair in pair_reports.values():
+        metrics = pair["metrics"]
+        lines.append(
+            f"- {by_id[pair['right']]['label']} 相对 {by_id[pair['left']]['label']}："
+            f"上下文精确率平均变化 "
+            f"{fmt(metrics['llm_context_precision_with_reference']['mean_delta'])}，"
+            f"总体综合分平均变化 {fmt(metrics['overall_score']['mean_delta'])}"
+            f"（N={pair['samples']}）。"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 数据完整性",
+            "",
+            "| 实验 | 回答数 | 完整评分 | 待补 | 无效行 | Chunk Tokens |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for experiment in report["experiments"]:
+        lines.append(
+            f"| {experiment['label']} | {experiment['prediction_count']} | "
+            f"{experiment['successful_score_count']} | {experiment['pending_count']} | "
+            f"{experiment['prediction_invalid_lines'] + experiment['score_invalid_lines']} | "
+            f"{experiment['config_snapshot'].get('chunk_max_tokens') or '—'} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 全部有效样本平均指标",
+            "",
+            "| 实验 | 上下文精确率 | 上下文召回率 | 事实忠实度 | 回答相关性 | 回答准确率 | 检索综合分 | 生成综合分 | 总体综合分 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for experiment in report["experiments"]:
+        metrics = experiment["overall"]["metrics"]
+        lines.append(
+            f"| {experiment['label']} | "
+            + " | ".join(fmt(metrics[name]["mean"]) for name in METRICS + ["retrieval_score", "generation_score", "overall_score"])
+            + " |"
+        )
+
+    lines.extend(
+        [
+            "",
+            f"## {count_label}共同样本配对结果（N={report['common_sample_count']}）",
+            "",
+            "| 实验 | 上下文精确率 | 上下文召回率 | 事实忠实度 | 回答相关性 | 回答准确率 | 总体综合分 |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for experiment in report["experiments"]:
+        metrics = experiment["common"]["metrics"]
+        names = METRICS + ["overall_score"]
+        lines.append(
+            f"| {experiment['label']} | " + " | ".join(fmt(metrics[name]["mean"]) for name in names) + " |"
+        )
+
+    for pair in pair_reports.values():
+        lines.extend(
+            [
+                "",
+                f"## {pair['left']} → {pair['right']} 配对变化",
+                "",
+                "| 指标 | 平均变化 | 95% CI | 胜/平/负 |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        for name, values in pair["metrics"].items():
+            ci = values["ci95"]
+            lines.append(
+                f"| {METRIC_LABELS[name]} | {fmt(values['mean_delta'])} | "
+                f"[{fmt(ci[0])}, {fmt(ci[1])}] | {values['wins']}/{values['ties']}/{values['losses']} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## 工程指标",
+            "",
+            "| 实验 | 总延迟 P50(ms) | 总延迟 P95(ms) | 检索延迟 P95(ms) | 输入 Token 均值 | 重排成功率 |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for experiment in report["experiments"]:
+        engineering = experiment["engineering"]
+        rerank_rate = engineering["rerank"]["success_rate"]
+        lines.append(
+            f"| {experiment['label']} | {fmt(engineering['total_ms']['p50'], 1)} | "
+            f"{fmt(engineering['total_ms']['p95'], 1)} | {fmt(engineering['retrieval_ms']['p95'], 1)} | "
+            f"{fmt(engineering['input_tokens']['mean'], 1)} | "
+            f"{fmt(rerank_rate) if rerank_rate is not None else '—'} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 综合分口径",
+            "",
+            "- `RetrievalScore = 2 × Precision × Recall / (Precision + Recall)`，逐题计算。",
+            "- `GenerationScore = (Faithfulness + AnswerRelevancy + AnswerAccuracy) / 3`。",
+            "- `OverallScore = 0.4 × RetrievalScore + 0.6 × GenerationScore`。",
+            "- 以上三项是本项目自定义派生指标，不是 RAGAS 官方指标；正式报告应同时保留五项原始分数。",
+            "- 主对比优先使用全部实验共同成功题目的配对结果，避免各组缺失题不同造成样本偏差。",
+            "",
+            "## 裁判平台一致性",
+            "",
+        ]
+    )
+    calibration = report.get("judge_calibration")
+    if calibration:
+        lines.append(
+            "- 发现历史裁判平台一致性校准报告（new-provider-20260728）；"
+            "该报告针对内置 B0/E1-E4 实验，与本次自定义实验集无直接对应关系，仅供参考。"
+        )
+    else:
+        lines.append("- 未发现裁判平台一致性校准报告；跨平台分数应谨慎比较。")
+    lines.extend(
+        [
+            "",
+            "## 完整性提醒",
+            "",
+        ]
+    )
+    incomplete = [experiment for experiment in report["experiments"] if experiment["pending_count"]]
+    if incomplete:
+        for experiment in incomplete:
+            lines.append(
+                f"- {experiment['label']} 仍有 {experiment['pending_count']} 题未取得完整指标："
+                + ", ".join(experiment["pending_ids"])
+                + "。"
+            )
+    else:
+        lines.append(f"- {count_label}均已取得完整评分。")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main() -> None:
     args = parse_args()
     root = args.evaluation_root.expanduser().resolve()
@@ -469,7 +744,21 @@ def main() -> None:
         output_dir = root / output_dir
     output_dir = output_dir.resolve()
 
-    experiments = [load_experiment(root, spec) for spec in EXPERIMENTS]
+    custom_mode = bool(args.experiment or args.pair)
+    experiment_specs = parse_experiment_specs(args.experiment, root) if args.experiment else EXPERIMENTS
+    experiment_ids = [spec["id"] for spec in experiment_specs]
+
+    if args.pair:
+        pairs = parse_pairs(args.pair, experiment_ids)
+    elif custom_mode:
+        pairs = [
+            (experiment_ids[index], experiment_ids[index + 1])
+            for index in range(len(experiment_ids) - 1)
+        ]
+    else:
+        pairs = DEFAULT_PAIRS
+
+    experiments = [load_experiment(root, spec) for spec in experiment_specs]
     common_ids = sorted(set.intersection(*(set(experiment["scores"]) for experiment in experiments)))
     calibration_path = root / "analysis/judge-calibration/results/runs/new-provider-20260728/comparison-report.json"
     judge_calibration = (
@@ -515,18 +804,14 @@ def main() -> None:
         "judge_calibration": judge_calibration,
         "experiments": serializable_experiments,
         "paired_comparisons": {
-            "B0_to_E1": paired_comparison(
-                by_id["B0"], by_id["E1"], common_ids, args.bootstrap_iterations, args.seed + 10000
-            ),
-            "E1_to_E3": paired_comparison(
-                by_id["E1"], by_id["E3"], common_ids, args.bootstrap_iterations, args.seed + 11000
-            ),
-            "E2_to_E3": paired_comparison(
-                by_id["E2"], by_id["E3"], common_ids, args.bootstrap_iterations, args.seed + 12000
-            ),
-            "E3_to_E4": paired_comparison(
-                by_id["E3"], by_id["E4"], common_ids, args.bootstrap_iterations, args.seed + 13000
-            ),
+            f"{left_id}_to_{right_id}": paired_comparison(
+                by_id[left_id],
+                by_id[right_id],
+                common_ids,
+                args.bootstrap_iterations,
+                args.seed + 10000 + 1000 * index,
+            )
+            for index, (left_id, right_id) in enumerate(pairs)
         },
     }
 
@@ -578,7 +863,10 @@ def main() -> None:
                 }
             )
 
-    markdown_path.write_text(build_markdown(report), encoding="utf-8")
+    markdown_path.write_text(
+        build_custom_markdown(report) if custom_mode else build_markdown(report),
+        encoding="utf-8",
+    )
     print(f"experiments={len(experiments)} common_samples={len(common_ids)}")
     for experiment in serializable_experiments:
         overall_score = experiment["common"]["metrics"]["overall_score"]["mean"]

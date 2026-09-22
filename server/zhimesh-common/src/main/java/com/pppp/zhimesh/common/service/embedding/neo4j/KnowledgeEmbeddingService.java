@@ -101,6 +101,12 @@ public class KnowledgeEmbeddingService implements IKnowledgeEmbeddingService {
     }
 
     @Override
+    public boolean deleteByKbUuid(String kbUuid) {
+        embeddingStore.removeAll(new IsEqualTo(ZhiMeshConstant.MetadataKey.KB_UUID, kbUuid));
+        return true;
+    }
+
+    @Override
     public Integer countByKbUuid(String kbUuid) {
         return ((ZhiMeshNeo4jEmbeddingStore) embeddingStore).countByMetadata(new IsEqualTo(ZhiMeshConstant.MetadataKey.KB_UUID, kbUuid));
     }

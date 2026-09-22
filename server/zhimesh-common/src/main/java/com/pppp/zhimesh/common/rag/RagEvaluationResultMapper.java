@@ -2,13 +2,19 @@ package com.pppp.zhimesh.common.rag;
 
 import com.pppp.zhimesh.common.dto.evaluation.RagEvaluationCandidateResp;
 import com.pppp.zhimesh.common.dto.evaluation.RagEvaluationRouteResp;
+import com.pppp.zhimesh.common.rag.intent.IntentDecision;
+import com.pppp.zhimesh.common.rag.intent.KnowledgeScopeDecision;
+import com.pppp.zhimesh.common.rag.intent.RetrievalPlan;
+import com.pppp.zhimesh.common.rag.intent.RetrievalRoute;
 import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.rag.content.Content;
 
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -74,6 +80,51 @@ public final class RagEvaluationResultMapper {
         output.put("durationMs", result == null ? 0L : result.durationMs());
         output.put("failureReason", result == null ? null : result.failureReason());
         return output;
+    }
+
+    /**
+     * Echoes the intent-routing decision for evaluation requests. Mirrors the
+     * production INFO log fields; a null plan (scope preflight skipped routing)
+     * keeps the decision keys null and an empty effective route list, matching
+     * the NO_RAG/no-routing outcome.
+     */
+    public static Map<String, Object> intent(RetrievalPlan plan,
+                                             KnowledgeScopeDecision scopeDecision,
+                                             Set<RetrievalRoute> availableRoutes,
+                                             boolean routingEnabled) {
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("routingEnabled", routingEnabled);
+        Map<String, Object> scopePreflight = new LinkedHashMap<>();
+        scopePreflight.put("status", scopeDecision == null || scopeDecision.status() == null
+                ? null : scopeDecision.status().name().toLowerCase(Locale.ROOT));
+        scopePreflight.put("score", scopeDecision == null ? null : scopeDecision.maxVectorScore());
+        scopePreflight.put("skip", scopeDecision != null && scopeDecision.skipKnowledgeBaseRouting());
+        scopePreflight.put("durationMs", scopeDecision == null ? 0L : scopeDecision.durationMs());
+        scopePreflight.put("reason", scopeDecision == null ? null : scopeDecision.reason());
+        output.put("scopePreflight", scopePreflight);
+        output.put("availableRoutes", routeNames(availableRoutes));
+        IntentDecision decision = plan == null ? null : plan.decision();
+        output.put("intent", decision == null ? null
+                : decision.intent().name().toLowerCase(Locale.ROOT));
+        output.put("recognizer", decision == null ? null : decision.recognizer());
+        output.put("confidence", decision == null ? null : decision.confidence());
+        output.put("margin", decision == null ? null : decision.margin());
+        output.put("proposedRoutes", plan == null || plan.proposed() == null
+                ? null : routeNames(plan.proposed().routes()));
+        output.put("effectiveRoutes", plan == null || plan.effective() == null
+                ? List.of() : routeNames(plan.effective().routes()));
+        output.put("fallback", plan == null ? null : plan.fallback());
+        output.put("reason", plan == null ? null : plan.reason());
+        output.put("recognitionReason", decision == null ? null : decision.reason());
+        return output;
+    }
+
+    private static List<String> routeNames(Set<RetrievalRoute> routes) {
+        if (routes == null || routes.isEmpty()) return List.of();
+        return routes.stream()
+                .sorted(Comparator.comparingInt(RetrievalRoute::ordinal))
+                .map(RetrievalRoute::toJson)
+                .toList();
     }
 
     public static List<String> documentIds(List<Content> contents) {

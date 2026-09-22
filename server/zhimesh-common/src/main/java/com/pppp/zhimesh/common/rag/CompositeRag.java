@@ -20,6 +20,7 @@ import com.pppp.zhimesh.common.rag.intent.RetrievalRoute;
 import com.pppp.zhimesh.common.rag.intent.RetrievalRouteKey;
 import com.pppp.zhimesh.common.rag.intent.RoutedRetriever;
 import com.pppp.zhimesh.common.languagemodel.AbstractLLMService;
+import com.pppp.zhimesh.common.util.LLMTokenUtil;
 import com.pppp.zhimesh.common.util.SpringUtil;
 import com.pppp.zhimesh.common.vo.*;
 import dev.langchain4j.data.message.ChatMessage;
@@ -40,6 +41,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.core.task.AsyncTaskExecutor;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -185,6 +187,12 @@ public class CompositeRag {
                 SpringUtil.getBean(ShortTermMemoryTurnCoordinator.class)
                         .acquire(memoryId, sseAskParam.getSseUuid());
         try {
+            // 重新生成复用同一 uuid（如知识库 QA 记录 uuid）：先清上次尝试的累计，否则
+            // calculateToken 读回时新旧累加，updateQaRecord 按双重数字计费
+            // Regeneration reuses the same uuid (e.g. the KB QA record uuid): clear the
+            // previous attempt's accumulation first, or calculateToken reads old + new
+            // together and updateQaRecord bills the doubled numbers
+            LLMTokenUtil.resetTokenUsage(SpringUtil.getBean(StringRedisTemplate.class), sseAskParam.getUuid());
             sseManager.registerEventStreamListener(sseAskParam);
             query(retrievers, sseAskParam, turnLease, (response, promptMeta, answerMeta) -> {
                 try {

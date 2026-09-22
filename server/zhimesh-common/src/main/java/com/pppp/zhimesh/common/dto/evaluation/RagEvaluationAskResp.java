@@ -25,6 +25,8 @@ public class RagEvaluationAskResp {
     private Map<String, Long> timingMs;
     private Map<String, Integer> usage;
     private Map<String, Object> configSnapshot;
+    /** 意图路由决策回显；仅 intentRouting 请求出现，其余请求为 null（序列化时省略）。 */
+    private Map<String, Object> intent;
     /** Admin evaluation only; omitted unless explicitly requested for offline router training. */
     private List<Float> queryEmbedding;
 }

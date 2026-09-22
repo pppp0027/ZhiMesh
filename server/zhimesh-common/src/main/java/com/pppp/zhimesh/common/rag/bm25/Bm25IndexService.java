@@ -141,6 +141,22 @@ public class Bm25IndexService {
         repository.deleteItemIndex(normalized);
     }
 
+    /**
+     * 删除整个知识库的 BM25 索引（文档、posting 与 FULLTEXT 构建账目行）
+     * Deletes the FULLTEXT footprint of a whole knowledge base in one
+     * PostgreSQL transaction. No per-item locking is attempted here: the
+     * knowledge base row is already gone, so any still-running asynchronous
+     * rebuild fails on its next item reload and the caller treats this
+     * cleanup as best effort anyway.
+     */
+    @Transactional
+    public void deleteByKbUuid(String kbUuid) {
+        if (StringUtils.isBlank(kbUuid)) {
+            throw new IllegalArgumentException("kbUuid must not be blank");
+        }
+        repository.deleteKnowledgeBaseIndex(kbUuid.trim());
+    }
+
     private List<KnowledgeBaseChunk> validateSnapshot(KnowledgeBaseItem item,
                                                        CanonicalChunkSnapshot snapshot) {
         if (item == null || StringUtils.isAnyBlank(item.getUuid(), item.getKbUuid())) {

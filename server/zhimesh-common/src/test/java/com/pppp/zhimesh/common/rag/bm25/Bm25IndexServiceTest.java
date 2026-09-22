@@ -177,6 +177,16 @@ class Bm25IndexServiceTest {
     }
 
     @Test
+    void deleteByKbUuidTrimsAndDelegatesWithoutItemLocking() {
+        service.deleteByKbUuid("  kb-a  ");
+
+        verify(repository).deleteKnowledgeBaseIndex("kb-a");
+        // 整库删除不做条目级行锁：库行已删，异步重建会在条目重载处自行失败
+        verify(repository, never()).lockItemForUpdate(anyString());
+        assertThrows(IllegalArgumentException.class, () -> service.deleteByKbUuid("  "));
+    }
+
+    @Test
     void readinessRequiresEveryRequestedKnowledgeBase() {
         when(readinessService.readyKnowledgeBases(Set.of("kb-a", "kb-b")))
                 .thenReturn(Set.of("kb-a", "kb-b"), Set.of("kb-a"));

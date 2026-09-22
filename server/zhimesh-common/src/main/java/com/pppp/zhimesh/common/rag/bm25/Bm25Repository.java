@@ -118,6 +118,14 @@ public class Bm25Repository {
                AND ib.index_type = 'FULLTEXT'
             """;
 
+    static final String DELETE_POSTINGS_FOR_KB_SQL = """
+            DELETE FROM adi_knowledge_base_bm25_posting p
+             USING adi_knowledge_base_index_build ib
+             WHERE p.index_build_uuid = ib.uuid
+               AND ib.kb_uuid = :kbUuid
+               AND ib.index_type = 'FULLTEXT'
+            """;
+
     private static final String INSERT_DOCUMENT_SQL = """
             INSERT INTO adi_knowledge_base_bm25_document
                 (chunk_uuid, index_build_uuid, analyzer_version, kb_uuid,
@@ -331,6 +339,26 @@ public class Bm25Repository {
                 UPDATE adi_knowledge_base_item
                    SET fulltext_chunk_set_uuid = ''
                  WHERE uuid = :kbItemUuid
+                """, params);
+    }
+
+    /**
+     * 删除整个知识库的 BM25 物理索引（posting、document、FULLTEXT 构建账目）
+     * Removes the whole knowledge base's BM25 footprint. Unlike the item-level
+     * path the owning items are being removed too, so the FULLTEXT build rows
+     * no longer serve any history purpose and are deleted instead of superseded.
+     */
+    public void deleteKnowledgeBaseIndex(String kbUuid) {
+        MapSqlParameterSource params = new MapSqlParameterSource("kbUuid", kbUuid);
+        namedJdbc.update(DELETE_POSTINGS_FOR_KB_SQL, params);
+        namedJdbc.update("""
+                DELETE FROM adi_knowledge_base_bm25_document
+                 WHERE kb_uuid = :kbUuid
+                """, params);
+        namedJdbc.update("""
+                DELETE FROM adi_knowledge_base_index_build
+                 WHERE kb_uuid = :kbUuid
+                   AND index_type = 'FULLTEXT'
                 """, params);
     }
 

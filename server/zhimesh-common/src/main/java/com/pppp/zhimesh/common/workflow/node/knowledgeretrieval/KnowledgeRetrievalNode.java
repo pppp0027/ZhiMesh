@@ -13,6 +13,7 @@ import com.pppp.zhimesh.common.rag.GraphRagContext;
 import com.pppp.zhimesh.common.rag.bm25.Bm25RagContext;
 import com.pppp.zhimesh.common.rag.bm25.Bm25ReadinessService;
 import com.pppp.zhimesh.common.rag.intent.RetrievalRoute;
+import com.pppp.zhimesh.common.service.KnowledgeBaseAccessService;
 import com.pppp.zhimesh.common.service.KnowledgeBaseService;
 import com.pppp.zhimesh.common.util.JsonUtil;
 import com.pppp.zhimesh.common.util.SpringUtil;
@@ -147,7 +148,8 @@ public class KnowledgeRetrievalNode extends AbstractWfNode {
 
     private KnowledgeBase requireAuthorizedKnowledgeBase(String kbUuid) {
         KnowledgeBase knowledgeBase = SpringUtil.getBean(KnowledgeBaseService.class).getOrThrow(kbUuid);
-        if (!canRead(knowledgeBase, wfState.getUser())) {
+        if (!canRead(knowledgeBase, wfState.getUser(),
+                SpringUtil.getBean(KnowledgeBaseAccessService.class))) {
             // Match the knowledge-base read API and do not disclose private or
             // system knowledge-base existence through a stored workflow.
             throw new BaseException(A_DATA_NOT_FOUND);
@@ -155,15 +157,17 @@ public class KnowledgeRetrievalNode extends AbstractWfNode {
         return knowledgeBase;
     }
 
-    static boolean canRead(KnowledgeBase knowledgeBase, User user) {
+    /**
+     * Delegates to the unified three-tier access rules so workflow retrieval
+     * accepts team knowledge bases of the runner's teams and company knowledge
+     * bases, alongside personal and public ones. System KBs remain excluded.
+     */
+    static boolean canRead(KnowledgeBase knowledgeBase, User user,
+                           KnowledgeBaseAccessService accessService) {
         if (knowledgeBase == null || Boolean.TRUE.equals(knowledgeBase.getIsSystem())) {
             return false;
         }
-        if (Boolean.TRUE.equals(knowledgeBase.getIsPublic())) {
-            return true;
-        }
-        return user != null && user.getId() != null
-                && user.getId().equals(knowledgeBase.getOwnerId());
+        return accessService.canRead(user, knowledgeBase);
     }
 
     static Set<RetrievalRoute> availableRoutes(Set<String> authorizedKbUuids,

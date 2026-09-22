@@ -122,6 +122,37 @@ public class CanonicalChunkIndexService {
                 .set(KnowledgeBaseItem::getFulltextChunkSetUuid, ""));
     }
 
+    /**
+     * 删除整个知识库的 canonical chunk 与 chunk set
+     * Removes every canonical chunk and chunk set owned by the knowledge base.
+     *
+     * <p>复用作用域结论（安全约束核销）：等价 chunk set 的唯一索引是
+     * {@code uk_kb_chunk_set_source_config (kb_item_uuid, source_content_hash,
+     * split_config_hash)}（见 016_add_canonical_chunk_schema.sql），且
+     * {@link #findEquivalent} 的查找同样以 kb_item_uuid 起头——复用从不跨条目，
+     * 而一个条目只归属一个知识库。因此按 kb_uuid 过滤只会删除本库自己的快照，
+     * 不可能命中他库在用快照，无需按 chunk 行归属做二次限定，也不会留下孤儿 set。</p>
+     *
+     * <p>Reuse-scope conclusion (safety constraint): equivalent chunk sets are
+     * keyed by {@code (kb_item_uuid, source_content_hash, split_config_hash)}
+     * and {@link #findEquivalent} scopes its lookup to one item, so a chunk set
+     * is never shared across knowledge bases. Filtering by kb_uuid therefore
+     * drops only this knowledge base's own snapshots; no surviving reference
+     * from another knowledge base can be orphaned or destroyed.</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteByKbUuid(String kbUuid) {
+        if (StringUtils.isBlank(kbUuid)) {
+            throw new IllegalArgumentException("kbUuid is required");
+        }
+        // The owning items are removed separately by the knowledge-base
+        // deletion flow, so there is no item-level pointer left to reset.
+        chunkMapper.delete(new LambdaQueryWrapper<KnowledgeBaseChunk>()
+                .eq(KnowledgeBaseChunk::getKbUuid, kbUuid));
+        chunkSetMapper.delete(new LambdaQueryWrapper<KnowledgeBaseChunkSet>()
+                .eq(KnowledgeBaseChunkSet::getKbUuid, kbUuid));
+    }
+
     private KnowledgeBaseItem lockItem(String itemUuid) {
         KnowledgeBaseItem locked = itemMapper.selectOne(new LambdaQueryWrapper<KnowledgeBaseItem>()
                 .eq(KnowledgeBaseItem::getUuid, itemUuid)

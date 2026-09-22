@@ -1,3 +1,37 @@
+"""Build dimension-1 blocking latency and dimension-3 cost/benefit metrics.
+
+Paired-difference (``<RIGHT>_minus_<LEFT>.csv``) semantics; every delta is
+right - left:
+
+- No arguments: built-in experiments E1/E2-OPT/E3-FINAL/E4-FINAL with the
+  built-in fixed pairs (E1->E2-OPT, E1->E3-FINAL, E3-FINAL->E4-FINAL,
+  E1->E4-FINAL).
+- ``--experiment NAME=DIR`` (repeatable, replaces the default four) without
+  ``--pair``: all experiment pairs are generated in the given order
+  (left = earlier, right = later). This is the closest generalisation of the
+  built-in fixed pairs: the fixed pairs are a subset of the all-pairs
+  combination, so every built-in style of comparison is preserved.
+- ``--pair LEFT:RIGHT`` (repeatable): exactly the requested pairs; LEFT/RIGHT
+  must be IDs given via ``--experiment`` (or, without ``--experiment``, the
+  built-in IDs).
+
+Server deployment example::
+
+    python analysis/quantification/scripts/quantification_offline.py \\
+        --experiment N1=experiments/current-system/n1-vector \\
+        --experiment N2=experiments/current-system/n2-vector-graph \\
+        --experiment N3=experiments/current-system/n3-three-route \\
+        --experiment N4=experiments/current-system/n4-three-route-rerank \\
+        --pair N2:N3 \\
+        --pair N3:N4 \\
+        --pair N1:N4 \\
+        --output-dir analysis/quantification/results/runs/current-system
+
+Per-sample rows include ``bm25_route_ms`` (the durationMs of the
+``route == "bm25"`` entry in ``routes[]``); predictions without a bm25 route
+leave the column empty.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -23,6 +57,12 @@ DEFAULT_EXPERIMENTS = [
     "E3-FINAL=experiments/after-optimization/results/e3-hybrid-final",
     "E4-FINAL=experiments/after-optimization/results/e4-hybrid-rerank-final",
 ]
+DEFAULT_PAIRS = [
+    ("E1", "E2-OPT"),
+    ("E1", "E3-FINAL"),
+    ("E3-FINAL", "E4-FINAL"),
+    ("E1", "E4-FINAL"),
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,7 +72,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--experiment",
         action="append",
+        metavar="NAME=DIR",
         help="ID=experiment_directory; repeatable. Defaults to E1 plus optimized E2-E4.",
+    )
+    parser.add_argument(
+        "--pair",
+        action="append",
+        metavar="LEFT:RIGHT",
+        help=(
+            "Paired difference LEFT:RIGHT written as <RIGHT>_minus_<LEFT>.csv "
+            "(delta = right - left); repeatable; names must match experiment IDs. "
+            "Without --pair, a custom experiment set generates all experiment pairs "
+            "in the given order; no arguments keeps the built-in fixed pairs."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -40,6 +92,29 @@ def parse_args() -> argparse.Namespace:
         help="Output directory relative to ragas-evaluation unless absolute",
     )
     return parser.parse_args()
+
+
+def parse_pairs(values: list[str], valid_ids: list[str]) -> list[tuple[str, str]]:
+    known = set(valid_ids)
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if ":" not in value:
+            raise SystemExit(f"Invalid --pair {value!r}; expected LEFT:RIGHT")
+        left, right = (part.strip() for part in value.split(":", 1))
+        for name in (left, right):
+            if name not in known:
+                raise SystemExit(
+                    f"--pair references unknown experiment {name!r} in {value!r}; "
+                    f"known experiments: {', '.join(valid_ids)}"
+                )
+        if left == right:
+            raise SystemExit(f"Invalid --pair {value!r}; LEFT and RIGHT must differ")
+        if (left, right) in seen:
+            raise SystemExit(f"Duplicate --pair {value!r}")
+        seen.add((left, right))
+        pairs.append((left, right))
+    return pairs
 
 
 def resolve(path: str | Path) -> Path:
@@ -148,6 +223,7 @@ def sample_row(
     rerank = prediction.get("rerank") or {}
     vector_ms = route_values(routes, "vector", "durationMs")
     graph_ms = route_values(routes, "graph", "durationMs")
+    bm25_ms = route_values(routes, "bm25", "durationMs")
     return {
         "id": str(prediction.get("id")),
         "experiment_id": experiment_id,
@@ -167,6 +243,7 @@ def sample_row(
         ),
         "vector_route_ms": vector_ms[0] if vector_ms else None,
         "graph_route_ms": graph_ms[0] if graph_ms else None,
+        "bm25_route_ms": bm25_ms[0] if bm25_ms else None,
         "raw_route_candidates": raw_route_candidates,
         "merged_candidates": merged_candidates,
         "duplicate_candidates": duplicate_candidates,
@@ -218,6 +295,7 @@ def build_summary(experiment_id: str, rows: list[dict[str, Any]], raw_count: int
         "network_client_overhead_ms",
         "vector_route_ms",
         "graph_route_ms",
+        "bm25_route_ms",
         "raw_route_candidates",
         "merged_candidates",
         "dedup_rate",
@@ -313,10 +391,14 @@ def main() -> None:
     summaries: list[dict[str, Any]] = []
     indexed: dict[str, dict[str, dict[str, Any]]] = {}
 
+    experiment_ids: list[str] = []
     for spec in specs:
         if "=" not in spec:
             raise SystemExit(f"Invalid --experiment {spec!r}; expected ID=directory")
         experiment_id, directory_value = spec.split("=", 1)
+        if experiment_id in experiment_ids:
+            raise SystemExit(f"Duplicate --experiment id {experiment_id!r}")
+        experiment_ids.append(experiment_id)
         directory = resolve(directory_value)
         prediction_rows = read_jsonl(directory / "predictions.jsonl")
         score_rows = read_jsonl(directory / "scores.jsonl")
@@ -346,12 +428,16 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    pairs = [
-        ("E1", "E2-OPT"),
-        ("E1", "E3-FINAL"),
-        ("E3-FINAL", "E4-FINAL"),
-        ("E1", "E4-FINAL"),
-    ]
+    if args.pair:
+        pairs = parse_pairs(args.pair, experiment_ids)
+    elif args.experiment:
+        pairs = [
+            (experiment_ids[left_index], experiment_ids[right_index])
+            for left_index in range(len(experiment_ids))
+            for right_index in range(left_index + 1, len(experiment_ids))
+        ]
+    else:
+        pairs = DEFAULT_PAIRS
     for left_id, right_id in pairs:
         if left_id in indexed and right_id in indexed:
             write_csv(

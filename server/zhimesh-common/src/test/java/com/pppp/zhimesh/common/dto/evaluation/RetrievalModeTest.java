@@ -60,4 +60,44 @@ class RetrievalModeTest {
                 () -> RetrievalRoute.fromJson("title-lookup"));
         assertThrows(IllegalArgumentException.class, () -> RetrievalRoute.fromJson(" "));
     }
+
+    @Test
+    void intentRoutingDefaultsToFalseWhenAbsent() {
+        // 旧 9 参构造器：intentRouting 委托传 null，旧行为不变
+        RagEvaluationAskReq request = new RagEvaluationAskReq("q1", "question", 1L,
+                0D, null, null, null, null, null);
+        assertNull(request.intentRouting());
+        assertFalse(request.effectiveIntentRouting());
+    }
+
+    @Test
+    void legacyConstructorWithoutRoutesKeepsIntentRoutingNull() {
+        RagEvaluationAskReq request = new RagEvaluationAskReq("q1", "question", 1L,
+                null, null, null, null, null);
+        assertNull(request.intentRouting());
+        assertFalse(request.effectiveIntentRouting());
+    }
+
+    @Test
+    void canonicalConstructorPassesIntentRoutingThrough() {
+        RagEvaluationAskReq request = new RagEvaluationAskReq("q1", "question", 1L,
+                0D, null, null, null, null, null, Boolean.TRUE);
+        assertEquals(Boolean.TRUE, request.intentRouting());
+        assertTrue(request.effectiveIntentRouting());
+
+        RagEvaluationAskReq explicitFalse = new RagEvaluationAskReq("q1", "question", 1L,
+                0D, null, null, null, null, null, Boolean.FALSE);
+        assertEquals(Boolean.FALSE, explicitFalse.intentRouting());
+        assertFalse(explicitFalse.effectiveIntentRouting());
+    }
+
+    @Test
+    void intentRoutingKeepsPureRouteDefaults() {
+        // DTO 纯数据语义：intentRouting=true 不改变路由缺省（仍回落 HYBRID 的 V+G），
+        // 与 retrievalMode/retrievalRoutes 的互斥裁决在服务层完成
+        RagEvaluationAskReq request = new RagEvaluationAskReq("q1", "question", 1L,
+                0D, null, null, null, null, null, Boolean.TRUE);
+        assertEquals(Set.of(RetrievalRoute.VECTOR, RetrievalRoute.GRAPH),
+                request.effectiveRetrievalRoutes());
+    }
 }

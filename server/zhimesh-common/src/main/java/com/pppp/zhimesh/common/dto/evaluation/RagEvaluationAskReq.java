@@ -20,15 +20,25 @@ public record RagEvaluationAskReq(
         Boolean useReranker,
         Boolean retrievalOnly,
         Boolean includeQueryEmbedding,
-        Set<RetrievalRoute> retrievalRoutes
+        Set<RetrievalRoute> retrievalRoutes,
+        Boolean intentRouting
 ) {
     /** Source-compatible constructor for existing Java callers and tests. */
     public RagEvaluationAskReq(
             String questionId, String question, Long answerModelId, Double temperature,
             RetrievalMode retrievalMode, Boolean useReranker, Boolean retrievalOnly,
+            Boolean includeQueryEmbedding, Set<RetrievalRoute> retrievalRoutes) {
+        this(questionId, question, answerModelId, temperature, retrievalMode, useReranker,
+                retrievalOnly, includeQueryEmbedding, retrievalRoutes, null);
+    }
+
+    /** Legacy constructor without explicit routes, kept for older callers. */
+    public RagEvaluationAskReq(
+            String questionId, String question, Long answerModelId, Double temperature,
+            RetrievalMode retrievalMode, Boolean useReranker, Boolean retrievalOnly,
             Boolean includeQueryEmbedding) {
         this(questionId, question, answerModelId, temperature, retrievalMode, useReranker,
-                retrievalOnly, includeQueryEmbedding, null);
+                retrievalOnly, includeQueryEmbedding, null, null);
     }
 
     public double effectiveTemperature() {
@@ -52,5 +62,9 @@ public record RagEvaluationAskReq(
 
     public boolean effectiveIncludeQueryEmbedding() {
         return Boolean.TRUE.equals(includeQueryEmbedding);
+    }
+
+    public boolean effectiveIntentRouting() {
+        return Boolean.TRUE.equals(intentRouting);
     }
 }
