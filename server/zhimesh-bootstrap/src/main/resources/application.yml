@@ -63,6 +63,20 @@ zhimesh:
   auth:
     # Keep email activation on outside a deliberately configured demonstration environment.
     demo-register-enabled: ${ZHIMESH_DEMO_REGISTER_ENABLED:false}
+  agent:
+    # Agentic 角色对话的工具循环运行时上限（ZhiMeshProperties.Agent）。
+    # max-tool-iterations: 单次请求内工具循环轮数上限，达到后强制一次无工具收尾轮
+    # tool-timeout-ms: 内置工具单次执行超时；超时按失败结果回给模型继续对话
+    # tool-result-max-chars: 内置工具结果注入模型前的截断长度
+    # <p>
+    # Tool-loop runtime caps for agentic character chat (ZhiMeshProperties.Agent).
+    # max-tool-iterations: rounds per request before one forced tool-less wrap-up round
+    # tool-timeout-ms: per-execution timeout for builtin tools; a timeout is fed back
+    #                  to the model as a failure result instead of breaking the chat
+    # tool-result-max-chars: truncation length before a builtin tool result re-enters the model
+    max-tool-iterations: ${ZHIMESH_AGENT_MAX_TOOL_ITERATIONS:8}
+    tool-timeout-ms: ${ZHIMESH_AGENT_TOOL_TIMEOUT_MS:60000}
+    tool-result-max-chars: ${ZHIMESH_AGENT_TOOL_RESULT_MAX_CHARS:4000}
   indexing:
     canonical-chunk-enabled: ${ZHIMESH_CANONICAL_CHUNK_ENABLED:true}
     # The three graph concurrency knobs must move together: effective extraction
@@ -78,6 +92,10 @@ zhimesh:
     graph-retry-max-backoff-ms: ${ZHIMESH_GRAPH_RETRY_MAX_BACKOFF_MS:10000}
     # A DOING graphical status older than this is treated as abandoned and recovered to FAIL.
     graph-doing-timeout-minutes: ${ZHIMESH_GRAPH_DOING_TIMEOUT_MINUTES:60}
+    # Same abandoned-DOING recovery for embedding and fulltext (BM25) statuses;
+    # DOING rows older than this are recovered to FAIL so re-indexing is possible.
+    embedding-doing-timeout-minutes: ${ZHIMESH_EMBEDDING_DOING_TIMEOUT_MINUTES:30}
+    fulltext-doing-timeout-minutes: ${ZHIMESH_FULLTEXT_DOING_TIMEOUT_MINUTES:30}
     embedding-concurrency: ${ZHIMESH_INDEXING_EMBEDDING_CONCURRENCY:2}
   openrouter-sync:
     enabled: ${ZHIMESH_OPENROUTER_SYNC_ENABLED:true}

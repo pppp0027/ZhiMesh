@@ -1,6 +1,8 @@
 package com.pppp.zhimesh.common.rag;
 
 import com.pppp.zhimesh.common.config.ZhiMeshProperties;
+import dev.langchain4j.exception.HttpException;
+import dev.langchain4j.exception.InternalServerException;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
@@ -91,6 +93,27 @@ class GraphExtractionRequestExecutorTest {
 
         assertEquals("ok", result);
         assertEquals(3, attempts.get());
+    }
+
+    @Test
+    void retriesGateway5xxLikeTimeouts() {
+        // Upstream relays answer 502 under load; ExceptionMapper turns it into
+        // InternalServerException wrapping the raw HttpException. One such
+        // reply must be retried instead of failing the whole document.
+        GraphExtractionRequestExecutor requestExecutor =
+                new GraphExtractionRequestExecutor(2, 3, 1, 2);
+        AtomicInteger attempts = new AtomicInteger();
+
+        String result = requestExecutor.execute("segment", "extract", () -> {
+            if (attempts.incrementAndGet() < 2) {
+                throw new InternalServerException(
+                        new HttpException(502, "error code: 502"));
+            }
+            return "ok";
+        });
+
+        assertEquals("ok", result);
+        assertEquals(2, attempts.get());
     }
 
     @Test

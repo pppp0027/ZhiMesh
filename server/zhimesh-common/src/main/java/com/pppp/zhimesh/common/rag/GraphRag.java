@@ -19,6 +19,7 @@ import dev.langchain4j.data.document.DocumentSplitter;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.store.embedding.filter.comparison.IsEqualTo;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +28,7 @@ import org.apache.commons.lang3.tuple.Triple;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -247,7 +249,14 @@ public class GraphRag {
         return ingestor;
     }
 
-    private Triple<TextSegment, String, String> extractSegment(
+    /**
+     * Quality self-healing loop: each round is one LLM request (extraction
+     * prompt first, repair prompt carrying the accumulated issues afterwards)
+     * followed by parsing and the deterministic quality gate. HTTP-level
+     * transient retries stay inside {@link GraphExtractionRequestExecutor},
+     * so the two retry layers never multiply.
+     */
+    Triple<TextSegment, String, String> extractSegment(
             GraphIngestParam graphIngestParam, User user, SegmentExtractionTask task) {
         TextSegment segment = task.segment();
         String segmentId = task.segmentId();
@@ -268,39 +277,78 @@ public class GraphRag {
             }
         }
 
-        log.info("Requesting LLM to extract entities and relations from text, segmentId:{}",
-                segmentId);
+        int qualityMaxAttempts = Math.max(1, SpringUtil.getBean(ZhiMeshProperties.class)
+                .getIndexing().getGraphExtractionQualityMaxAttempts());
         GraphExtractionRequestExecutor requestExecutor =
                 SpringUtil.getBean(GraphExtractionRequestExecutor.class);
-        ChatResponse aiMessageResponse = requestExecutor.execute(segmentId, "extract", () ->
-                graphIngestParam.getChatModel().chat(
-                        UserMessage.from(GraphExtractPrompt.buildJsonExtractionPrompt(segment.text()))));
-        String rawResponse = aiMessageResponse.aiMessage().text();
-        SpringUtil.getBean(UserDayCostService.class).appendCostToUser(user,
-                aiMessageResponse.tokenUsage().totalTokenCount(), graphIngestParam.isFreeToken());
+        String rawResponse = "";
+        Set<String> unresolvedIssues = new LinkedHashSet<>();
+        boolean resolved = false;
+        for (int attempt = 1; attempt <= qualityMaxAttempts; attempt++) {
+            String stage = attempt == 1 ? "extract" : "repair";
+            String prompt = attempt == 1
+                    ? GraphExtractPrompt.buildJsonExtractionPrompt(segment.text())
+                    : GraphExtractPrompt.buildJsonRepairPrompt(segment.text(), rawResponse,
+                            String.join("; ", unresolvedIssues));
+            log.info("Requesting LLM to extract entities and relations from text, "
+                            + "segmentId:{}, stage:{}, attempt:{}/{}",
+                    segmentId, stage, attempt, qualityMaxAttempts);
+            ChatResponse chatResponse = requestExecutor.execute(segmentId, stage, () ->
+                    graphIngestParam.getChatModel().chat(UserMessage.from(prompt)));
+            rawResponse = chatResponse.aiMessage().text();
+            recordCost(segmentId, user, chatResponse, graphIngestParam.isFreeToken());
 
-        List<String> qualityIssues = GraphExtractionResponse.qualityIssues(
-                rawResponse, segment.text());
-        if (!qualityIssues.isEmpty()) {
-            log.warn("Graph extraction requires controlled repair, segmentId:{}, issues:{}",
-                    segmentId, qualityIssues);
-            String responseToRepair = rawResponse;
-            ChatResponse repairResponse = requestExecutor.execute(segmentId, "repair", () ->
-                    graphIngestParam.getChatModel().chat(UserMessage.from(
-                            GraphExtractPrompt.buildJsonRepairPrompt(segment.text(), responseToRepair,
-                                    String.join("; ", qualityIssues)))));
-            rawResponse = repairResponse.aiMessage().text();
-            SpringUtil.getBean(UserDayCostService.class).appendCostToUser(user,
-                    repairResponse.tokenUsage().totalTokenCount(), graphIngestParam.isFreeToken());
+            List<String> issues = collectQualityIssues(rawResponse, segment.text());
+            if (issues.isEmpty()) {
+                resolved = true;
+                break;
+            }
+            log.warn("Graph extraction requires controlled repair, segmentId:{}, "
+                            + "attempt:{}/{}, issues:{}", segmentId, attempt, qualityMaxAttempts, issues);
+            unresolvedIssues.addAll(issues);
         }
-        // A repair remains inside the same task, so it never creates a third
-        // concurrent request when the per-document limit is two.
-        GraphExtractionResponse.assertQuality(rawResponse, segment.text());
+        if (!resolved) {
+            // Fail closed: a response that never converges within the attempt
+            // budget must fail the document instead of persisting an unsafe
+            // graph contribution.
+            throw new IllegalArgumentException("Graph extraction quality validation failed after "
+                    + qualityMaxAttempts + " attempts: " + String.join("; ", unresolvedIssues));
+        }
         response = GraphExtractionResponse.parseToLegacyFormat(rawResponse);
         return Triple.of(segment, segmentId, response);
     }
 
-    private record SegmentExtractionTask(TextSegment segment, String segmentId) {
+    /**
+     * Quality gate wrapper: an unparseable response is reported as just
+     * another issue so the next round can repair it with the parse error
+     * spelled out for the model.
+     */
+    private List<String> collectQualityIssues(String rawResponse, String inputText) {
+        try {
+            return GraphExtractionResponse.qualityIssues(rawResponse, inputText);
+        } catch (IllegalArgumentException exception) {
+            return List.of("response is not valid JSON: " + exception.getMessage());
+        }
+    }
+
+    /**
+     * Charges one extraction/repair round. A provider that omits usage must
+     * not fail the document, so a missing token usage records zero cost.
+     */
+    private void recordCost(String segmentId, User user, ChatResponse chatResponse,
+                            boolean freeToken) {
+        TokenUsage tokenUsage = chatResponse.tokenUsage();
+        if (tokenUsage == null || tokenUsage.totalTokenCount() == null) {
+            log.warn("Graph extraction response carries no token usage, recording zero cost, "
+                    + "segmentId:{}", segmentId);
+            SpringUtil.getBean(UserDayCostService.class).appendCostToUser(user, 0, freeToken);
+            return;
+        }
+        SpringUtil.getBean(UserDayCostService.class).appendCostToUser(user,
+                tokenUsage.totalTokenCount(), freeToken);
+    }
+
+    record SegmentExtractionTask(TextSegment segment, String segmentId) {
     }
 
     public GraphStoreContentRetriever createRetriever(RetrieverCreateParam param) {

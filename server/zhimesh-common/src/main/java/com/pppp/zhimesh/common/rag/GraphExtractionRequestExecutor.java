@@ -1,8 +1,7 @@
 package com.pppp.zhimesh.common.rag;
 
 import com.pppp.zhimesh.common.config.ZhiMeshProperties;
-import dev.langchain4j.exception.RateLimitException;
-import dev.langchain4j.exception.TimeoutException;
+import dev.langchain4j.exception.RetriableException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -81,9 +80,13 @@ public class GraphExtractionRequestExecutor {
     private boolean isRetriable(Throwable failure) {
         Throwable current = failure;
         while (current != null) {
-            if (current instanceof TimeoutException
-                    || current instanceof HttpTimeoutException
-                    || current instanceof RateLimitException) {
+            // RetriableException covers langchain4j's own transient classes:
+            // TimeoutException, RateLimitException and InternalServerException.
+            // The latter is how 5xx gateway replies (502/503 from upstream
+            // relays) surface, and one such reply must not fail the whole
+            // document — the exponential backoff below is exactly for them.
+            if (current instanceof RetriableException
+                    || current instanceof HttpTimeoutException) {
                 return true;
             }
             current = current.getCause();

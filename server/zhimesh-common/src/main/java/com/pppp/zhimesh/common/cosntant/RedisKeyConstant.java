@@ -121,6 +121,12 @@ public class RedisKeyConstant {
      */
     public static final String KB_STATISTIC_RECALCULATE_SIGNAL = "kb:statistic:recalculate:signal";
 
+    /**
+     * 图谱化失败后清理未成功的待重试标记
+     * 值:kbUuid:kbItemUuid
+     */
+    public static final String KB_GRAPH_CLEANUP_RETRY_SIGNAL = "kb:graph:cleanup:retry:signal";
+
     /** Knowledge-base UUIDs whose bounded route profiles should be rebuilt or rewarmed. */
     public static final String KB_ROUTE_PROFILE_REBUILD_SIGNAL = "kb:route-profile:rebuild:signal";
 

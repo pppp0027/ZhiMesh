@@ -78,6 +78,51 @@ class OpenRouterModelSyncServiceTest {
     }
 
     @Test
+    void upstreamPoolRateLimitOnlyFailsThatModelAndTheRunContinues() {
+        AiModel congested = existing("vendor/congested:free", true, true);
+        AiModel healthy = existing("vendor/healthy:free", true, true);
+        when(aiModelService.listByPlatform("OpenRouter")).thenReturn(List.of(congested, healthy));
+        OpenRouterCatalogModel congestedCatalog = catalog(congested.getName());
+        OpenRouterCatalogModel healthyCatalog = catalog(healthy.getName());
+        when(session.listEndpoints(congestedCatalog)).thenReturn(List.of(endpoint(100)));
+        when(session.listEndpoints(healthyCatalog)).thenReturn(List.of(endpoint(100)));
+        // The upstream shared free pool is busy for one model only: that 429
+        // must fail this probe, not abort the whole run.
+        when(session.probe(congestedCatalog)).thenReturn(probe("RATE_LIMITED", 429, true));
+        when(session.probe(healthyCatalog)).thenReturn(probe("SUCCESS", 200));
+
+        OpenRouterSyncPlan plan = service.buildPlan(platform, session, List.of(congestedCatalog, healthyCatalog));
+
+        assertThat(plan.isRateLimited()).isFalse();
+        assertThat(plan.getProbedCount()).isEqualTo(2);
+        Map<String, OpenRouterSyncDecision> decisions = decisionsByName(plan);
+        assertThat(decisions.get(congested.getName()).getAction()).isEqualTo("KEEP");
+        assertThat(decisions.get(healthy.getName()).getAction()).isEqualTo("UPDATE_ENABLE");
+        verify(session, times(2)).probe(any());
+    }
+
+    @Test
+    void upstreamPoolRateLimitDoesNotBlockDiscoveryOfNewModels() {
+        AiModel congested = existing("vendor/congested:free", true, true);
+        when(aiModelService.listByPlatform("OpenRouter")).thenReturn(List.of(congested));
+        OpenRouterCatalogModel congestedCatalog = catalog(congested.getName());
+        OpenRouterCatalogModel fresh = catalog("vendor/fresh:free");
+        when(session.listEndpoints(congestedCatalog)).thenReturn(List.of(endpoint(100)));
+        when(session.listEndpoints(fresh)).thenReturn(List.of(endpoint(100)));
+        when(session.probe(congestedCatalog)).thenReturn(probe("RATE_LIMITED", 429, true));
+        when(session.probe(fresh)).thenReturn(probe("SUCCESS", 200));
+
+        OpenRouterSyncPlan plan = service.buildPlan(platform, session, List.of(congestedCatalog, fresh));
+
+        // Discovery stays reachable: the run did not abort on the upstream
+        // 429, so the verified new free model is imported.
+        assertThat(plan.isRateLimited()).isFalse();
+        Map<String, OpenRouterSyncDecision> decisions = decisionsByName(plan);
+        assertThat(decisions.get(fresh.getId()).getAction()).isEqualTo("ADD_ENABLE");
+        assertThat(decisions.get(congested.getName()).getAction()).isEqualTo("KEEP");
+    }
+
+    @Test
     void doesNotTakeOwnershipOfPaidOpenRouterModels() {
         // Existing OpenRouter rows are validated too: a non-:free model is
         // automatically disabled unless it is explicitly protected.
@@ -289,6 +334,10 @@ class OpenRouterModelSyncServiceTest {
     }
 
     private OpenRouterProbeResult probe(String status, int httpStatus) {
+        return probe(status, httpStatus, false);
+    }
+
+    private OpenRouterProbeResult probe(String status, int httpStatus, boolean upstreamRateLimited) {
         return OpenRouterProbeResult.builder()
                 .status(status)
                 .httpStatus(httpStatus)
@@ -296,6 +345,7 @@ class OpenRouterModelSyncServiceTest {
                 .totalLatencyMs(200)
                 .errorCode(status)
                 .errorMessage(status)
+                .upstreamRateLimited(upstreamRateLimited)
                 .build();
     }
 

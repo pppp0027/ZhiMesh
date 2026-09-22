@@ -198,6 +198,12 @@ public class OpenRouterModelSyncService {
                 previousProbeStarted = waitForProbeWindow(previousProbeStarted);
                 OpenRouterProbeResult probe = session.probe(healthCatalog(model));
                 if (probe.isRateLimited()) {
+                    if (probe.isUpstreamRateLimited()) {
+                        // Shared free-pool congestion is per-model and says
+                        // nothing about the account or this model's health;
+                        // skip it and keep probing the rotation.
+                        continue;
+                    }
                     rateLimited = true;
                     markRateLimitCooldown();
                     break;
@@ -544,7 +550,9 @@ public class OpenRouterModelSyncService {
             previousProbeStarted = waitForProbeWindow(previousProbeStarted);
             OpenRouterProbeResult probe = probe(candidate, session, platform);
             probed++;
-            if (probe.isRateLimited()) {
+            // An account-level 429 aborts the run; upstream shared-pool
+            // congestion only fails this one probe and the run moves on.
+            if (probe.isRateLimited() && !probe.isUpstreamRateLimited()) {
                 rateLimited = true;
                 break;
             }
@@ -593,7 +601,9 @@ public class OpenRouterModelSyncService {
                     previousProbeStarted = waitForProbeWindow(previousProbeStarted);
                     OpenRouterProbeResult probe = probe(candidate, session, platform);
                     probed++;
-                    if (probe.isRateLimited()) {
+                    // Same distinction as above: upstream pool congestion on a
+                    // candidate fails that candidate without stopping discovery.
+                    if (probe.isRateLimited() && !probe.isUpstreamRateLimited()) {
                         rateLimited = true;
                         break;
                     }

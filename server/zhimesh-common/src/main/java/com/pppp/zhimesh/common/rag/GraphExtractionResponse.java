@@ -92,9 +92,9 @@ public final class GraphExtractionResponse {
 
     /**
      * Performs deterministic checks before any model output reaches the graph.
-     * The caller may make one controlled repair request and then call
-     * {@link #assertQuality(String, String)} to fail closed if the repair is
-     * still unsafe.
+     * The caller (GraphRag's self-healing loop) collects the issues, repairs
+     * with them spelled out for the model, and fails closed itself once its
+     * attempt budget is exhausted.
      */
     public static List<String> qualityIssues(String response, String inputText) {
         GraphExtractionPayload payload = parsePayload(response);
@@ -174,14 +174,6 @@ public final class GraphExtractionResponse {
             }
         }
         return List.copyOf(issues);
-    }
-
-    public static void assertQuality(String response, String inputText) {
-        List<String> issues = qualityIssues(response, inputText);
-        if (!issues.isEmpty()) {
-            throw new IllegalArgumentException("Graph extraction quality validation failed: "
-                    + String.join("; ", issues));
-        }
     }
 
     private static GraphExtractionPayload parsePayload(String response) {

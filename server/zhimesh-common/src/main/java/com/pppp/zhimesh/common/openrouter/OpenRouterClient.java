@@ -229,37 +229,42 @@ public class OpenRouterClient {
                                     "OpenRouter rejected the configured API key"));
                 }
                 if (response.statusCode() == 429 || probeBody.rateLimited) {
+                    boolean upstreamPool = StringUtils.startsWith(probeBody.limitSource, "upstream");
                     return result("RATE_LIMITED", response.statusCode(), probeBody.ttftMs, totalMs,
                             StringUtils.defaultIfBlank(probeBody.errorCode, "RATE_LIMITED"),
-                            StringUtils.defaultIfBlank(probeBody.errorMessage, "OpenRouter rate limit exceeded"));
+                            StringUtils.defaultIfBlank(probeBody.errorMessage, "OpenRouter rate limit exceeded"),
+                            upstreamPool);
                 }
                 if (response.statusCode() < 200 || response.statusCode() >= 300) {
                     return result("FAILED", response.statusCode(), probeBody.ttftMs, totalMs,
                             StringUtils.defaultIfBlank(probeBody.errorCode, "HTTP_" + response.statusCode()),
-                            StringUtils.defaultIfBlank(probeBody.errorMessage, "OpenRouter probe failed"));
+                            StringUtils.defaultIfBlank(probeBody.errorMessage, "OpenRouter probe failed"),
+                            false);
                 }
                 if (StringUtils.isNotBlank(probeBody.errorCode)) {
                     return result("FAILED", response.statusCode(), probeBody.ttftMs, totalMs,
-                            probeBody.errorCode, probeBody.errorMessage);
+                            probeBody.errorCode, probeBody.errorMessage, false);
                 }
                 if (!probeBody.sawOutput || probeBody.ttftMs == null) {
                     return result("FAILED", response.statusCode(), null, totalMs,
-                            "EMPTY_RESPONSE", "OpenRouter probe returned no content or reasoning delta");
+                            "EMPTY_RESPONSE", "OpenRouter probe returned no content or reasoning delta",
+                            false);
                 }
-                return result("SUCCESS", response.statusCode(), probeBody.ttftMs, totalMs, "", "");
+                return result("SUCCESS", response.statusCode(), probeBody.ttftMs, totalMs, "", "", false);
             } catch (CompletionException error) {
                 Throwable cause = error.getCause();
                 if (cause instanceof TimeoutException) {
                     return result("FAILED", 0, null, elapsedMillis(startedNanos),
-                            "TIMEOUT", "OpenRouter probe timed out");
+                            "TIMEOUT", "OpenRouter probe timed out", false);
                 }
                 return result("FAILED", 0, null, elapsedMillis(startedNanos),
-                        "NETWORK_ERROR", safeMessage(cause));
+                        "NETWORK_ERROR", safeMessage(cause), false);
             }
         }
 
         private OpenRouterProbeResult result(String status, int httpStatus, Integer ttftMs,
-                                             int totalMs, String code, String message) {
+                                             int totalMs, String code, String message,
+                                             boolean upstreamRateLimited) {
             return OpenRouterProbeResult.builder()
                     .status(status)
                     .httpStatus(httpStatus)
@@ -267,6 +272,7 @@ public class OpenRouterClient {
                     .totalLatencyMs(totalMs)
                     .errorCode(StringUtils.abbreviate(StringUtils.defaultString(code), 64))
                     .errorMessage(StringUtils.abbreviate(StringUtils.defaultString(message), 1000))
+                    .upstreamRateLimited(upstreamRateLimited)
                     .build();
         }
 
@@ -437,6 +443,7 @@ public class OpenRouterClient {
         private Integer ttftMs;
         private boolean sawOutput;
         private boolean rateLimited;
+        private String limitSource;
         private String errorCode;
         private String errorMessage;
 
@@ -467,6 +474,7 @@ public class OpenRouterClient {
                     errorMessage = StringUtils.abbreviate(error.path("message").asText("OpenRouter probe failed"), 1000);
                     rateLimited = "429".equals(errorCode)
                             || "rate_limit_exceeded".equals(error.path("metadata").path("error_type").asText());
+                    limitSource = error.path("metadata").path("limit_source").asText("");
                     return;
                 }
                 JsonNode choices = node.path("choices");
@@ -501,11 +509,11 @@ public class OpenRouterClient {
         }
 
         private ProbeBody finish() {
-            return new ProbeBody(ttftMs, sawOutput, rateLimited, errorCode, errorMessage);
+            return new ProbeBody(ttftMs, sawOutput, rateLimited, limitSource, errorCode, errorMessage);
         }
     }
 
-    private record ProbeBody(Integer ttftMs, boolean sawOutput, boolean rateLimited,
+    private record ProbeBody(Integer ttftMs, boolean sawOutput, boolean rateLimited, String limitSource,
                              String errorCode, String errorMessage) {
     }
 }

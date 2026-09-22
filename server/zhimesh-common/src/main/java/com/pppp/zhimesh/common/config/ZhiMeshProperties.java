@@ -58,6 +58,9 @@ public class ZhiMeshProperties {
 
     private Conversation conversation = new Conversation();
 
+    /** LLM agent tool-calling loop settings. */
+    private Agent agent = new Agent();
+
     /**
      * Authentication settings. Demo registration is intentionally opt-in so a
      * production deployment cannot accidentally bypass email verification.
@@ -113,6 +116,8 @@ public class ZhiMeshProperties {
         private long graphRetryInitialBackoffMs = 2000L;
         /** Upper bound for one graph request retry delay. */
         private long graphRetryMaxBackoffMs = 10000L;
+        /** Total quality-self-healing attempts per segment (first extraction + repairs). */
+        private int graphExtractionQualityMaxAttempts = 3;
         /**
          * A DOING graphical status older than this is considered abandoned
          * (crashed process, lost executor) and is recovered to FAIL so the
@@ -120,6 +125,20 @@ public class ZhiMeshProperties {
          * ingestion must not be failed while it is still writing.
          */
         private long graphDoingTimeoutMinutes = 60L;
+        /**
+         * Same abandoned-DOING recovery semantics as graphDoingTimeoutMinutes,
+         * applied to the embedding status. Tighter than the graph timeout
+         * because embedding ingestion has no LLM-extraction stage that could
+         * legitimately run for an hour.
+         * 与 graphDoingTimeoutMinutes 同款恢复语义，作用于向量化状态；无 LLM 抽取阶段故更短。
+         */
+        private long embeddingDoingTimeoutMinutes = 30L;
+        /**
+         * Same abandoned-DOING recovery semantics as graphDoingTimeoutMinutes,
+         * applied to the fulltext (BM25) status.
+         * 与 graphDoingTimeoutMinutes 同款恢复语义，作用于全文（BM25）状态。
+         */
+        private long fulltextDoingTimeoutMinutes = 30L;
         /** Concurrent document-level embedding jobs. */
         private int embeddingConcurrency = 2;
     }
@@ -417,5 +436,21 @@ public class ZhiMeshProperties {
         private Duration shortMemoryTurnLockWait = Duration.ofSeconds(2);
         /** Lease used by the renewable distributed turn lock. */
         private Duration shortMemoryTurnLockLease = Duration.ofSeconds(30);
+    }
+
+    /**
+     * LLM 工具调用循环配置。
+     * <p>
+     * LLM tool-calling loop settings. Guardrails (timeout/truncation) only apply
+     * to builtin tools; MCP tools keep their legacy behavior.
+     */
+    @Data
+    public static class Agent {
+        /** Maximum recursive tool-call rounds for one chat request. */
+        private int maxToolIterations = 8;
+        /** Maximum execution time for one builtin (non-MCP) tool call. */
+        private long toolTimeoutMs = 60000;
+        /** Maximum characters of a builtin tool result injected back into the model. */
+        private int toolResultMaxChars = 4000;
     }
 }

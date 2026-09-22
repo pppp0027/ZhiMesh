@@ -18,6 +18,7 @@ import com.pppp.zhimesh.common.enums.GraphicalStatusEnum;
 import com.pppp.zhimesh.common.exception.BaseException;
 import com.pppp.zhimesh.common.helper.LLMContext;
 import com.pppp.zhimesh.common.mapper.KnowledgeBaseItemMapper;
+import com.pppp.zhimesh.common.mapper.KnowledgeBaseMapper;
 import com.pppp.zhimesh.common.rag.EmbeddingRagContext;
 import com.pppp.zhimesh.common.rag.GraphRag;
 import com.pppp.zhimesh.common.rag.GraphRagContext;
@@ -49,6 +50,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.Semaphore;
@@ -58,6 +60,7 @@ import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.DOC_INDEX_TYPE_EM
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.DOC_INDEX_TYPE_FULLTEXT;
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.DOC_INDEX_TYPE_GRAPHICAL;
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.RetrieveContentFrom.KNOWLEDGE_BASE;
+import static com.pppp.zhimesh.common.cosntant.RedisKeyConstant.KB_GRAPH_CLEANUP_RETRY_SIGNAL;
 import static com.pppp.zhimesh.common.cosntant.RedisKeyConstant.KB_STATISTIC_RECALCULATE_SIGNAL;
 import static com.pppp.zhimesh.common.cosntant.RedisKeyConstant.USER_INDEXING;
 import static com.pppp.zhimesh.common.enums.ErrorEnum.*;
@@ -110,6 +113,14 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
     @Resource
     private KnowledgeRouteProfileCoordinator routeProfileCoordinator;
 
+    // Mapper + access resolver instead of KnowledgeBaseService, which depends on
+    // this service — injecting it here would create a dependency cycle.
+    @Resource
+    private KnowledgeBaseMapper knowledgeBaseMapper;
+
+    @Resource
+    private KnowledgeBaseAccessService knowledgeBaseAccessService;
+
     @Transactional
     public KnowledgeBaseItem saveOrUpdate(KbItemEditReq itemEditReq) {
         KnowledgeBaseItem previous = null;
@@ -148,6 +159,12 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                 item.setEmbeddingChunkSetUuid("");
                 item.setGraphicalChunkSetUuid("");
                 item.setFulltextChunkSetUuid("");
+                // Reset the embedding lifecycle exactly like the fulltext reset below,
+                // so the stale vectors are also dropped from serving state bookkeeping.
+                item.setEmbeddingStatus(EmbeddingStatusEnum.NONE);
+                item.setEmbeddingStatusChangeTime(LocalDateTime.now());
+                item.setEmbeddingStartedAt(null);
+                item.setEmbeddingCompletedAt(null);
                 item.setFulltextStatus(FulltextStatusEnum.NONE);
                 item.setFulltextStatusChangeTime(LocalDateTime.now());
                 item.setFulltextStartedAt(null);
@@ -158,6 +175,16 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                 // The old lexical index must stop serving immediately after source content changes.
                 // The next indexing job will publish a new canonical snapshot and FULLTEXT build.
                 bm25IndexService.deleteByItemUuid(previous.getUuid());
+                // 旧向量必须与 BM25 同步停止服务 / The old vectors must stop serving in
+                // the same window as BM25: otherwise the vector channel keeps returning
+                // the previous content between this edit and the next re-index while
+                // BM25 is already silent, leaving hybrid retrieval inconsistent.
+                iKnowledgeEmbeddingService.deleteByItemUuid(previous.getUuid());
+                // 图谱贡献不在编辑期清理 / Graph contributions are deliberately not
+                // cleaned on edit: re-indexing already starts from cleanupDocument(),
+                // which removes this item's document contribution before re-extraction,
+                // so an extra edit-time cleanup would only duplicate that work and
+                // race the graph ingest lock.
             }
         }
 
@@ -243,6 +270,9 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
 
     void submitIndexTask(User user, KnowledgeBase knowledgeBase, KnowledgeBaseItem item,
                          List<String> indexTypes, IndexBatchCompletion batch) {
+        // The indexing lock is keyed by the KB creator id (ownerId), not by the
+        // acting user: team members contributing to the same KB intentionally
+        // share one lock, so concurrent indexing on a shared KB serializes.
         String userIndexKey = MessageFormat.format(USER_INDEXING, knowledgeBase.getOwnerId());
         batch.taskScheduled();
         try {
@@ -267,6 +297,8 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
     @Async("indexingExecutor")
     public void asyncIndex(User user, KnowledgeBase knowledgeBase, KnowledgeBaseItem kbItem,
                            List<String> indexTypes, IndexBatchCompletion batch) {
+        // Same creator-keyed lock as submitIndexTask; decremented on completion
+        // so the guard covers the whole async lifetime of the job.
         String userIndexKey = MessageFormat.format(USER_INDEXING, knowledgeBase.getOwnerId());
         List<String> requestedIndexTypes = indexTypes == null ? List.of() : List.copyOf(indexTypes);
         try {
@@ -547,8 +579,8 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
         log.warn("BM25 index marked failed, kbItemUuid:{}, reason:{}", kbItem.getUuid(), message);
     }
 
-    private void indexingGraph(User user, KnowledgeBase knowledgeBase, KnowledgeBaseItem kbItem,
-                               Document document, CanonicalChunkSnapshot snapshot) {
+    void indexingGraph(User user, KnowledgeBase knowledgeBase, KnowledgeBaseItem kbItem,
+                       Document document, CanonicalChunkSnapshot snapshot) {
         boolean graphIngestLockAcquired = false;
         GraphRag graphRag = null;
         String graphIndexVersionUuid = UuidUtil.createShort();
@@ -625,6 +657,11 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                 graphRag.cleanupDocument(kbItem.getKbUuid(), kbItem.getUuid());
                 log.warn("Discarded stale graph completion, kbItemUuid:{}, chunkSetUuid:{}",
                         kbItem.getUuid(), snapshot.chunkSet().getUuid());
+            } else if (published) {
+                // A previous failed attempt may have queued this item for cleanup
+                // retry; this successful rebuild replaced that contribution, so the
+                // marker is no longer needed (removing an absent member is a no-op).
+                removeGraphCleanupRetryMarker(kbItem.getKbUuid(), kbItem.getUuid());
             }
         } catch (Exception e) {
             log.error("ingestForGraph error, kbUuid:{}, kbItemUuid:{}, title:{}",
@@ -636,6 +673,11 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
                 } catch (Exception cleanupException) {
                     log.error("cleanup failed graph ingestion, kbUuid:{}, kbItemUuid:{}, title:{}",
                             kbItem.getKbUuid(), kbItem.getUuid(), kbItem.getTitle(), cleanupException);
+                    // The half-written graph contribution must not linger forever:
+                    // queue it so the recovery job retries the cleanup. Redis being
+                    // unavailable only downgrades to a warn — the FAIL write-back
+                    // below still runs.
+                    queueGraphCleanupRetry(kbItem.getKbUuid(), kbItem.getUuid());
                 }
             }
             ChainWrappers.lambdaUpdateChain(baseMapper)
@@ -733,15 +775,215 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
 
     int failTimedOutGraphIndexing(LocalDateTime now) {
         long timeoutMinutes = Math.max(1L, adiProperties.getIndexing().getGraphDoingTimeoutMinutes());
-        LocalDateTime staleBefore = now.minusMinutes(timeoutMinutes);
+        int recovered = failGraphIndexingStartedBefore(now, now.minusMinutes(timeoutMinutes));
+        if (recovered > 0) {
+            log.warn("Recovered {} item(s) from abandoned graph indexing, timeoutMinutes:{}",
+                    recovered, timeoutMinutes);
+        }
+        return recovered;
+    }
+
+    /**
+     * Fails graphical statuses still DOING from before the given boundary — the
+     * startup recovery passes the moment the application became ready, so rows
+     * left DOING by the previous process flip to FAIL immediately instead of
+     * waiting out the configured timeout, while rows this process started after
+     * the boundary stay untouched. A live task's own DONE update still
+     * overwrites the recovered FAIL because completion is not guarded on the
+     * previous status.
+     */
+    public int failGraphIndexingStartedBefore(LocalDateTime staleBefore) {
+        return failGraphIndexingStartedBefore(LocalDateTime.now(), staleBefore);
+    }
+
+    int failGraphIndexingStartedBefore(LocalDateTime now, LocalDateTime staleBefore) {
         LambdaUpdateWrapper<KnowledgeBaseItem> wrapper = new LambdaUpdateWrapper<KnowledgeBaseItem>()
                 .eq(KnowledgeBaseItem::getGraphicalStatus, GraphicalStatusEnum.DOING)
                 .lt(KnowledgeBaseItem::getGraphicalStatusChangeTime, staleBefore)
                 .set(KnowledgeBaseItem::getGraphicalStatus, GraphicalStatusEnum.FAIL)
                 .set(KnowledgeBaseItem::getGraphicalStatusChangeTime, now);
+        return baseMapper.update(null, wrapper);
+    }
+
+    /** Retry-marker format: "kbUuid:kbItemUuid". */
+    static String graphCleanupRetryMember(String kbUuid, String kbItemUuid) {
+        return kbUuid + ":" + kbItemUuid;
+    }
+
+    /**
+     * Queues the Redis retry marker for a graph cleanup that failed after an
+     * indexing error, so the recovery job re-attempts it. Redis unavailability
+     * is downgraded to a warn — same availability level as the statistics
+     * signal — so it never blocks the indexing failure path.
+     */
+    private void queueGraphCleanupRetry(String kbUuid, String kbItemUuid) {
+        try {
+            stringRedisTemplate.opsForSet()
+                    .add(KB_GRAPH_CLEANUP_RETRY_SIGNAL, graphCleanupRetryMember(kbUuid, kbItemUuid));
+        } catch (RuntimeException exception) {
+            log.warn("Unable to queue graph cleanup retry, kbUuid:{}, kbItemUuid:{}",
+                    kbUuid, kbItemUuid, exception);
+        }
+    }
+
+    /**
+     * Removes one retry marker after the corresponding cleanup succeeded (or a
+     * successful rebuild superseded it); removing an absent member is a silent
+     * no-op, and a Redis failure only warns so marker bookkeeping never turns a
+     * successful run into an error.
+     */
+    private void removeGraphCleanupRetryMarker(String kbUuid, String kbItemUuid) {
+        removeGraphCleanupRetryMember(graphCleanupRetryMember(kbUuid, kbItemUuid));
+    }
+
+    private void removeGraphCleanupRetryMember(String member) {
+        try {
+            stringRedisTemplate.opsForSet().remove(KB_GRAPH_CLEANUP_RETRY_SIGNAL, member);
+        } catch (RuntimeException exception) {
+            log.warn("Unable to remove graph cleanup retry marker, member:{}", member, exception);
+        }
+    }
+
+    /**
+     * Retries the graph cleanups whose original attempt failed right after an
+     * indexing error: the failure path queues "kbUuid:kbItemUuid" members and
+     * this consumer drains them. A marker is acted upon only while the item is
+     * still in FAIL — a marker surviving next to a DONE contribution (Redis
+     * swallowed the removal) or a DOING rebuild must never delete live graph
+     * data. Each member is handled independently — a malformed member is
+     * dropped with a warn, a failing cleanup keeps its member for the next
+     * tick without blocking the others, and a member is removed only after its
+     * cleanup succeeds. Never throws, so the scheduler tick always survives
+     * this pass.
+     */
+    public void retryPendingGraphCleanups() {
+        Set<String> members;
+        try {
+            members = stringRedisTemplate.opsForSet().members(KB_GRAPH_CLEANUP_RETRY_SIGNAL);
+        } catch (RuntimeException exception) {
+            log.warn("Unable to read pending graph cleanup markers", exception);
+            return;
+        }
+        if (members == null || members.isEmpty()) {
+            return;
+        }
+        for (String member : members) {
+            String[] parts = member.split(":", 2);
+            if (parts.length != 2 || StringUtils.isAnyBlank(parts[0], parts[1])) {
+                // An unparseable member can never succeed; drop it instead of
+                // re-reading the poison value on every tick.
+                removeGraphCleanupRetryMember(member);
+                log.warn("Dropped malformed graph cleanup retry marker, member:{}", member);
+                continue;
+            }
+            try {
+                GraphRag graphRag = knowledgeBaseGraphRag();
+                if (null == graphRag) {
+                    log.warn("Knowledge-base GraphRag is not available, graph cleanup retry kept, member:{}", member);
+                    continue;
+                }
+                if (!shouldActOnGraphCleanupMarker(parts[1], member)) {
+                    continue;
+                }
+                graphRag.cleanupDocument(parts[0], parts[1]);
+                removeGraphCleanupRetryMember(member);
+            } catch (Exception exception) {
+                log.error("Graph cleanup retry failed, marker kept for the next tick, member:{}",
+                        member, exception);
+            }
+        }
+    }
+
+    /**
+     * Guards a cleanup marker against the item's current graphical status: a
+     * marker can outlive its failure when Redis swallows the removal on the
+     * DONE path, or when the user has already re-indexed the item. Only a FAIL
+     * row still owns a failed contribution worth cleaning — DOING defers to
+     * the rebuild (kept for a later tick), DONE/NONE drop the stale marker
+     * without touching the graph, and a deleted row still cleans because
+     * deletion never removes markers and its own cleanup is best-effort too.
+     */
+    private boolean shouldActOnGraphCleanupMarker(String kbItemUuid, String member) {
+        KnowledgeBaseItem item = lambdaQuery()
+                .eq(KnowledgeBaseItem::getUuid, kbItemUuid)
+                .one();
+        if (item == null) {
+            return true;
+        }
+        GraphicalStatusEnum status = item.getGraphicalStatus();
+        if (GraphicalStatusEnum.FAIL == status) {
+            return true;
+        }
+        if (GraphicalStatusEnum.DOING == status) {
+            log.info("Graph cleanup retry deferred, item is being re-indexed, kbItemUuid:{}", kbItemUuid);
+            return false;
+        }
+        // DONE holds a live contribution and NONE (or a null status, which the
+        // wipe logic treats as NONE) was never graphed or was already wiped:
+        // nothing of the failed attempt remains, so drop the stale marker.
+        removeGraphCleanupRetryMember(member);
+        log.warn("Dropped stale graph cleanup retry marker, item is not in FAIL, kbItemUuid:{}, status:{}",
+                kbItemUuid, status);
+        return false;
+    }
+
+    /**
+     * 恢复崩溃或重启后卡在 DOING 的向量化状态（镜像图谱版恢复语义）。
+     * Recovers embedding statuses stuck in DOING after a crash or restart,
+     * mirroring {@link #failTimedOutGraphIndexing()}.
+     * Only statuses whose last change is older than the configured timeout are
+     * failed, so a live long-running ingestion is left alone; its own DONE
+     * update then overwrites the recovered FAIL because completion is not
+     * guarded on the previous status. Recovering to FAIL (not NONE) keeps the
+     * failure visible and lets the user retry indexing, which the DOING guard
+     * in {@link #asyncIndex} would otherwise keep blocking forever.
+     */
+    public int failTimedOutEmbeddingIndexing() {
+        return failTimedOutEmbeddingIndexing(LocalDateTime.now());
+    }
+
+    int failTimedOutEmbeddingIndexing(LocalDateTime now) {
+        long timeoutMinutes = Math.max(1L, adiProperties.getIndexing().getEmbeddingDoingTimeoutMinutes());
+        LocalDateTime staleBefore = now.minusMinutes(timeoutMinutes);
+        LambdaUpdateWrapper<KnowledgeBaseItem> wrapper = new LambdaUpdateWrapper<KnowledgeBaseItem>()
+                .eq(KnowledgeBaseItem::getEmbeddingStatus, EmbeddingStatusEnum.DOING)
+                .lt(KnowledgeBaseItem::getEmbeddingStatusChangeTime, staleBefore)
+                .set(KnowledgeBaseItem::getEmbeddingStatus, EmbeddingStatusEnum.FAIL)
+                .set(KnowledgeBaseItem::getEmbeddingStatusChangeTime, now);
         int recovered = baseMapper.update(null, wrapper);
         if (recovered > 0) {
-            log.warn("Recovered {} item(s) from abandoned graph indexing, timeoutMinutes:{}",
+            log.warn("Recovered {} item(s) from abandoned embedding indexing, timeoutMinutes:{}",
+                    recovered, timeoutMinutes);
+        }
+        return recovered;
+    }
+
+    /**
+     * 恢复崩溃或重启后卡在 DOING 的全文（BM25）状态（镜像图谱版恢复语义）。
+     * Recovers fulltext (BM25) statuses stuck in DOING after a crash or restart,
+     * mirroring {@link #failTimedOutGraphIndexing()}.
+     * Only statuses whose last change is older than the configured timeout are
+     * failed, so a live long-running ingestion is left alone; its own DONE
+     * update then overwrites the recovered FAIL because completion is not
+     * guarded on the previous status. Recovering to FAIL (not NONE) keeps the
+     * failure visible and lets the user retry indexing, which the DOING guard
+     * in {@link #asyncIndex} would otherwise keep blocking forever.
+     */
+    public int failTimedOutFulltextIndexing() {
+        return failTimedOutFulltextIndexing(LocalDateTime.now());
+    }
+
+    int failTimedOutFulltextIndexing(LocalDateTime now) {
+        long timeoutMinutes = Math.max(1L, adiProperties.getIndexing().getFulltextDoingTimeoutMinutes());
+        LocalDateTime staleBefore = now.minusMinutes(timeoutMinutes);
+        LambdaUpdateWrapper<KnowledgeBaseItem> wrapper = new LambdaUpdateWrapper<KnowledgeBaseItem>()
+                .eq(KnowledgeBaseItem::getFulltextStatus, FulltextStatusEnum.DOING)
+                .lt(KnowledgeBaseItem::getFulltextStatusChangeTime, staleBefore)
+                .set(KnowledgeBaseItem::getFulltextStatus, FulltextStatusEnum.FAIL)
+                .set(KnowledgeBaseItem::getFulltextStatusChangeTime, now);
+        int recovered = baseMapper.update(null, wrapper);
+        if (recovered > 0) {
+            log.warn("Recovered {} item(s) from abandoned fulltext indexing, timeoutMinutes:{}",
                     recovered, timeoutMinutes);
         }
         return recovered;
@@ -788,9 +1030,11 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
     }
 
     /**
-     * Write-privilege probe: returns whether the owner or an admin may write,
+     * Write-privilege probe: returns whether the current user may write,
      * without throwing. Used by batch flows (e.g. indexing) that skip items the
      * current user is not allowed to touch instead of aborting the whole batch.
+     * Authorization follows the unified three-tier rules (personal owner, team
+     * members with WRITE+, admin); missing items count as not allowed.
      */
     public boolean hasWritePrivilege(String uuid) {
         if (StringUtils.isBlank(uuid)) {
@@ -803,12 +1047,13 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
         if (Boolean.TRUE.equals(user.getIsAdmin())) {
             return true;
         }
-        return baseMapper.checkWritePrivilege(uuid, user.getId()) > 0;
+        KnowledgeBase kb = loadOwningKbByItemUuid(uuid);
+        return kb != null && knowledgeBaseAccessService.canWrite(user, kb);
     }
 
     /**
-     * Write-privilege check keyed by knowledge-base uuid: allows the owner of the
-     * knowledge base or an admin. Throws
+     * Write-privilege check keyed by knowledge-base uuid: allows whoever holds
+     * the unified three-tier WRITE privilege on the knowledge base. Throws
      * {@link com.pppp.zhimesh.common.enums.ErrorEnum#A_USER_NOT_AUTH} on denial.
      * Used when creating a new item, where no item uuid exists yet.
      */
@@ -820,7 +1065,7 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
 
     /**
      * Write-privilege probe keyed by knowledge-base uuid: returns whether the
-     * owner of the knowledge base or an admin may write, without throwing.
+     * current user holds the unified WRITE privilege, without throwing.
      */
     public boolean hasWritePrivilegeByKb(String kbUuid) {
         if (StringUtils.isBlank(kbUuid)) {
@@ -833,12 +1078,15 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
         if (Boolean.TRUE.equals(user.getIsAdmin())) {
             return true;
         }
-        return baseMapper.checkWritePrivilegeByKb(kbUuid, user.getId()) > 0;
+        KnowledgeBase kb = ChainWrappers.lambdaQueryChain(knowledgeBaseMapper)
+                .eq(KnowledgeBase::getUuid, kbUuid)
+                .one();
+        return kb != null && knowledgeBaseAccessService.canWrite(user, kb);
     }
 
     /**
-     * Write-privilege check keyed by item id: allows the owner of the item's
-     * knowledge base or an admin. Throws
+     * Write-privilege check keyed by item id: allows whoever holds the unified
+     * WRITE privilege on the item's knowledge base. Throws
      * {@link com.pppp.zhimesh.common.enums.ErrorEnum#A_USER_NOT_AUTH} on denial.
      * Used when updating an item, where the real target is resolved by id rather
      * than the client-controlled uuid.
@@ -850,8 +1098,9 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
     }
 
     /**
-     * Write-privilege probe keyed by item id: returns whether the owner of the
-     * item's knowledge base or an admin may write, without throwing.
+     * Write-privilege probe keyed by item id: returns whether the current user
+     * holds the unified WRITE privilege on the item's knowledge base, without
+     * throwing.
      */
     public boolean hasWritePrivilegeById(Long id) {
         if (null == id || id < 1) {
@@ -864,13 +1113,16 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
         if (Boolean.TRUE.equals(user.getIsAdmin())) {
             return true;
         }
-        return baseMapper.checkWritePrivilegeById(id, user.getId()) > 0;
+        KnowledgeBaseItem item = baseMapper.selectById(id);
+        KnowledgeBase kb = item == null ? null : knowledgeBaseMapper.selectById(item.getKbId());
+        return kb != null && knowledgeBaseAccessService.canWrite(user, kb);
     }
 
     /**
-     * Read-privilege check: allows the owner, an admin, or anyone when the
-     * owning knowledge base is public. Used by reads of an item and its derived
-     * content (embeddings, graph). Denials are reported as
+     * Read-privilege check: allows whoever holds the unified READ privilege on
+     * the owning knowledge base (owner/team members for non-private team KBs,
+     * everyone for public or company KBs). Used by reads of an item and its
+     * derived content (embeddings, graph). Denials are reported as
      * {@link com.pppp.zhimesh.common.enums.ErrorEnum#A_DATA_NOT_FOUND} to avoid
      * leaking the existence of other users' private knowledge bases.
      */
@@ -885,8 +1137,20 @@ public class KnowledgeBaseItemService extends ServiceImpl<KnowledgeBaseItemMappe
         if (Boolean.TRUE.equals(user.getIsAdmin())) {
             return;
         }
-        if (baseMapper.checkReadPrivilege(uuid, user.getId()) == 0) {
+        KnowledgeBase kb = loadOwningKbByItemUuid(uuid);
+        if (kb == null || !knowledgeBaseAccessService.canRead(user, kb)) {
             throw new BaseException(A_DATA_NOT_FOUND);
         }
+    }
+
+    /**
+     * Resolve the knowledge base that owns the item, or null when either the
+     * item or its knowledge base no longer exists.
+     */
+    private KnowledgeBase loadOwningKbByItemUuid(String itemUuid) {
+        KnowledgeBaseItem item = lambdaQuery()
+                .eq(KnowledgeBaseItem::getUuid, itemUuid)
+                .one();
+        return item == null ? null : knowledgeBaseMapper.selectById(item.getKbId());
     }
 }
