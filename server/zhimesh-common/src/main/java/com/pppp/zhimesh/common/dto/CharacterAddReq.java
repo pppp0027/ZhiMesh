@@ -36,4 +36,6 @@ public class CharacterAddReq {
     private Boolean isEnableWebSearch;
 
     private Boolean isAgentic;
+
+    private String toolPolicy;
 }

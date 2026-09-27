@@ -331,6 +331,18 @@ public class GraphStoreIngestor {
                 "source", sourceVertex, relationship, segmentUuid, kbUuid, kbItemUuid);
         GraphVertex persistedTarget = requirePersistedRelationshipEndpoint(
                 "target", targetVertex, relationship, segmentUuid, kbUuid, kbItemUuid);
+        if (persistedSource.getId().equals(persistedTarget.getId())) {
+            // Identity merging can collapse a relationship's two differently-named
+            // endpoints onto one vertex (e.g. an archive entity absorbing the
+            // company it documents via alias overlap). A self-loop edge carries no
+            // retrievable knowledge, so it is dropped instead of stored.
+            log.debug("Skipping self-loop graph relationship after identity resolution, segmentId:{}, "
+                            + "sourceName:{}, targetName:{}, vertexId:{}, relationType:{}, "
+                            + "kbUuid:{}, kbItemUuid:{}",
+                    segmentUuid, relationship.source(), relationship.target(),
+                    persistedSource.getId(), relationship.relationType(), kbUuid, kbItemUuid);
+            return;
+        }
         Triple<GraphVertex, GraphEdge, GraphVertex> stored = graphStore.getEdgeByVertexIds(
                 persistedSource.getId(), persistedTarget.getId(),
                 relationship.relationType(), relationship.polarity());

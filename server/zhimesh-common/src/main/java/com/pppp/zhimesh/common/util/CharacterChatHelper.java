@@ -7,6 +7,7 @@ import com.pppp.zhimesh.common.entity.Character;
 import com.pppp.zhimesh.common.entity.ModelPlatform;
 import com.pppp.zhimesh.common.entity.User;
 import com.pppp.zhimesh.common.enums.MemoryType;
+import com.pppp.zhimesh.common.helper.SseManager;
 import com.pppp.zhimesh.common.languagemodel.AbstractLLMService;
 import com.pppp.zhimesh.common.rag.ZhiMeshEmbeddingStoreContentRetriever;
 import com.pppp.zhimesh.common.rag.BgeReranker;
@@ -24,11 +25,11 @@ import com.pppp.zhimesh.common.rag.intent.MemoryRetrievalPolicy;
 import com.pppp.zhimesh.common.rag.intent.RetrievalPlan;
 import com.pppp.zhimesh.common.rag.intent.RetrievalRoute;
 import com.pppp.zhimesh.common.service.AiModelService;
+import com.pppp.zhimesh.common.service.CharacterService;
 import com.pppp.zhimesh.common.service.ModelPlatformService;
 import com.pppp.zhimesh.common.service.UserMcpService;
 import com.pppp.zhimesh.common.config.ZhiMeshProperties;
 import com.pppp.zhimesh.common.util.SpringUtil;
-import com.pppp.zhimesh.common.util.ZhiMeshStringUtil;
 import com.pppp.zhimesh.common.vo.ChatModelBuilderProperties;
 import com.pppp.zhimesh.common.vo.ChatModelRequest;
 import com.pppp.zhimesh.common.vo.RetrieverCreateParam;
@@ -51,6 +52,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -120,6 +122,27 @@ public class CharacterChatHelper {
     public static List<RetrieverWrapper> retrieve(Long characterId, List<KbInfoResp> filteredKb,
                                                   AbstractLLMService llmService, EmbeddingModel embeddingModel,
                                                   String queryText, String memoryId, boolean modelAuthoredQuery) {
+        return retrieve(characterId, filteredKb, llmService, embeddingModel, queryText, memoryId,
+                modelAuthoredQuery, null);
+    }
+
+    /**
+     * 7 参重载的完整入口：SSE 聊天路径传入 knowledgeSearchingSseUuid，使"正在检索
+     * 知识库"前端状态只在 RAG 门控（NO_RAG 短路/范围门控/意图路由）真正放行知识库
+     * 检索时、且检索即将执行前发送；Agentic 工具路径传 null（工具调用已有独立的
+     * 前端状态，避免状态互相覆盖）。
+     * <p>
+     * Full entry point of the 7-arg overload: SSE chat callers pass
+     * knowledgeSearchingSseUuid so the "searching knowledge" frontend state is
+     * emitted only when the RAG gates (NO_RAG short-circuit / scope preflight /
+     * intent routing) actually admit knowledge-base retrieval, right before it
+     * executes; the agentic tool path passes null (tool calls already have
+     * their own frontend state, which must not be overwritten).
+     */
+    public static List<RetrieverWrapper> retrieve(Long characterId, List<KbInfoResp> filteredKb,
+                                                  AbstractLLMService llmService, EmbeddingModel embeddingModel,
+                                                  String queryText, String memoryId, boolean modelAuthoredQuery,
+                                                  String knowledgeSearchingSseUuid) {
         MemoryRetrievalPolicy memoryPolicy = SpringUtil.getBean(MemoryRetrievalPolicy.class);
         if (shouldSkipAllExternalSources(queryText, memoryPolicy)) {
             log.debug("Retrieval preflight skipped all external sources, questionChars:{}",
@@ -281,6 +304,18 @@ public class CharacterChatHelper {
                 List<RetrieverWrapper> kbRetrievers = new CompositeRag(
                         ZhiMeshConstant.RetrieveContentFrom.KNOWLEDGE_BASE).createRetriever(kbRetrieveParam);
                 retrieverWrappers.addAll(kbRetrievers);
+                if (StringUtils.isNotBlank(knowledgeSearchingSseUuid)) {
+                    // 门控已放行且检索即将真实执行（下方执行循环），此时才发前端状态；
+                    // 无条件发送会给被 NO_RAG/范围门控跳过的消息（如挂库角色的闲聊
+                    // 提问）显示虚假的"正在检索知识库"。
+                    // The gates have admitted retrieval and it is about to execute
+                    // (loop below); emitting the state unconditionally showed a
+                    // false "searching knowledge" indicator for turns the gates
+                    // skipped (e.g. chit-chat against a KB-attached character).
+                    SseManager.sendPartial(knowledgeSearchingSseUuid,
+                            ZhiMeshConstant.SSEEventName.STATE_CHANGED,
+                            ZhiMeshConstant.SSEEventData.STATE_KNOWLEDGE_SEARCHING);
+                }
             } else {
                 log.info("Knowledge-base retrieval skipped by enforced NO_RAG intent");
             }
@@ -478,10 +513,14 @@ public class CharacterChatHelper {
             builder.systemMessage(character.getAiSystemMessage());
         }
 
-        //Memory (for context understanding)
-        if (Boolean.TRUE.equals(character.getUnderstandContextEnable())) {
-            builder.memoryId(memoryId);
-        }
+        //Memory (for context understanding) — 上下文恒启用（2026-09-24 产品决策：
+        //understandContextEnable 开关已下线，列保留不读）；memoryId 为 null 的调用方
+        //语义不变（无会话即无记忆接线）
+        //Memory (for context understanding) — context is always on (2026-09-24
+        //product decision: the understandContextEnable toggle is retired, the
+        //column is kept but never read); callers passing a null memoryId keep
+        //their semantics (no conversation = no memory wiring)
+        builder.memoryId(memoryId);
 
         //User message
         builder.userMessage(userPrompt);
@@ -491,17 +530,50 @@ public class CharacterChatHelper {
             builder.imageUrls(imageUrls);
         }
 
-        //MCP tools
-        if (enableMcp && StringUtils.isNotBlank(character.getMcpIds())) {
-            UserMcpService userMcpService = SpringUtil.getBean(UserMcpService.class);
-            List<Long> mcpIds = ZhiMeshStringUtil.stringToList(character.getMcpIds(), ",", Long::parseLong);
-            List<McpClient> mcpClients = userMcpService.createMcpClients(character.getUserId(), mcpIds);
-            builder.mcpClients(mcpClients);
+        //MCP tools — 生效 id = character.mcp_ids（用户自选存储列）∪ 预设关系运行时解析出的
+        //预设配套 MCP（不落存储列、不自动启用）。是否真正创建客户端仍由
+        //UserMcpService.createMcpClients 的 adi_user_mcp.is_enable=true 闸门决定：
+        //用户须在 MCP 页自行启用后预设工具才生效。
+        //MCP tools — effective ids = character.mcp_ids (user-selected stored column)
+        //unioned with preset-bound MCPs resolved from the preset relation at runtime
+        //(never persisted, never auto-enabled). Client creation is still gated by
+        //adi_user_mcp.is_enable=true inside UserMcpService.createMcpClients: preset
+        //tools only take effect once the user enables them on the MCP page.
+        // enableMcp 参数恒为 true（调用方口径），不能直接作为「工具活跃」依据：
+        // 以解析出的生效 mcpIds 是否非空为准（供思考开关判定使用）
+        // The enableMcp flag is always true at call sites, so it cannot stand
+        // for "tools active": the resolved effective mcpIds decide (consumed by
+        // the thinking-switch decision below).
+        boolean mcpActive = false;
+        if (enableMcp) {
+            // 本项目自有 SpringUtil 在无 Spring 上下文（单测）时 getBean 返回 null：
+            // 判空退化为「无生效 MCP」，与旧代码「mcpIds 为空即跳过分支」的测试短路语义一致。
+            // The project's own SpringUtil returns null from getBean without a Spring
+            // context (unit tests): null degrades to "no effective MCPs", matching
+            // the legacy branch short-circuit the existing tests were written against.
+            CharacterService characterService = SpringUtil.getBean(CharacterService.class);
+            List<Long> mcpIds = null == characterService
+                    ? Collections.emptyList()
+                    : characterService.resolveEffectiveMcpIds(character);
+            if (!mcpIds.isEmpty()) {
+                mcpActive = true;
+                UserMcpService userMcpService = SpringUtil.getBean(UserMcpService.class);
+                List<McpClient> mcpClients = userMcpService.createMcpClients(character.getUserId(), mcpIds);
+                builder.mcpClients(mcpClients);
+            }
         }
 
-        //Thinking
+        //Thinking — 思考开关跟随模型能力（推理模型=思考），不再读角色 is_enable_thinking；
+        //DeepSeek 平台在工具/联网活跃时强制关闭思考（langchain4j #3461，工具优先）
+        //Thinking — the switch follows model capability only (reasoner = think);
+        //the character's is_enable_thinking column is no longer read. DeepSeek
+        //force-disables thinking while tools/web search are active
+        //(langchain4j #3461; tools take priority).
         AiModel aiModel = llmService.getAiModel();
-        Boolean returnThinking = checkIfReturnThinking(aiModel, character);
+        boolean toolsOrWebSearchActive = mcpActive || enableWebSearch || Boolean.TRUE.equals(character.getIsAgentic());
+        ModelPlatform platform = llmService.getPlatform();
+        Boolean returnThinking = checkIfReturnThinking(aiModel,
+                null == platform ? null : platform.getName(), toolsOrWebSearchActive);
         builder.returnThinking(returnThinking);
 
         //Web search — drop the flag if the resolved model does not support it,
@@ -518,19 +590,37 @@ public class CharacterChatHelper {
     }
 
     /**
-     * 判断是否需要返回推理过程
+     * 判断是否返回思考流：纯模型能力判定（2026-09-24 产品决策，前端开关已下线，
+     * 角色列 is_enable_thinking 不再读取）。推理模型默认开启思考；DeepSeek 平台在
+     * 工具/联网活跃时强制关闭思考——因 langchain4j #3461（partialArguments cannot be null，
+     * DeepSeek 思考流与工具调用不兼容），原前端 workaround 是「删工具保思考」，现反转为
+     * 后端「保工具关思考」，工具优先且不再改用户数据。非推理模型返回 null（不显式表态，
+     * 走请求默认）。
      * <p>
-     * Check if thinking/reasoning should be returned.
-     * </p>
+     * Decide whether to return the thinking stream: a pure model-capability
+     * decision (2026-09-24 product decision; the frontend toggle is gone and
+     * the character's is_enable_thinking column is no longer read). Reasoner
+     * models think by default; on the DeepSeek platform with tools or web
+     * search active, thinking is force-disabled — langchain4j #3461
+     * (partialArguments cannot be null) makes the DeepSeek thinking stream
+     * incompatible with tool calls. The old frontend workaround dropped tools
+     * to keep thinking; the backend now inverts it to keeping tools and
+     * disabling thinking, never mutating user data. Non-reasoner models return
+     * null (no explicit opinion; the request default applies).
      *
-     * @param aiModel   模型 / AI model
-     * @param character 角色 / Character
-     * @return 是否返回推理过程 / Whether to return thinking
+     * @param aiModel                模型 / AI model
+     * @param platformName           模型平台名（ZhiMeshConstant.ModelPlatform 口径）/ Platform name (per ZhiMeshConstant.ModelPlatform)
+     * @param toolsOrWebSearchActive 工具或联网是否活跃 / Whether tools or web search are active
+     * @return null=非推理模型不表态；true=返回思考流；false=关闭思考流
+     *         null = non-reasoner, no opinion; true = return thinking; false = suppress thinking
      */
-    public static Boolean checkIfReturnThinking(AiModel aiModel, Character character) {
-        if (!aiModel.getIsReasoner()) {
+    public static Boolean checkIfReturnThinking(AiModel aiModel, String platformName, boolean toolsOrWebSearchActive) {
+        if (!Boolean.TRUE.equals(aiModel.getIsReasoner())) {
             return null;
         }
-        return Boolean.FALSE.equals(aiModel.getIsThinkingClosable()) || Boolean.TRUE.equals(character.getIsEnableThinking());
+        if (ZhiMeshConstant.ModelPlatform.DEEPSEEK.equals(platformName) && toolsOrWebSearchActive) {
+            return false;
+        }
+        return true;
     }
 }

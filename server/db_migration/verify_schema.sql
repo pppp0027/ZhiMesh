@@ -1,8 +1,9 @@
 -- Read-only schema verification for the current application version.
--- Run after all_ddl.sql or after incremental migrations 001 through 041.
+-- Run after all_ddl.sql or after incremental migrations 001 through 044.
 
 WITH required_tables(table_name) AS (
     VALUES
+        ('adi_agent_pending_checkpoint'),
         ('adi_ai_model'),
         ('adi_character'),
         ('adi_character_message'),
@@ -112,7 +113,9 @@ WITH required_columns(table_name, column_name) AS (
         ('adi_knowledge_base_item', 'fulltext_started_at'),
         ('adi_knowledge_base_item', 'fulltext_completed_at'),
         ('adi_character', 'is_agentic'),
+        ('adi_character', 'tool_policy'),
         ('adi_character_message', 'is_ref_bm25'),
+        ('adi_character_preset', 'tool_policy'),
         ('adi_knowledge_base', 'route_profile_status'),
         ('adi_knowledge_base', 'route_profile_generation'),
         ('adi_knowledge_base', 'route_profile_active_generation'),

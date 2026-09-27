@@ -41,6 +41,9 @@ public class ConversationService extends ServiceImpl<ConversationMapper, Convers
     @Resource
     private CharacterMessageService characterMessageService;
 
+    @Resource
+    private PendingCheckpointService pendingCheckpointService;
+
     @Transactional
     public Conversation create(Long userId, String characterUuid, String title) {
         Character character = findOwnedCharacter(userId, characterUuid);
@@ -89,6 +92,10 @@ public class ConversationService extends ServiceImpl<ConversationMapper, Convers
         boolean deleted = removeById(conversation.getId());
         if (deleted) {
             characterMessageService.softDeleteByConversationIds(userId, List.of(conversation.getId()));
+            // 挂起检查点级联：孤儿 ACTIVE 会让已删会话的下一轮消息误入恢复流程
+            // Pending-checkpoint cascade: a dangling ACTIVE would push the next
+            // message of the deleted conversation into the resume path
+            pendingCheckpointService.markDeletedByConversation(conversation.getId());
             cleanupConversationMemory(conversationUuid);
         }
         return deleted;
@@ -141,6 +148,12 @@ public class ConversationService extends ServiceImpl<ConversationMapper, Convers
                 .eq(Conversation::getUserId, userId)
                 .eq(Conversation::getCharacterId, characterId)
         );
+        if (deleted) {
+            // 挂起检查点级联（与消息级联同级；conversationIds 为空时调用自身短路）
+            // Pending-checkpoint cascade (same level as the message cascade;
+            // self-short-circuits on an empty conversationIds list)
+            conversationIds.forEach(pendingCheckpointService::markDeletedByConversation);
+        }
         if (deleted && character != null) {
             characterMessageService.softDeleteByConversationIds(userId, conversationIds);
             try {

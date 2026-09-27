@@ -221,11 +221,14 @@ CREATE TABLE adi_character_preset
     mcp_ids           varchar(1000) default ''                not null,
     type              varchar(45)   default ''                not null,
     is_system         boolean       default false             not null,
+    tool_policy       text,
     create_time       timestamp     default CURRENT_TIMESTAMP not null,
     update_time       timestamp     default CURRENT_TIMESTAMP not null,
     is_deleted        boolean       default false             not null
 );
 COMMENT ON TABLE adi_character_preset IS 'Preset Character table';
+COMMENT ON COLUMN adi_character_preset.tool_policy IS
+    '预设角色工具策略 JSON（结构同 adi_character.tool_policy）；用户经预设实例化角色时复制到 adi_character.tool_policy | Preset tool policy JSON (same shape as adi_character.tool_policy); copied into the user character on preset instantiation';
 COMMENT ON COLUMN adi_character_preset.title IS 'Title';
 COMMENT ON COLUMN adi_character_preset.remark IS 'Description';
 COMMENT ON COLUMN adi_character_preset.ai_system_message IS 'System message for LLM';
@@ -258,6 +261,7 @@ CREATE TABLE adi_character
     is_enable_thinking        boolean       default false             not null,
     is_enable_web_search      boolean       default false             not null,
     is_agentic                boolean       default true              not null,
+    tool_policy               text,
     audio_config              jsonb         default '{}'              not null,
     api_key                   varchar(200)  default ''                not null,
     create_time               timestamp     default CURRENT_TIMESTAMP not null,
@@ -278,6 +282,8 @@ COMMENT ON COLUMN adi_character.is_autoplay_answer IS 'Whether audio responses p
 COMMENT ON COLUMN adi_character.is_enable_thinking IS 'Whether thinking/reasoning process is enabled (effective only if the model supports it)';
 COMMENT ON COLUMN adi_character.is_enable_web_search IS 'Whether to enable web search';
 COMMENT ON COLUMN adi_character.is_agentic IS '是否启用 Agentic 模式：开启后角色回答走工具调用循环，关闭则保持原有单次 RAG 问答 | Whether agentic tool-calling mode is enabled for this character';
+COMMENT ON COLUMN adi_character.tool_policy IS
+    '角色工具策略 JSON 字符串：builtinDenylist=内置工具禁用清单；approvalRequiredMcpTools=调用前需人工审批的 MCP 工具名清单。NULL 或非法 JSON = 默认策略（内置工具全允许、无审批门）。 | Character tool policy JSON string: builtin denylist plus MCP tools requiring human approval before execution; NULL or invalid JSON falls back to the default policy.';
 COMMENT ON COLUMN adi_character.audio_config IS 'Audio configuration, stored in JSON format, e.g., {"voice":{"param_name":"longyingda","model":"cosyvoice-v2","platform":"dashscope"}}';
 COMMENT ON COLUMN adi_character.api_key IS 'API key for external system integration (AES encrypted)';
 
@@ -631,6 +637,67 @@ comment on column adi_character_message_tool_call.duration_ms is '工具调用�
 comment on column adi_character_message_tool_call.success is '工具调用是否成功';
 comment on column adi_character_message_tool_call.seq is '同一轮回答内的工具调用序号，从 0 开始递增';
 comment on column adi_character_message_tool_call.create_time is '记录创建时间';
+
+-- ============================================================
+-- Agent pending checkpoint: cross-request suspension snapshots
+-- ============================================================
+
+CREATE TABLE adi_agent_pending_checkpoint
+(
+    id                 bigserial primary key,
+    uuid               varchar(64)  default ''               not null,
+    conversation_id    bigint       default 0                not null,
+    character_id       bigint       default 0                not null,
+    user_id            bigint       default 0                not null,
+    kind               varchar(32)  default ''               not null,
+    pending_tool_name  varchar(128) default ''               not null,
+    pending_request_id varchar(128) default ''               not null,
+    payload            text,
+    messages_snapshot  text                                  not null,
+    tool_call_depth    integer      default 0                not null,
+    suspension_count   integer      default 0                not null,
+    approval_grant     text,
+    status             varchar(16)  default 'ACTIVE'         not null,
+    created_at         timestamp    default CURRENT_TIMESTAMP not null,
+    updated_at         timestamp    default CURRENT_TIMESTAMP not null,
+    constraint uk_agent_pending_checkpoint_uuid unique (uuid)
+);
+
+CREATE INDEX idx_agent_pending_checkpoint_conversation_status
+    ON adi_agent_pending_checkpoint (conversation_id, status);
+
+COMMENT ON TABLE adi_agent_pending_checkpoint IS
+    'Agent 挂起-恢复检查点：ask_user / 审批挂起时保存完整消息链快照与预算计数，用户下一轮消息据此恢复工具循环；单会话同一时刻最多一个 ACTIVE（应用层保证，非库约束）。 | Agent suspension checkpoint: full message-chain snapshot plus budget counters stored when the tool loop suspends for ask_user or approval; the next user message resumes the loop from this row. At most one ACTIVE row per conversation, enforced by the application.';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.uuid IS '检查点 uuid | Checkpoint UUID';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.conversation_id IS 'adi_conversation.id，挂起发生的会话';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.character_id IS 'adi_character.id，挂起时对话的角色';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.user_id IS 'adi_user.id，对话用户';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.kind IS '挂起类型：ASK_USER / APPROVAL / MCP_APPROVAL';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.pending_tool_name IS '触发挂起的协作类工具名（ask_user、request_human_approval，或被审批装饰器包装的 MCP 工具名）';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.pending_request_id IS '挂起的 toolExecutionRequest id，恢复时用于配对 ToolExecutionResultMessage';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.payload IS '挂起载荷 JSON：ASK_USER=问题文本与选项列表；APPROVAL / MCP_APPROVAL=action / summary / risk_level';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.messages_snapshot IS '挂起时完整消息链快照 JSON（SystemMessage / UserMessage / AiMessage（含 toolExecutionRequests）/ ToolExecutionResultMessage 四类，含同轮已执行同伴工具的结果消息）';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.tool_call_depth IS '挂起时已消耗的工具循环迭代数，恢复时继承该预算';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.suspension_count IS '同一工具链内已挂起次数（含本次），达到 zhimesh.agent.max-suspensions 上限后不再挂起';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.approval_grant IS '审批凭证 JSON（toolName + argsHash），仅本恢复链有效，供后续审批任务使用；ASK_USER 挂起为空';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.status IS '状态：ACTIVE=待恢复；CONSUMED=已消费；EXPIRED=惰性过期（读取时按 created_at + TTL 判定）；SUPERSEDED=被新挂起或重问覆盖；DELETED=会话删除级联';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.created_at IS '创建时间（挂起时刻），惰性 TTL 过期以它为基准';
+COMMENT ON COLUMN adi_agent_pending_checkpoint.updated_at IS '更新时间（状态流转时刻）';
+
+CREATE OR REPLACE FUNCTION agent_pending_checkpoint_touch_updated_at()
+    RETURNS TRIGGER AS
+$$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER trigger_agent_pending_checkpoint_updated_at
+    BEFORE UPDATE
+    ON adi_agent_pending_checkpoint
+    FOR EACH ROW
+EXECUTE PROCEDURE agent_pending_checkpoint_touch_updated_at();
 
 -- ============================================================
 -- LLM Call Record: unified LLM call resource consumption tracking

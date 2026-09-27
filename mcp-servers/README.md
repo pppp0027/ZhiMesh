@@ -8,7 +8,7 @@
 
 ## 1. 简介与架构定位
 
-ZhiMesh 角色通过三张表绑定 MCP：`adi_mcp`（管理员目录）→ `adi_user_mcp`（用户启用行）→ `adi_character.mcp_ids`（角色绑定，逗号分隔的 `adi_mcp.id`；系统预设模板 `adi_character_preset.mcp_ids` 在用户首次使用预设时复制到实例，无自定义参数的 MCP 会自动启用）。一个完整的领域角色由「三件套」组成：
+ZhiMesh 角色通过三张表绑定 MCP：`adi_mcp`（管理员目录）→ `adi_user_mcp`（用户启用行）→ `adi_character.mcp_ids`（角色绑定，逗号分隔的 `adi_mcp.id`；系统预设模板 `adi_character_preset.mcp_ids` 不复制到实例，而是经预设关系在运行时解析合并）。**预设配套 MCP 需用户在 MCP 页自行启用后生效（2026-09-23 起不再自动启用，用户 MCP 目录只含用户自选）。**一个完整的领域角色由「三件套」组成：
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -88,9 +88,10 @@ java -cp "<postgresql-42.6.1.jar 路径>" demo/JdbcSeedRunner.java \
 - 驱动 jar 路径自备；本机 maven 仓库实际路径为
   `C:/Users/p'p'p'p'/.m2/repository/org/postgresql/postgresql/42.6.1/postgresql-42.6.1.jar`（路径含单引号，在 Git Bash 中请用双引号包裹整个 -cp 参数）。
 - `seed.sql` 幂等（以固定 uuid / (user_id, mcp_id) 为键的 `INSERT ... SELECT ... WHERE NOT EXISTS`），可重复执行；共 9 条语句，逐条打印「OK 第N条」，结束打印成功条数汇总。
-- seed 做了三件事：注册三个 MCP 到 `adi_mcp`；为 user_id=1（用户 pppp）启用这三个 MCP（`adi_user_mcp`）；创建「人事助手（小智）」「IT 服务台助手」「财务报销助手」三个**系统预设角色**（`adi_character_preset`，`is_system=true`，已绑定对应 MCP），在用户端「添加角色 → 预设角色」中对所有用户可见，首次使用时自动实例化到用户名下。
+- seed 做了三件事：注册三个 MCP 到 `adi_mcp`；为 user_id=1（用户 pppp）启用这三个 MCP（`adi_user_mcp`）；创建「人事助手（小智）」「IT 服务台助手」「财务报销助手」三个**系统预设角色**（`adi_character_preset`，`is_system=true`，已绑定对应 MCP），在用户端「添加角色 → 预设角色」中对所有用户可见，首次使用时自动实例化到用户名下。预设角色绑定的 MCP 不会自动启用（2026-09-23 起，用户 MCP 目录只含用户自选）：seed 里的启用仅针对 user_id=1，其他用户须在 MCP 页自行启用后预设工具才生效。
 - 执行成功后**重启 ZhiMesh 后端**，MCP 目录与预设角色才会生效。
-- 老版 Windows cmd 控制台若中文输出乱码，先执行 `chcp 65001`（不影响执行结果本身）。
+- 老版 Windows cmd 控制台若中文输出乱码，先执行 `chcp 65001`（只影响控制台显示）。
+- **Windows 本机跑 ZhiMesh 后端连 stdio MCP 时，JVM 必须加 `-Dfile.encoding=UTF-8`**：langchain4j 的 stdio 传输（JsonRpcIoHandler）用平台默认字符集构造流，Java 17 在 Windows 默认 GBK，中文工具参数与结果会双向乱码、按参数匹配的工具直接失配（T8 集成剧本 2026-09-23 实测）。`chcp 65001` 救不了这个——乱码发生在 JVM 与 MCP 子进程的管道里，与控制台代码页无关。生产 Linux 默认 UTF-8 不受影响。
 
 ## 5. 知识库装配
 

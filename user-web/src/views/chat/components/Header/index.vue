@@ -1,19 +1,12 @@
 <script lang="ts" setup>
 import { computed } from 'vue'
-import { HoverButton, SvgIcon } from '@/components/common'
+import { SvgIcon } from '@/components/common'
 import { useAppStore, useChatStore } from '@/store'
-
-interface Props {
-  usingContext: boolean
-}
 
 interface Emit {
   (ev: 'export'): void
-  (ev: 'toggleUsingContext'): void
   (ev: 'scrollToTop'): void
 }
-
-defineProps<Props>()
 
 const emit = defineEmits<Emit>()
 
@@ -35,10 +28,6 @@ function onScrollToTop() {
 // function handleExport() {
 //   emit('export')
 // }
-
-function toggleUsingContext() {
-  emit('toggleUsingContext')
-}
 </script>
 
 <template>
@@ -59,12 +48,8 @@ function toggleUsingContext() {
       >
         {{ currentChatHistory?.title ?? '' }}
       </h1>
+      <!-- 连续对话/深度思考开关已移除：上下文恒开启，深度思考按模型能力自动判定 -->
       <div class="flex items-center space-x-2">
-        <HoverButton @click="toggleUsingContext">
-          <span class="text-xl context-toggle-icon" :class="usingContext ? 'is-on' : 'is-off'">
-            <SvgIcon icon="ri:chat-history-line" />
-          </span>
-        </HoverButton>
         <!-- <HoverButton @click="handleExport">
           <span class="text-xl text-[#4f555e] dark:text-white">
             <SvgIcon icon="ri:download-2-line" />
@@ -75,12 +60,3 @@ function toggleUsingContext() {
   </header>
 </template>
 
-<style scoped lang="less">
-.context-toggle-icon.is-on {
-  color: var(--zhimesh-success-text);
-}
-
-.context-toggle-icon.is-off {
-  color: var(--zhimesh-danger-text);
-}
-</style>

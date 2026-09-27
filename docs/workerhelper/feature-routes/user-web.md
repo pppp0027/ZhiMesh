@@ -15,16 +15,17 @@
 ## 路由表
 
 ### 会话（Agent 对话）
-- **Agent 对话页** — `views/chat/index.vue` (路由 `/chat/:uuid`，根路径重定向 `/chat/default`；外壳 `views/chat/layout/Layout.vue`) → `api.sseProcess` SSE 流式对话、`fetchConversationMessages`/`fetchMessages` 拉历史、`messageDel` 删消息；对话核心状态机在 `views/chat/hooks/useChat.ts` + `store/modules/chat`
-- **消息渲染与 Agent 步骤** — `views/chat/components/Message/`：`Text.vue`（markdown 渲染）、`ToolSteps.vue`（工具调用步骤折叠）、`AudioMessage.vue`（语音消息，`api.messageTextByAudio` 语音转文字）
+- **Agent 对话页** — `views/chat/index.vue` (路由 `/chat/:uuid`，根路径重定向 `/chat/default`；外壳 `views/chat/layout/Layout.vue`) → `api.sseProcess` SSE 流式对话、`fetchConversationMessages`/`fetchMessages` 拉历史、`messageDel` 删消息；对话核心状态机在 `views/chat/hooks/useChat.ts` + `store/modules/chat`。等待期反馈（2026-09-24 agent-chat-ux）：状态条 `Text.vue` 按 `statusKey` 显示（`tool_running`→`knowledge_searching`→`question_analysing`，`state` 由 `[STATE_CHANGED]` 经 `question.state` 透传 `Message/index.vue`）；工具实时步骤 `[TOOL_STARTED]`（`commonSseProcess.toolStartedReceived` 点亮 `ToolCall.running` 行，`[TOOL_CALL]` 同名回填，挂起节点在 `suspensionReceived` 原地复用同名 running 行防双行）；流式渲染按请求闭包缓冲 60ms 批量 `appendChunk`（done/suspension/error 入口先同步 flush 防丢尾）；`ToolSteps.vue` running 行 spinner + 摘要行"正在执行…"
+- **消息渲染与 Agent 步骤** — `views/chat/components/Message/`：`Text.vue`（markdown 渲染）、`ToolSteps.vue`（工具调用步骤折叠，含挂起/恢复节点）、`AudioMessage.vue`（语音消息，`api.messageTextByAudio` 语音转文字）
+- **Agent 挂起/审批卡片（2026-09-23 agent-collab-tools）** — SSE 事件分发 `api/index.ts`（`commonSseProcess` 的 `suspensionReceived` 回调接 `[AGENT_QUESTION]`/`[APPROVAL_REQUEST]`；`ignoreUnknownEvents` 仅会话流开启，工作流动态具名事件不受影响）；卡片 `components/Message/SuspensionCard.vue`（options 选项/同意/拒绝按钮，全部经 `InputEditor.submitMessage` 走普通消息入口；拒绝拼 `[APPROVAL_REJECTED] 理由` 前缀——后端恢复装配硬匹配契约勿改）；应答处理 `views/chat/index.vue` `handleSuspensionAnswer`；历史回放由轨迹行派生 `store/modules/chat/helper.ts`（`deriveHistorySuspension`，后端 CharacterMsgDto 不带 suspension 字段）；类型 `typings/chat.d.ts`（`SuspensionPayload`/`ToolPolicy`）
 - **答案证据与引用溯源** — `views/chat/components/AnswerEvidenceActions.vue` + `EvidenceMarkdown.vue`；溯源弹层 `RefMemory.vue`(`api.memoryEmbeddingRef`)、`RefGraph.vue`(`api.messageGraphRef`)、`RefKeyword.vue`(`api.messageKeywordRef`)、`api.knowledgeEmbeddingRef`
-- **输入区** — `views/chat/InputEditor.vue`（`api.searchPrompts` 提示词补全）、`InputToolbar.vue`（`api.fileDel` 附件、`characterEdit`/`characterToggleUsingContext`/`characterToggleThinking` 角色开关）、`components/AudioRecorder.vue`（`api.fileUpload`）
+- **输入区** — `views/chat/InputEditor.vue`（`api.searchPrompts` 提示词补全；亦承载一套独立 sseProcess 通道：`toolStartedReceived`/`toolCallReceived` 实时步骤与 60ms 批量 flush 同 `views/chat/index.vue` 口径）、`InputToolbar.vue`（`api.fileDel` 附件、`characterEdit` 存 MCP 绑定/联网开关；「深度思考」「连续对话」开关已移除——2026-09-24 agent-chat-ux：思考由后端按模型能力自动判定、上下文恒启用，DeepSeek 思考+工具的 workaround 随按钮删除、判定移至后端）、`components/AudioRecorder.vue`（`api.fileUpload`）
 - **会话侧栏** — `views/chat/layout/sider/List.vue` → 角色分组会话列表：`fetchCharacters`/`fetchConversations`/`fetchDefaultConversation`/`fetchConversationMessages`、`conversationEdit`/`conversationDelete`
 - **登录门禁** — `views/chat/layout/Permission.vue` → 未登录遮罩：`api.login`/`register`/`passwordFind`
 
 ### 角色与预设
 - **添加角色弹窗（预设角色/自定义双 tab）** — `views/chat/layout/sider/CreateConv.vue` → 预设 tab：`api.searchPresetCharacters` 按 11 类 type 分组、`api.listCharacterPresetRels` 标"已使用"、`api.characterAddByPreset` 一键复制预设为角色（MCP/系统知识以标签展示）；自定义 tab 内嵌 `EditConvDetail`
-- **角色编辑** — `views/chat/components/Header/EditConvDetail.vue` → `api.characterAdd`/`characterEdit`/`characterDel`；入口 `Header/EditConv.vue`（`api.userMcpList` 供绑定 MCP）
+- **角色编辑** — `views/chat/components/Header/EditConvDetail.vue` → `api.characterAdd`/`characterEdit`/`characterDel`，tool_policy 用户端不可编辑（2026-09-23 产品决策：编辑器已移除，策略仅经预设实例化/管理端下发，用户端 add/edit API 剥离该字段）；入口 `Header/EditConv.vue`（`api.userMcpList` 供绑定 MCP）
 - **会话知识库选择** — `views/chat/ConvKnowledgeSelector.vue` → `api.knowledgeBaseSearchMine` 列表 + `characterEdit` 把 kbUuid 绑到角色
 
 ### 知识库问答（QA）

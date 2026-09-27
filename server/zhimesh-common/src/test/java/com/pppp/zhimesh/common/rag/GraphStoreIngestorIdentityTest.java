@@ -145,6 +145,23 @@ class GraphStoreIngestorIdentityTest {
     }
 
     @Test
+    void dropsSelfLoopRelationshipWhenIdentityMergeCollapsesBothEndpoints() {
+        InMemoryGraphStore graphStore = new InMemoryGraphStore();
+        ingest(graphStore, """
+                ("entity"<|>浮灯云网基础设施档案<|>ORGANIZATION<|>记录公司沿革的基础设施档案<|>浮灯云网基础设施档案<|>["浮灯云网有限公司"]<|>{}<|>9)##
+                ("entity"<|>浮灯云网有限公司<|>ORGANIZATION<|>云网基础设施公司<|>浮灯云网基础设施档案<|>["浮灯云网有限公司"]<|>{}<|>8)##
+                ("relationship"<|>浮灯云网基础设施档案<|>浮灯云网有限公司<|>档案记录了公司的业务沿革<|>6<|>RELATED_TO<|>true<|>ASSERTED<|>{})
+                """);
+
+        // The archive entity and the company entity merge into one vertex through
+        // the shared alias, so the meaningful relationship between them degenerates
+        // into a self-loop after endpoint resolution and must not be stored.
+        assertEquals(1, graphStore.vertices.size());
+        assertEquals(0, graphStore.edges.size());
+        assertEquals(0, graphStore.edgeAddAttempts);
+    }
+
+    @Test
     void keepsOneKbIdentityWhenLaterDocumentUsesConflictingType() {
         InMemoryGraphStore graphStore = new InMemoryGraphStore();
         ingest(graphStore, """

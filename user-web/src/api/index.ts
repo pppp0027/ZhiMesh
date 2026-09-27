@@ -41,24 +41,6 @@ function characterEdit<T = any>(uuid: string, params: Partial<Chat.Character>) {
   })
 }
 
-function characterToggleUsingContext<T = any>(uuid: string, usingContext: boolean) {
-  return post<T>({
-    url: `/character/edit/${uuid}`,
-    data: {
-      understandContextEnable: usingContext,
-    },
-  })
-}
-
-function characterToggleThinking<T = any>(uuid: string, isEnableThinking: boolean) {
-  return post<T>({
-    url: `/character/edit/${uuid}`,
-    data: {
-      isEnableThinking,
-    },
-  })
-}
-
 function characterDel<T = any>(uuid: string) {
   return post<T>({
     url: `/character/del/${uuid}`,
@@ -142,6 +124,10 @@ function commonSseProcess(
     audioDataReceived?: (chunk: string) => void
     stateChanged?: (state: string) => void
     toolCallReceived?: (data: Chat.ToolCall) => void
+    toolStartedReceived?: (data: { toolName: string; args?: string }) => void
+    suspensionReceived?: (data: Chat.SuspensionPayload) => void
+    /** 具名事件缺省忽略开关：会话流开启（未知事件安全忽略），工作流等依赖动态具名事件的调用方保持透传 */
+    ignoreUnknownEvents?: boolean
     doneCallback: (chunk: string) => void
     errorCallback: (error: string) => void
   },
@@ -199,7 +185,26 @@ function commonSseProcess(
           console.warn('[TOOL_CALL] parse error', e)
         }
         return
+      } else if (eventMessage.event === '[TOOL_STARTED]') {
+        try {
+          params.toolStartedReceived && params.toolStartedReceived(JSON.parse(eventMessage.data))
+        } catch (e) {
+          console.warn('[TOOL_STARTED] parse error', e)
+        }
+        return
+      } else if (eventMessage.event === '[AGENT_QUESTION]' || eventMessage.event === '[APPROVAL_REQUEST]') {
+        // Agent 协作挂起事件（ask_user 追问 / 人工审批）：data 为挂起卡片载荷 JSON
+        try {
+          params.suspensionReceived && params.suspensionReceived(JSON.parse(eventMessage.data))
+        } catch (e) {
+          console.warn(`${eventMessage.event} parse error`, e)
+        }
+        return
       }
+      // 未识别的具名事件：会话流按缺省忽略（安全兜底，避免未知事件数据混入消息文本）；
+      // 未开启忽略的调用方（工作流动态节点事件）保持原有透传行为
+      if (eventMessage.event && params.ignoreUnknownEvents)
+        return
       if (eventMessage.data.indexOf('-_wrap_-') === 0)
         eventMessage.data = eventMessage.data.replace('-_wrap_-', '\n')
 
@@ -225,10 +230,13 @@ function sseProcess(params: {
   audioDataReceived?: (pcmPart: any) => void
   stateChanged?: (state: string) => void
   toolCallReceived?: (data: Chat.ToolCall) => void
+  toolStartedReceived?: (data: { toolName: string; args?: string }) => void
+  suspensionReceived?: (data: Chat.SuspensionPayload) => void
   doneCallback: (chunk: string) => void
   errorCallback: (error: string) => void
 }): Promise<void> {
-  return commonSseProcess('/api/chat/process', params)
+  // 会话流对未知具名事件缺省忽略（工作流/QA 等调用方不受影响）
+  return commonSseProcess('/api/chat/process', { ...params, ignoreUnknownEvents: true })
 }
 
 function login<T>(email: string, password: string, captchaId: string, captchaCode: string) {
@@ -929,8 +937,6 @@ export default {
   characterAdd,
   characterAddByPreset,
   characterEdit,
-  characterToggleUsingContext,
-  characterToggleThinking,
   characterDel,
   searchPresetCharacters,
   listCharacterPresetRels,

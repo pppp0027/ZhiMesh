@@ -47,6 +47,9 @@ importers:
       markdown-it:
         specifier: ^13.0.1
         version: 13.0.1
+      markdown-it-footnote:
+        specifier: ^4.0.0
+        version: 4.0.0
       naive-ui:
         specifier: ^2.40.3
         version: 2.40.3(vue@3.5.13(typescript@4.9.5))
@@ -93,6 +96,9 @@ importers:
       '@types/markdown-it':
         specifier: ^12.2.3
         version: 12.2.3
+      '@types/markdown-it-footnote':
+        specifier: ^3.0.4
+        version: 3.0.4
       '@types/markdown-it-link-attributes':
         specifier: ^3.0.1
         version: 3.0.1
@@ -1287,6 +1293,9 @@ packages:
 
   '@types/lodash@4.14.202':
     resolution: {integrity: sha512-OvlIYQK9tNneDlS0VN54LLd5uiPCBOp7gS5Z0f1mjoJYBrtStzgmJBxONW3U6OZqdtNzZPmn9BS/7WI7BFFcFQ==}
+
+  '@types/markdown-it-footnote@3.0.4':
+    resolution: {integrity: sha512-XJ6n+v+2u+2gmYLSHcxyoNT/YrgrKvHuDJQlykFjuxCQCr86P2/fx1V6/0lcKxv5cSIlCaJ6sUcNS3zDI7I+LA==}
 
   '@types/markdown-it-link-attributes@3.0.1':
     resolution: {integrity: sha512-K8RnNb1q8j7rDOJbMF7AnlhCC/45BjrQ8z3WZWOrvkBIl8u9RXvmBdG/hfpnmK1JhhEZcmFEKWt+ilW1Mly+2Q==}
@@ -3334,6 +3343,9 @@ packages:
   map-obj@4.3.0:
     resolution: {integrity: sha512-hdN1wVrZbb29eBGiGjJbeP8JbKjq1urkHJ/LIP/NY48MZ1QVXUsQBV1G1zvYFHn1XE06cwjBsOI2K3Ulnj1YXQ==}
     engines: {node: '>=8'}
+
+  markdown-it-footnote@4.0.0:
+    resolution: {integrity: sha512-WYJ7urf+khJYl3DqofQpYfEYkZKbmXmwxQV8c8mO/hGIhgZ1wOe7R4HLFNwqx7TjILbnC98fuyeSsin19JdFcQ==}
 
   markdown-it-link-attributes@4.0.1:
     resolution: {integrity: sha512-pg5OK0jPLg62H4k7M9mRJLT61gUp9nvG0XveKYHMOOluASo9OEF13WlXrpAp2aj35LbedAy3QOCgQCw0tkLKAQ==}
@@ -6081,6 +6093,10 @@ snapshots:
 
   '@types/lodash@4.14.202': {}
 
+  '@types/markdown-it-footnote@3.0.4':
+    dependencies:
+      '@types/markdown-it': 12.2.3
+
   '@types/markdown-it-link-attributes@3.0.1':
     dependencies:
       '@types/markdown-it': 12.2.3
@@ -8423,6 +8439,8 @@ snapshots:
   map-obj@1.0.1: {}
 
   map-obj@4.3.0: {}
+
+  markdown-it-footnote@4.0.0: {}
 
   markdown-it-link-attributes@4.0.1: {}
 

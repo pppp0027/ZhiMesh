@@ -39,6 +39,7 @@ public class CharacterDto {
     private Boolean isEnableThinking;
     private Boolean isEnableWebSearch;
     private Boolean isAgentic;
+    private String toolPolicy;
     private AudioConfig audioConfig;
 
     private LocalDateTime createTime;

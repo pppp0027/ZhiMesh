@@ -7,7 +7,9 @@ import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Configuration
 @ConfigurationProperties("zhimesh")
@@ -21,6 +23,18 @@ public class ZhiMeshProperties {
     private String backendUrl;
 
     private Proxy proxy;
+
+    /**
+     * 按平台名注入的额外 HTTP 请求头（平台名 → 头名 → 头值），仅作用于
+     * OpenAI 兼容 LLM 请求。用于兼容平台要求非标准头的场景，例如 OpenCode
+     * Go 端点要求稳定的 x-opencode-session 会话头，缺失时直接返回 400。
+     * <p>
+     * Extra HTTP headers injected per platform name (platform → header → value),
+     * applied only to OpenAI-compatible LLM requests. Needed when a compatible
+     * platform requires a non-standard header, e.g. the OpenCode Go endpoint
+     * rejects requests without a stable x-opencode-session header (HTTP 400).
+     */
+    private Map<String, Map<String, String>> platformHeaders = new LinkedHashMap<>();
 
     private String embeddingModel;
 
@@ -441,8 +455,8 @@ public class ZhiMeshProperties {
     /**
      * LLM 工具调用循环配置。
      * <p>
-     * LLM tool-calling loop settings. Guardrails (timeout/truncation) only apply
-     * to builtin tools; MCP tools keep their legacy behavior.
+     * LLM tool-calling loop settings. Guardrails (timeout/truncation) apply to
+     * builtin tools; MCP tools opt in via mcpGuardrailsEnabled (default off).
      */
     @Data
     public static class Agent {
@@ -452,5 +466,13 @@ public class ZhiMeshProperties {
         private long toolTimeoutMs = 60000;
         /** Maximum characters of a builtin tool result injected back into the model. */
         private int toolResultMaxChars = 4000;
+        /** Global fallback for the agentic switch: effective agentic = this flag AND character.is_agentic; false restores the pre-agentic single-shot chat for everyone (rollback path for migration 044). */
+        private boolean defaultAgenticEnabled = true;
+        /** Whether MCP tool calls join the builtin timeout/truncation guardrails; false keeps the legacy direct-call behavior. Wired since the T7 MCP-guardrails switch: consumed by AbstractLLMService.executeToolWithGuardrails. */
+        private boolean mcpGuardrailsEnabled = false;
+        /** Lazy TTL (hours) for pending suspension checkpoints; expiry is judged on read, without a scheduled job. */
+        private int pendingTtlHours = 24;
+        /** Maximum suspensions (ask_user / approval) within one tool chain before the model must wrap up instead of suspending again. Wired since the T4 suspend/resume kernel: consumed via ToolContext.suspensionCount, inherited across resumes. */
+        private int maxSuspensions = 3;
     }
 }

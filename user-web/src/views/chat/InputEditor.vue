@@ -151,6 +151,29 @@ function handleSubmit() {
   createChatTask()
 }
 
+// 供挂起卡片等外部入口按普通用户消息提交文本（恢复 = 正常发消息）
+async function submitMessage(text: string) {
+  if (!text || !text.trim())
+    return
+  if (isChatting.value)
+    return
+  // 后端恢复语义是「下一条消息即消费检查点」：新一轮消息发出时，既有挂起卡片全部翻
+  // 只读——用户绕过卡片直接在输入框应答（或挂起轮搁置后再发消息）时旧卡不应再可点
+  deactivateSuspensionCards()
+  prompt.value = text
+  await createChatTask()
+}
+
+// 把当前会话所有答案上的挂起交互态清零（新一轮消息已把恢复权消费掉）
+function deactivateSuspensionCards() {
+  chatStore.getMsgsByCharacter(props.chatKey || props.characterUuid)?.forEach((qa: Chat.ChatMessage) => {
+    qa.children?.forEach((child) => {
+      if (child.suspensionActive)
+        child.suspensionActive = false
+    })
+  })
+}
+
 const fetchChatAPIOnce = async (message: string, requestId: number) => {
   const requestCharacterUuid = props.characterUuid
   const requestConversationUuid = props.conversationUuid
@@ -162,6 +185,48 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
   }
   const requestMessage = chattingMsg.value
   const isCurrentRequest = () => requestId === activeRequestId
+  // 流式渲染批量 flush：chunk 先入请求闭包内的缓冲（每请求独立），~60ms 定时一次性 appendChunk，
+  // 消除逐字符 append 触发全量 markdown 重渲染的 O(n²) 卡顿；
+  // done/suspension/error 入口先同步 flush，防丢尾字符、防挂起卡片与文本错位
+  let textBuffer = ''
+  let thinkingBuffer = ''
+  let flushTimer: ReturnType<typeof setTimeout> | undefined
+  const flushBuffers = () => {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = undefined
+    }
+    if (!isCurrentRequest() || !requestMessage.children[0]) {
+      textBuffer = ''
+      thinkingBuffer = ''
+      return
+    }
+    try {
+      const answer = requestMessage.children[0]
+      if (thinkingBuffer) {
+        appendChunk(
+          requestChatKey,
+          answer.uuid,
+          thinkingBuffer,
+          true, // thinking is true
+        )
+        emit('messageReceiving', requestMessage.uuid)
+      }
+      if (textBuffer) {
+        appendChunk(
+          requestChatKey,
+          answer.uuid,
+          textBuffer,
+          false, // thinking is false
+        )
+        emit('messageReceiving', requestMessage.uuid)
+      }
+    } catch (error) {
+      console.error(error)
+    }
+    textBuffer = ''
+    thinkingBuffer = ''
+  }
   return api.sseProcess({
     options: {
       prompt: message,
@@ -194,40 +259,117 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
       if (!isCurrentRequest())
         return
       // 处理思考数据
-      const answer = requestMessage.children[0]
-      for (let i = 0; i < chunk.length; i++) {
-        appendChunk(
-          requestChatKey,
-          answer.uuid,
-          chunk[i],
-          true, // thinking is true
-        )
-        emit('messageReceiving', requestMessage.uuid)
-      }
+      if (!requestMessage.children[0])
+        return
+      thinkingBuffer += chunk
+      if (!flushTimer)
+        flushTimer = setTimeout(flushBuffers, 60)
       // 推理阶段无需显示状态
       requestMessage.state = new Map<string, string>()
     },
     messageReceived: (chunk) => {
       if (!isCurrentRequest())
         return
-      try {
-        const answer = requestMessage.children[0]
-        for (let i = 0; i < chunk.length; i++) {
-          appendChunk(
-            requestChatKey,
-            answer.uuid,
-            chunk[i],
-            false, // thinking is false
-          )
-          emit('messageReceiving', requestMessage.uuid)
-        }
-      } catch (error) {
-        console.error(error)
-      }
+      if (!requestMessage.children[0])
+        return
+      textBuffer += chunk
+      if (!flushTimer)
+        flushTimer = setTimeout(flushBuffers, 60)
       // 回复阶段无需显示状态
       requestMessage.state = new Map<string, string>()
     },
+    toolStartedReceived: (data) => {
+      if (!isCurrentRequest())
+        return
+      if (!requestMessage.children[0])
+        return
+      // 工具开始执行：先点亮一条 running 步骤，完成事件（[TOOL_CALL]）再回填时长/结果
+      const answer = requestMessage.children[0]
+      if (!answer.toolCalls)
+        answer.toolCalls = []
+      answer.toolCalls.push({
+        toolName: data.toolName,
+        args: data.args,
+        running: true,
+        durationMs: 0,
+        success: true,
+      })
+    },
+    toolCallReceived: (data) => {
+      if (!isCurrentRequest())
+        return
+      if (!requestMessage.children[0])
+        return
+      const answer = requestMessage.children[0]
+      if (!answer.toolCalls)
+        answer.toolCalls = []
+      // 回填策略：从后往前找同名 running 步骤（[TOOL_STARTED] 已点亮）回填；
+      // 未命中（无 started 的完成事件/历史回放/乱序）按旧逻辑直插，兼容 TOOL_LIMIT_MARKER
+      let runningIdx = -1
+      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
+        const tool = answer.toolCalls[i]
+        if (tool.toolName === data.toolName && tool.running === true) {
+          runningIdx = i
+          break
+        }
+      }
+      if (runningIdx !== -1) {
+        const step = answer.toolCalls[runningIdx]
+        step.running = false
+        step.durationMs = data.durationMs
+        step.success = data.success
+        if (data.resultSummary !== undefined)
+          step.resultSummary = data.resultSummary
+      } else {
+        answer.toolCalls.push(data)
+      }
+    },
+    suspensionReceived: (payload) => {
+      // 先同步 flush 已缓冲文本，防挂起卡片与文本错位
+      flushBuffers()
+      if (!isCurrentRequest())
+        return
+      // 挂起事件：在回答消息上挂卡片载荷（可交互），并在步骤条补挂起节点
+      const answer = requestMessage.children[0]
+      answer.suspension = payload
+      answer.suspensionActive = true
+      if (!answer.toolCalls)
+        answer.toolCalls = []
+      // 同名 running 步骤原地翻挂起节点：协作工具（ask_user 等）的 [TOOL_STARTED]
+      // 已点亮一条 running 行，挂起路径后端不会再发 [TOOL_CALL]，直接 push 会双行
+      // 且 spinner 无人回填；未命中（无 started 的异常序/历史路径）才补新行
+      // Rewrite the same-name running step in place: collaborative tools
+      // already lit a running row via [TOOL_STARTED] and the suspension path
+      // never sends [TOOL_CALL], so pushing would duplicate the row and leave
+      // a spinner unbackfilled; append only on a miss (abnormal order/history)
+      const toolName = payload.toolName || ''
+      let suspendIdx = -1
+      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
+        const tool = answer.toolCalls[i]
+        if (tool.toolName === toolName && tool.running === true) {
+          suspendIdx = i
+          break
+        }
+      }
+      if (suspendIdx !== -1) {
+        const step = answer.toolCalls[suspendIdx]
+        step.running = false
+        step.resultSummary = payload.question
+        step.suspensionKind = payload.kind ?? payload.type
+      } else {
+        answer.toolCalls.push({
+          toolName,
+          durationMs: 0,
+          success: true,
+          resultSummary: payload.question,
+          suspensionKind: payload.kind ?? payload.type,
+        })
+      }
+      emit('messageReceiving', requestMessage.uuid)
+    },
     doneCallback: (chunk) => {
+      // 先同步 flush 已缓冲文本，防丢尾字符
+      flushBuffers()
       if (!isCurrentRequest())
         return
       const answer = requestMessage.children[0]
@@ -246,7 +388,14 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
         if (metaData.conversationUuid && metaData.conversationUuid !== requestConversationUuid)
           console.error('SSE conversation mismatch', { expected: requestConversationUuid, actual: metaData.conversationUuid })
         updateMessageSomeFields(requestChatKey, requestMessage.uuid, { ...metaData.question, thinking: false, loading: false })
-        updateMessageSomeFields(requestChatKey, answer.uuid, { ...metaData.answer, thinking: false, loading: false })
+        // 挂起载荷兜底：实时事件未达（断连竞态）时 [META] 同样携带（键名 type）。实时
+        // 载荷（kind+toolName 更全）优先，防 meta 贫载荷覆盖丢 toolName；兜底命中才置
+        // 交互态（判断须在 assign 生效后按 suspensionActive 互斥，原 "!answer.suspension"
+        // 在 assign 之后恒 false 属死代码）
+        const liveSuspension = answer.suspension
+        updateMessageSomeFields(requestChatKey, answer.uuid, { ...metaData.answer, suspension: liveSuspension || metaData.answer.suspension, thinking: false, loading: false })
+        if (answer.suspension && !answer.suspensionActive)
+          answer.suspensionActive = true
         if (metaData.audioInfo) {
           answer.audioPlayState.audioUrl = metaData.audioInfo.url
           answer.audioDuration = metaData.audioInfo.duration
@@ -267,6 +416,8 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
       requestMessage.state = new Map<string, string>()
     },
     errorCallback: (error) => {
+      // 先同步 flush 已缓冲文本，防错误提示覆盖丢尾字符
+      flushBuffers()
       if (!isCurrentRequest())
         return
       ms.warning(error)
@@ -430,6 +581,7 @@ onUnmounted(() => {
 defineExpose({
   handleStop,
   setMobileToolsExpanded,
+  submitMessage,
 })
 </script>
 

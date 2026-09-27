@@ -33,8 +33,26 @@ import java.util.Map;
 @Accessors(chain = true)
 public class OpenAiLLMService extends AbstractLLMService {
 
+    /**
+     * 平台级自定义请求头，来自 zhimesh.platform-headers.<platform> 配置。
+     * Platform-level custom headers from the zhimesh.platform-headers.<platform> config.
+     */
+    private Map<String, String> customHeaders;
+
     public OpenAiLLMService(AiModel model, ModelPlatform modelPlatform) {
         super(model, modelPlatform);
+    }
+
+    /**
+     * 与 {@link AbstractLLMService#setProxyAddress} 同款的手写链式 setter，
+     * 供 AiModelInitializer 按平台配置注入。
+     * <p>
+     * Hand-written chained setter mirroring {@link AbstractLLMService#setProxyAddress},
+     * used by AiModelInitializer to inject per-platform config.
+     */
+    public OpenAiLLMService setCustomHeaders(Map<String, String> customHeaders) {
+        this.customHeaders = customHeaders;
+        return this;
     }
 
     @Override
@@ -62,6 +80,9 @@ public class OpenAiLLMService extends AbstractLLMService {
             HttpClient.Builder httpClientBuilder = HttpClient.newBuilder().proxy(ProxySelector.of(proxyAddress));
             builder.httpClientBuilder(JdkHttpClient.builder().httpClientBuilder(httpClientBuilder));
         }
+        if (customHeaders != null && !customHeaders.isEmpty()) {
+            builder.customHeaders(customHeaders);
+        }
         return builder.build();
     }
 
@@ -82,6 +103,9 @@ public class OpenAiLLMService extends AbstractLLMService {
         if (null != proxyAddress && platform.getIsProxyEnable()) {
             HttpClient.Builder httpClientBuilder = HttpClient.newBuilder().proxy(ProxySelector.of(proxyAddress));
             builder.httpClientBuilder(JdkHttpClient.builder().httpClientBuilder(httpClientBuilder));
+        }
+        if (customHeaders != null && !customHeaders.isEmpty()) {
+            builder.customHeaders(customHeaders);
         }
         return builder.build();
     }

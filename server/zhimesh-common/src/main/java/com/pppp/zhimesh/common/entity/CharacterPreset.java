@@ -17,4 +17,6 @@ public class CharacterPreset extends BaseEntity {
     private String mcpIds;
     private String type;
     private Boolean isSystem;
+    /** Tool policy JSON (same shape as Character.toolPolicy); copied into the user character on preset instantiation. */
+    private String toolPolicy;
 }

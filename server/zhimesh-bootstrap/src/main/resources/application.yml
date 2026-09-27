@@ -60,6 +60,13 @@ zhimesh:
   host: ${ZHIMESH_HOST:zhimesh.com}
   frontend-url: ${ZHIMESH_FRONTEND_URL:http://www.${zhimesh.host}}
   backend-url: ${ZHIMESH_BACKEND_URL:http://www.${zhimesh.host}/api}
+  # 按平台名注入 OpenAI 兼容 LLM 请求的额外 HTTP 头（平台名 → 头名 → 头值）。
+  # OpenCode Go 端点（zen/go/v1）要求稳定的 x-opencode-session 会话头，缺失返回 400。
+  # Extra HTTP headers per platform for OpenAI-compatible LLM requests.
+  # The OpenCode Go endpoint (zen/go/v1) requires a stable x-opencode-session header.
+  platform-headers:
+    opencode:
+      x-opencode-session: ${ZHIMESH_OPENCODE_SESSION:zhimesh}
   auth:
     # Keep email activation on outside a deliberately configured demonstration environment.
     demo-register-enabled: ${ZHIMESH_DEMO_REGISTER_ENABLED:false}
@@ -68,15 +75,29 @@ zhimesh:
     # max-tool-iterations: 单次请求内工具循环轮数上限，达到后强制一次无工具收尾轮
     # tool-timeout-ms: 内置工具单次执行超时；超时按失败结果回给模型继续对话
     # tool-result-max-chars: 内置工具结果注入模型前的截断长度
+    # default-agentic-enabled: 全量 agentic 的兜底开关；false 时全体角色回到改造前的
+    #                          单次问答（044 存量全开的回退路径，不回滚数据）
+    # mcp-guardrails-enabled: MCP 工具是否纳入超时/截断防护；默认关闭，灰度后再开
+    # pending-ttl-hours: 挂起检查点惰性过期时长（小时），读取时判定，无定时任务
+    # max-suspensions: 同一工具链内 ask_user/审批挂起次数上限，达到后模型优雅收尾
     # <p>
     # Tool-loop runtime caps for agentic character chat (ZhiMeshProperties.Agent).
     # max-tool-iterations: rounds per request before one forced tool-less wrap-up round
     # tool-timeout-ms: per-execution timeout for builtin tools; a timeout is fed back
     #                  to the model as a failure result instead of breaking the chat
     # tool-result-max-chars: truncation length before a builtin tool result re-enters the model
+    # default-agentic-enabled: global fallback switch; false restores the pre-agentic
+    #                          single-shot chat for everyone (rollback path for 044)
+    # mcp-guardrails-enabled: whether MCP tools join the timeout/truncation guardrails (off until rollout)
+    # pending-ttl-hours: lazy TTL in hours for pending suspension checkpoints
+    # max-suspensions: ask_user/approval suspensions allowed within one tool chain
     max-tool-iterations: ${ZHIMESH_AGENT_MAX_TOOL_ITERATIONS:8}
     tool-timeout-ms: ${ZHIMESH_AGENT_TOOL_TIMEOUT_MS:60000}
     tool-result-max-chars: ${ZHIMESH_AGENT_TOOL_RESULT_MAX_CHARS:4000}
+    default-agentic-enabled: ${ZHIMESH_AGENT_DEFAULT_AGENTIC_ENABLED:true}
+    mcp-guardrails-enabled: ${ZHIMESH_AGENT_MCP_GUARDRAILS_ENABLED:false}
+    pending-ttl-hours: ${ZHIMESH_AGENT_PENDING_TTL_HOURS:24}
+    max-suspensions: ${ZHIMESH_AGENT_MAX_SUSPENSIONS:3}
   indexing:
     canonical-chunk-enabled: ${ZHIMESH_CANONICAL_CHUNK_ENABLED:true}
     # The three graph concurrency knobs must move together: effective extraction

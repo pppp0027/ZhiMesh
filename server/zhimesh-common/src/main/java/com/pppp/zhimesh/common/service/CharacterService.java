@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.pppp.zhimesh.common.base.ThreadContext;
 import com.pppp.zhimesh.common.cosntant.ZhiMeshConstant;
 import com.pppp.zhimesh.common.dto.*;
-import com.pppp.zhimesh.common.dto.mcp.UserMcpUpdateReq;
 import com.pppp.zhimesh.common.entity.*;
 import com.pppp.zhimesh.common.entity.Character;
 import com.pppp.zhimesh.common.enums.LLMCallRecordSourceType;
@@ -67,9 +66,6 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
 
     @Resource
     private UserMcpService userMcpService;
-
-    @Resource
-    private McpService mcpService;
 
     @Resource
     private KnowledgeBaseService knowledgeBaseService;
@@ -385,13 +381,23 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
      * @param dto          对话DTO
      */
     private void setMcpToDto(Character character, CharacterDto dto) {
+        // dto.mcpIds 仅作展示：用户自选（character.mcp_ids 存储列）∪ 预设关系运行时解析出的
+        // 预设配套 MCP（只读展示）。编辑提交后 filterEnableMcpIds 只保留用户已启用的 id，
+        // 未启用的预设 id 被过滤、不会写回存储列——存储列从此只含用户自选。
+        // dto.mcpIds is display-only: user-selected ids (the character.mcp_ids
+        // stored column) unioned with preset-bound MCPs resolved from the preset
+        // relation at runtime (read-only display). On edit, filterEnableMcpIds
+        // keeps only ids the user has enabled, so not-yet-enabled preset ids are
+        // dropped and never persisted — the stored column only ever holds the
+        // user's own selections.
+        LinkedHashSet<Long> effectiveIds = new LinkedHashSet<>();
         if (StringUtils.isNotBlank(character.getMcpIds())) {
-            dto.setMcpIds(Arrays.stream(character.getMcpIds().split(","))
+            effectiveIds.addAll(Arrays.stream(character.getMcpIds().split(","))
                     .map(Long::parseLong)
                     .toList());
-        } else {
-            dto.setMcpIds(new ArrayList<>());
         }
+        effectiveIds.addAll(getPresetMcpIds(character.getUserId(), character.getId()));
+        dto.setMcpIds(new ArrayList<>(effectiveIds));
     }
 
     /**
@@ -464,18 +470,27 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
             return characterDto;
         }
 
-        // System KB ids are authorized through the preset relation after the
-        // user character is created; no knowledge base is created by name.
+        // System KB ids and preset MCPs are both authorized through the preset
+        // relation after the user character is created; no knowledge base is
+        // created by name. 预设 MCP 不写入 character.mcp_ids 存储列、也不自动启用：
+        // 用户 MCP 目录（adi_user_mcp）只保留用户显式自选，预设配套 MCP 经预设关系
+        // 运行时解析，须用户在 MCP 页自行启用后工具才生效（2026-09-23 产品决策）。
+        //
+        // Preset MCPs are resolved from the preset relation at runtime instead
+        // of being copied into character.mcp_ids or auto-enabled into the user
+        // MCP catalog (adi_user_mcp); that catalog only ever holds MCPs the
+        // user enabled themselves, and preset tools stay inactive until the
+        // user enables them on the MCP page (2026-09-23 product decision).
         List<Long> kbIds = Collections.emptyList();
-        List<Long> presetMcpIds = parseIds(presetCharacter.getMcpIds());
-        ensureParameterlessPresetMcps(presetMcpIds);
 
         CharacterAddReq characterAddReq = CharacterAddReq.builder()
                 .title(presetCharacter.getTitle())
                 .remark(presetCharacter.getRemark())
                 .aiSystemMessage(presetCharacter.getAiSystemMessage())
                 .kbIds(kbIds)
-                .mcpIds(presetMcpIds)
+                // Preset tool policy (e.g. the finance approval gate) travels with
+                // the instantiation; null keeps the default policy.
+                .toolPolicy(presetCharacter.getToolPolicy())
                 .build();
         CharacterDto characterDto = self.add(characterAddReq);
         characterPresetRelService.save(
@@ -493,29 +508,45 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
     }
 
     /**
-     * Enable preset MCPs that have no user-configurable parameters on first use.
-     * Credential-bearing MCPs remain an explicit user opt-in.
+     * 解析角色实际生效的 MCP id 集合（去重、保序）：用户自选（character.mcp_ids 存储
+     * 列，只含用户显式启用的自选）∪ 预设配套 MCP（经预设关系运行时解析，不落存储列）。
+     * 预设 MCP 自 2026-09-23 起不再自动启用；能否真正创建 MCP 客户端仍由
+     * {@link UserMcpService#createMcpClients} 的 adi_user_mcp.is_enable=true 闸门决定。
+     * <p>
+     * Resolve the deduplicated, order-stable set of MCP ids in effect for a
+     * character: the user's own selections (the character.mcp_ids stored
+     * column, which only contains explicitly enabled user selections) unioned
+     * with the preset-bound MCPs resolved from the preset relation at runtime
+     * (never persisted into the column). Preset MCPs are no longer auto-enabled
+     * (2026-09-23 product decision); whether an MCP client is actually created
+     * is still gated by adi_user_mcp.is_enable=true inside
+     * {@link UserMcpService#createMcpClients}.
      */
-    private void ensureParameterlessPresetMcps(List<Long> mcpIds) {
-        if (CollectionUtils.isEmpty(mcpIds)) {
-            return;
+    public List<Long> resolveEffectiveMcpIds(Character character) {
+        if (character == null) {
+            return Collections.emptyList();
         }
-        Set<Long> enabled = userMcpService.searchEnableByUserId(ThreadContext.getCurrentUserId()).stream()
-                .map(UserMcp::getMcpId)
-                .collect(Collectors.toSet());
-        for (Long mcpId : mcpIds) {
-            if (enabled.contains(mcpId)) {
-                continue;
-            }
-            Mcp mcp = mcpService.getOrThrow(mcpId, false);
-            if (!CollectionUtils.isEmpty(mcp.getCustomizedParamDefinitions())) {
-                continue;
-            }
-            UserMcpUpdateReq updateReq = new UserMcpUpdateReq();
-            updateReq.setMcpId(mcpId);
-            updateReq.setMcpCustomizedParams(Collections.emptyList());
-            updateReq.setIsEnable(true);
-            userMcpService.saveOrUpdate(updateReq);
+        LinkedHashSet<Long> effectiveIds = new LinkedHashSet<>(parseIds(character.getMcpIds()));
+        effectiveIds.addAll(getPresetMcpIds(character.getUserId(), character.getId()));
+        return new ArrayList<>(effectiveIds);
+    }
+
+    /**
+     * 预设配套 MCP：按 userId+userCharacterId 反查预设关系，再取预设的 mcp_ids。
+     * 无预设关系或查询失败时返回空集合——静默降级为仅用户自选，不阻断聊天与列表展示。
+     * <p>
+     * Preset-bound MCP ids resolved via the preset relation; returns empty when
+     * the character has no preset relation or the lookup fails — silently
+     * degrades to user-selected ids only and never blocks chatting or listing.
+     */
+    private List<Long> getPresetMcpIds(Long userId, Long userCharacterId) {
+        try {
+            CharacterPreset preset = findPresetByUserCharacter(userId, userCharacterId);
+            return null == preset ? Collections.emptyList() : parseIds(preset.getMcpIds());
+        } catch (Exception e) {
+            log.warn("Failed to resolve preset MCP ids, userId:{}, characterId:{}, errorType:{}",
+                    userId, userCharacterId, e.getClass().getSimpleName());
+            return Collections.emptyList();
         }
     }
 
@@ -668,20 +699,29 @@ public class CharacterService extends ServiceImpl<CharacterMapper, Character> {
                 .toList();
     }
 
+    /** 按 userId+userCharacterId 反查用户角色对应的系统预设；无预设关系时返回 null。
+     *  Resolve the preset bound to a user character via the preset relation; null when unbound. */
+    private CharacterPreset findPresetByUserCharacter(Long userId, Long userCharacterId) {
+        if (userId == null || userCharacterId == null) {
+            return null;
+        }
+        CharacterPresetRel rel = characterPresetRelService.lambdaQuery()
+                .eq(CharacterPresetRel::getUserId, userId)
+                .eq(CharacterPresetRel::getUserCharacterId, userCharacterId)
+
+                .oneOpt().orElse(null);
+        if (rel == null) {
+            return null;
+        }
+        return characterPresetService.getById(rel.getPresetCharacterId());
+    }
+
     /** Resolve the role's current system-KB binding without trusting user input. */
     private Set<Long> getCurrentSystemKbIds(Character character) {
         if (character == null || character.getId() == null) {
             return Collections.emptySet();
         }
-        CharacterPresetRel rel = characterPresetRelService.lambdaQuery()
-                .eq(CharacterPresetRel::getUserId, character.getUserId())
-                .eq(CharacterPresetRel::getUserCharacterId, character.getId())
-                
-                .oneOpt().orElse(null);
-        if (rel == null) {
-            return Collections.emptySet();
-        }
-        CharacterPreset preset = characterPresetService.getById(rel.getPresetCharacterId());
+        CharacterPreset preset = findPresetByUserCharacter(character.getUserId(), character.getId());
         if (preset == null) {
             return Collections.emptySet();
         }

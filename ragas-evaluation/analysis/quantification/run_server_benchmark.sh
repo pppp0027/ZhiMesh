@@ -10,6 +10,9 @@ ACCOUNTS_FILE="${ZHIMESH_BENCHMARK_ACCOUNTS_FILE:-analysis/quantification/config
 MODE="${1:-check}"
 MATRIX_OUTPUT_ROOT="${SSE_MATRIX_OUTPUT_ROOT:-analysis/quantification/results/runs/performance-matrix-$(date +%Y%m%d-%H%M%S)}"
 ROUND_COOLDOWN_SECONDS="${SSE_ROUND_COOLDOWN_SECONDS:-60}"
+# Rounds per concurrency level in matrix mode (serial c1 always runs once).
+# Raise (e.g. SSE_MATRIX_ROUNDS=3) to get per-level variance across rounds.
+MATRIX_ROUNDS="${SSE_MATRIX_ROUNDS:-1}"
 
 if [[ $# -gt 0 ]]; then
   shift
@@ -69,10 +72,15 @@ case "${MODE}" in
 
     run_case 1 1 "$@"
     sleep "${ROUND_COOLDOWN_SECONDS}"
-    run_case 5 1 "$@"
-    sleep "${ROUND_COOLDOWN_SECONDS}"
-    run_case 10 1 "$@"
-    echo "matrix_output=${MATRIX_OUTPUT_ROOT}"
+    for concurrency in 5 10; do
+      for round in $(seq 1 "${MATRIX_ROUNDS}"); do
+        run_case "${concurrency}" "${round}" "$@"
+        if [[ "${concurrency}" != "10" || "${round}" != "${MATRIX_ROUNDS}" ]]; then
+          sleep "${ROUND_COOLDOWN_SECONDS}"
+        fi
+      done
+    done
+    echo "matrix_rounds=${MATRIX_ROUNDS} matrix_output=${MATRIX_OUTPUT_ROOT}"
     ;;
   interrupt)
     exec "${VENV_DIR}/bin/python" analysis/quantification/scripts/sse_benchmark.py \

@@ -358,6 +358,43 @@ public class ZhiMeshConstant {
         public static final String STATE_CHANGED = "[STATE_CHANGED]";
         public static final String TOOL_CALL = "[TOOL_CALL]";
         /**
+         * 工具开始执行事件：工具真正执行前下发（载荷 toolName/args?，args 可空省略），
+         * 前端据此实时点亮执行中的工具步骤（与 TOOL_CALL 完成事件配对回填时长/结果）；
+         * 旧前端对未知事件类型按忽略处理（向后兼容）
+         * <p>
+         * Tool-started event: emitted right before a tool actually runs
+         * (payload toolName/args?; args omitted when null) so the frontend can
+         * light up the running tool step in real time — paired with the
+         * TOOL_CALL completion event that backfills duration/result. Older
+         * frontends ignore unknown event types (backward compatible).
+         */
+        public static final String TOOL_STARTED = "[TOOL_STARTED]";
+        /**
+         * Agent 协作提问事件：ask_user 挂起时下发（载荷 kind/toolName/question/options），
+         * 前端渲染问题卡片；旧前端对未知事件类型按忽略处理（向后兼容）
+         * <p>
+         * Agent collaborative-question event: emitted when ask_user suspends the
+         * loop (payload kind/toolName/question/options); the frontend renders a
+         * question card. Older frontends ignore unknown event types
+         * (backward compatible).
+         */
+        public static final String AGENT_QUESTION = "[AGENT_QUESTION]";
+        /**
+         * Agent 协作审批事件：request_human_approval 显式审批与 MCP 需审批工具拦截挂起时下发
+         * （载荷 kind/toolName/question/action/summary/riskLevel/checkpointUuid，riskLevel 可空省略；
+         * kind=APPROVAL/MCP_APPROVAL 供前端区分两种审批形态），前端渲染审批卡片；旧前端对未知
+         * 事件类型按忽略处理（向后兼容）
+         * <p>
+         * Agent collaborative-approval event: emitted when request_human_approval
+         * suspends explicitly or an approval-required MCP tool is intercepted by
+         * the decorator (payload kind/toolName/question/action/summary/riskLevel/
+         * checkpointUuid, riskLevel omitted when null; kind=APPROVAL/
+         * MCP_APPROVAL lets the frontend tell the two approval shapes apart) —
+         * the frontend renders the approval card. Older frontends ignore unknown
+         * event types (backward compatible).
+         */
+        public static final String APPROVAL_REQUEST = "[APPROVAL_REQUEST]";
+        /**
          * Runtime-level aggregated metrics snapshot pushed at terminal status (success / fail /
          * waiting_input). Frontend looks for this exact tag in RunDetail.vue.
          */

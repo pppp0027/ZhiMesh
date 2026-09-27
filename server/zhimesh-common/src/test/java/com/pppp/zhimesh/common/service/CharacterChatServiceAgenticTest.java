@@ -72,12 +72,15 @@ import static org.mockito.Mockito.when;
 /**
  * T4 Agentic 分支的行为验证：isAgentic=false 时请求逐字节等价（回归锁）、
  * isAgentic=true 时注册 search_knowledge 并贯通 ToolContext、工具证据合并去重、
- * 轨迹落库参数、meta 载荷扩展。
+ * 轨迹落库参数、meta 载荷扩展；T2 追加兜底开关（default-agentic-enabled）与
+ * tool_policy denylist 的注册门控矩阵。
  * <p>
  * Behavioral verification for the T4 agentic branch: byte-for-byte equivalence
  * when isAgentic=false (regression lock), search_knowledge registration and
  * ToolContext wiring when isAgentic=true, tool-evidence merge dedup, trace
- * persistence parameters, and the extended meta payload.
+ * persistence parameters, and the extended meta payload; T2 adds the
+ * registration-gating matrix for the fallback switch (default-agentic-enabled)
+ * and the tool_policy denylist.
  */
 class CharacterChatServiceAgenticTest {
 
@@ -248,23 +251,33 @@ class CharacterChatServiceAgenticTest {
 
     @Test
     void agenticCharacterRegistersSearchKnowledgeToolWithContext() {
-        // 有短期记忆ID但 understandContextEnable 关闭：记忆接线保持为空（负例）
-        // A short-memory id exists but understandContextEnable is off: the memory
-        // wiring stays null (negative case)
+        // 有短期记忆ID：上下文恒启用（2026-09-24 产品决策，开关已下线），记忆接线恒存在，
+        // 与预检索口径一致；T4 起 ask_user 恒注册、T5 起 request_human_approval 同口径
+        // 恒注册（默认集 ∩ 策略 ∩ 可用性）
+        // A short-memory id exists: context is always on (2026-09-24 product
+        // decision, the toggle is retired) so the memory wiring always exists,
+        // matching pre-retrieval; since T4 ask_user and since T5
+        // request_human_approval are always registered (default set ∩ policy ∩
+        // availability)
         runExecuteChat(Boolean.TRUE, true, "mem-1");
 
         SseAskParamCapture captured = captureAskParam();
-        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).hasSize(1);
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).hasSize(3);
         assertThat(captured.param.getHttpRequestParams().getBuiltinTools().get(0))
                 .isInstanceOf(SearchKnowledgeTool.class);
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools().get(1))
+                .isInstanceOf(com.pppp.zhimesh.common.languagemodel.tool.AskUserTool.class);
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools().get(2))
+                .isInstanceOf(com.pppp.zhimesh.common.languagemodel.tool.RequestHumanApprovalTool.class);
 
         ToolContext toolContext = captured.param.getToolContext();
         assertThat(toolContext).isNotNull();
         assertThat(toolContext.getUser()).isSameAs(user);
         assertThat(toolContext.getCharacterId()).isEqualTo(55L);
-        // understandContextEnable 关闭时记忆接线为空，与预检索口径一致
-        // Memory wiring stays null while understandContextEnable is off, matching pre-retrieval
-        assertThat(toolContext.getMemoryId()).isNull();
+        // 上下文恒启用：短期记忆ID恒接线（不再受 understandContextEnable 门控）
+        // Context is always on: the short-term memory id is always wired
+        // (no longer gated by understandContextEnable)
+        assertThat(toolContext.getMemoryId()).isEqualTo("mem-1");
         assertThat(toolContext.getToolTraces()).isEmpty();
         assertThat(toolContext.getRefCollector()).isEmpty();
 
@@ -277,31 +290,44 @@ class CharacterChatServiceAgenticTest {
 
     @Test
     void agenticCharacterGatesOnAvailableKnowledgeBases() {
-        // 开关打开但既无可检索知识库也无工作流可用：不注册任何对象
-        // Switch on but neither a searchable KB nor a workflow exists: register nothing
+        // 开关打开但既无可检索知识库也无工作流可用：ask_user 与 request_human_approval
+        // 恒可用（无外部依赖），上下文照常构造，ragContext 为 null（search_knowledge 未注册）
+        // Switch on but neither a searchable KB nor a workflow exists: ask_user
+        // and request_human_approval stay available (no external dependency),
+        // the context is still built, and ragContext is null (search_knowledge
+        // is not registered)
         runExecuteChat(Boolean.TRUE, false, null);
 
         SseAskParamCapture captured = captureAskParam();
-        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).isNull();
-        assertThat(captured.param.getToolContext()).isNull();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .extracting(tool -> tool.getClass().getSimpleName())
+                .containsExactly("AskUserTool", "RequestHumanApprovalTool");
+        assertThat(captured.param.getToolContext()).isNotNull();
+        assertThat(captured.param.getToolContext().getRagContext()).isNull();
     }
 
     // ==================== run_workflow 注册门控 / run_workflow registration gating ====================
 
     @Test
     void agenticCharacterRegistersOnlyRunWorkflowWithoutKnowledgeBases() {
-        // 开关打开、无知识库但有可调用工作流：只注册 run_workflow；ToolContext 可用但
-        // ragContext 为 null（search_knowledge 未注册，null ragContext 短路兼容保持）
-        // Switch on, no KB but runnable workflows exist: only run_workflow is
-        // registered; the ToolContext exists yet ragContext stays null
-        // (search_knowledge is not registered; null-ragContext compatibility kept)
+        // 开关打开、无知识库但有可调用工作流：注册 run_workflow + ask_user +
+        // request_human_approval；ToolContext 可用但 ragContext 为 null（search_knowledge
+        // 未注册，null ragContext 短路兼容保持）
+        // Switch on, no KB but runnable workflows exist: run_workflow plus
+        // ask_user plus request_human_approval are registered; the ToolContext
+        // exists yet ragContext stays null (search_knowledge is not registered;
+        // null-ragContext compatibility kept)
         runExecuteChat(Boolean.TRUE, false, null,
                 List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
 
         SseAskParamCapture captured = captureAskParam();
-        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).hasSize(1);
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).hasSize(3);
         assertThat(captured.param.getHttpRequestParams().getBuiltinTools().get(0))
                 .isInstanceOf(RunWorkflowTool.class);
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools().get(1))
+                .isInstanceOf(com.pppp.zhimesh.common.languagemodel.tool.AskUserTool.class);
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools().get(2))
+                .isInstanceOf(com.pppp.zhimesh.common.languagemodel.tool.RequestHumanApprovalTool.class);
 
         ToolContext toolContext = captured.param.getToolContext();
         assertThat(toolContext).isNotNull();
@@ -311,19 +337,217 @@ class CharacterChatServiceAgenticTest {
 
     @Test
     void agenticCharacterRegistersBothToolsWhenKnowledgeBasesAndWorkflowsAvailable() {
-        // 知识库与工作流同时可用：两个内置工具都注册
-        // Both KBs and workflows available: register both builtin tools
+        // 知识库与工作流同时可用：四件内置工具（ask_user / request_human_approval）都注册
+        // Both KBs and workflows available: all four builtin tools (ask_user /
+        // request_human_approval included) are registered
         runExecuteChat(Boolean.TRUE, true, null,
                 List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
 
         SseAskParamCapture captured = captureAskParam();
-        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).hasSize(2);
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).hasSize(4);
         assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
                 .extracting(tool -> tool.getClass().getSimpleName())
-                .containsExactly("SearchKnowledgeTool", "RunWorkflowTool");
+                .containsExactly("SearchKnowledgeTool", "RunWorkflowTool", "AskUserTool",
+                        "RequestHumanApprovalTool");
         // 有知识库时 ragContext 照常构造（既有断言语义不变）
         // ragContext is built as usual when KBs exist (existing semantics)
         assertThat(captured.param.getToolContext().getRagContext()).isNotNull();
+    }
+
+    // ==================== 兜底开关与 tool_policy / Fallback switch and tool policy ====================
+
+    @Test
+    void agenticFallbackSwitchOffKeepsRequestUntouchedDespiteCharacterFlag() {
+        // zhimesh.agent.default-agentic-enabled=false：角色 is_agentic=true 也不生效——
+        // 零注册、零 ToolContext、连工作流可见性查询都不触发（迁移 044 存量全开的回退
+        // 路径，镜像 nonAgenticCharacterKeepsRequestUntouched 的回归锁写法）
+        // zhimesh.agent.default-agentic-enabled=false: even an is_agentic=true
+        // character stays non-agentic — zero registration, zero ToolContext, and
+        // not even the workflow visibility query fires (the rollback path for
+        // migration 044's wholesale flip, mirroring the regression-lock style
+        // of nonAgenticCharacterKeepsRequestUntouched)
+        ZhiMeshProperties properties = new ZhiMeshProperties();
+        properties.getAgent().setDefaultAgenticEnabled(false);
+        ReflectionTestUtils.setField(chatService, "adiProperties", properties);
+        runExecuteChat(Boolean.TRUE, true, null);
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .as("default-agentic-enabled=false must not register builtin tools").isNull();
+        assertThat(captured.param.getToolContext())
+                .as("default-agentic-enabled=false must not build a tool context").isNull();
+
+        // 非 Agentic 路径连工作流可见性查询都不触发（零额外开销，行为回到改造前）
+        // The non-agentic path never even triggers the workflow visibility query
+        verifyNoInteractions(workflowService);
+        verifyNoInteractions(workflowStarter);
+
+        // 完成回调后 meta 也不携带 toolCalls（旧载荷形状不变）
+        // After completion the meta carries no toolCalls either (legacy payload shape)
+        AnswerMeta meta = AnswerMeta.builder().build();
+        captured.callback.accept(new LLMResponseContent(null, "answer", null),
+                new PromptMeta(1, "q-uuid"), meta);
+        assertThat(meta.getToolCalls()).isNull();
+    }
+
+    @Test
+    void agenticFallbackSwitchOnByDefaultMatchesLegacyAgenticBehavior() {
+        // 开关默认 true（显式注入默认配置）：与改造前等价——知识库与工作流都在时
+        // 两个内置工具照常注册
+        // Switch on by default (explicitly injected default config): equivalent
+        // to the pre-T2 behavior — both builtin tools register as usual when
+        // KBs and workflows are both available
+        ReflectionTestUtils.setField(chatService, "adiProperties", new ZhiMeshProperties());
+        runExecuteChat(Boolean.TRUE, true, null,
+                List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .extracting(tool -> tool.getClass().getSimpleName())
+                .containsExactly("SearchKnowledgeTool", "RunWorkflowTool", "AskUserTool",
+                        "RequestHumanApprovalTool");
+        assertThat(captured.param.getToolContext()).isNotNull();
+    }
+
+    @Test
+    void toolPolicyDenylistRemovesRunWorkflowFromRegistration() {
+        // tool_policy 摘掉 run_workflow：即使工作流可见也只注册 search_knowledge +
+        // ask_user + request_human_approval
+        // The tool_policy removes run_workflow: only search_knowledge plus
+        // ask_user plus request_human_approval are registered even though
+        // workflows are visible
+        character.setToolPolicy("{\"builtinDenylist\":[\"run_workflow\"]}");
+        runExecuteChat(Boolean.TRUE, true, null,
+                List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .extracting(tool -> tool.getClass().getSimpleName())
+                .containsExactly("SearchKnowledgeTool", "AskUserTool", "RequestHumanApprovalTool");
+        assertThat(captured.param.getToolContext()).isNotNull();
+    }
+
+    @Test
+    void toolPolicyDenylistRemovesSearchKnowledgeFromRegistration() {
+        // tool_policy 摘掉 search_knowledge：知识库可用也只注册 run_workflow + ask_user +
+        // request_human_approval，ragContext 照常构造（null ragContext 短路兼容保持）
+        // The tool_policy removes search_knowledge: only run_workflow plus
+        // ask_user plus request_human_approval are registered even though KBs
+        // are available; ragContext is still built (null-ragContext
+        // short-circuit compatibility kept)
+        character.setToolPolicy("{\"builtinDenylist\":[\"search_knowledge\"]}");
+        runExecuteChat(Boolean.TRUE, true, null,
+                List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .extracting(tool -> tool.getClass().getSimpleName())
+                .containsExactly("RunWorkflowTool", "AskUserTool", "RequestHumanApprovalTool");
+        assertThat(captured.param.getToolContext().getRagContext()).isNotNull();
+    }
+
+    @Test
+    void toolPolicyDenylistCanRemoveAskUserAlone() {
+        // 策略单独摘掉 ask_user：协作提问能力被禁，检索/工作流/审批照常
+        // A policy removing only ask_user: the collaborative questioning
+        // capability is disabled while retrieval/workflows/approval stay
+        character.setToolPolicy("{\"builtinDenylist\":[\"ask_user\"]}");
+        runExecuteChat(Boolean.TRUE, true, null,
+                List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .extracting(tool -> tool.getClass().getSimpleName())
+                .containsExactly("SearchKnowledgeTool", "RunWorkflowTool", "RequestHumanApprovalTool");
+    }
+
+    @Test
+    void toolPolicyDenylistCanRemoveRequestHumanApprovalAlone() {
+        // 策略单独摘掉 request_human_approval：显式审批工具被禁（MCP 需审批装饰器不受
+        // 影响——它由 approvalRequiredMcpTools 另行装配），其余协作工具照常
+        // A policy removing only request_human_approval: the explicit approval
+        // tool is disabled (the MCP approval decorator is unaffected — it is
+        // assembled separately from approvalRequiredMcpTools), the other
+        // collaborative tools stay
+        character.setToolPolicy("{\"builtinDenylist\":[\"request_human_approval\"]}");
+        runExecuteChat(Boolean.TRUE, true, null,
+                List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .extracting(tool -> tool.getClass().getSimpleName())
+                .containsExactly("SearchKnowledgeTool", "RunWorkflowTool", "AskUserTool");
+    }
+
+    @Test
+    void approvalRequiredMcpToolsRideTheRequestParamsWhenPolicyMarksTools() {
+        // tool_policy 标记需审批 MCP 工具：集合原样写入 ChatModelRequest.approvalRequiredTools
+        // （装包审批装饰器由 AbstractLLMService.discoverRequestTools 按 discover 期工具命中
+        // 处理，MCP 工具名不在此过滤）；与 denylist 共存时两键互不干扰
+        // The tool_policy marks approval-required MCP tools: the set rides
+        // ChatModelRequest.approvalRequiredTools as-is (wrapping with the
+        // approval decorator is discoverRequestTools' job, matched against the
+        // discovered tools — MCP tool names are not filtered here); alongside a
+        // denylist the two keys never interfere
+        character.setToolPolicy("{\"builtinDenylist\":[\"run_workflow\"],"
+                + "\"approvalRequiredMcpTools\":[\"submit_expense_report\",\"send_external_email\"]}");
+        runExecuteChat(Boolean.TRUE, true, null);
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getApprovalRequiredTools())
+                .containsExactlyInAnyOrder("submit_expense_report", "send_external_email");
+    }
+
+    @Test
+    void approvalRequiredToolsStayUnsetWithoutMarkersOrAgenticMode() {
+        // 无标记（默认策略）或非 agentic（角色未开启）都保持 approvalRequiredTools=null：
+        // 装配无审批门，行为回到现状（验收标准 1 的回退等价在审批维度的落法）
+        // Neither a default policy (no markers) nor a non-agentic character sets
+        // approvalRequiredTools: no gate is assembled and behavior stays as
+        // before (acceptance criterion 1's rollback equality, approval dimension)
+        runExecuteChat(Boolean.TRUE, true, null);
+        character.setToolPolicy("{\"approvalRequiredMcpTools\":[\"submit_expense_report\"]}");
+        runExecuteChat(Boolean.FALSE, true, null);
+
+        ArgumentCaptor<SseAskParam> paramCaptor = ArgumentCaptor.forClass(SseAskParam.class);
+        verify(sseManager, times(2)).call(eq(llmService), paramCaptor.capture(), any(), any());
+        for (SseAskParam param : paramCaptor.getAllValues()) {
+            assertThat(param.getHttpRequestParams().getApprovalRequiredTools()).isNull();
+        }
+    }
+
+    @Test
+    void toolPolicyDenylistRemovingAllBuiltinToolsSkipsAgenticContext() {
+        // 四件内置工具都被摘掉：注册集为空 → 回到非 agentic 行为（不构造上下文、
+        // 不注册任何工具）；这是 ask_user/request_human_approval 恒可用后唯一的
+        // 非 agentic 回退情形
+        // All four builtin tools removed: the registration set is empty →
+        // back to non-agentic behavior (no context, no tools); with ask_user /
+        // request_human_approval always available this is the only remaining
+        // non-agentic fallback
+        character.setToolPolicy("{\"builtinDenylist\":[\"search_knowledge\",\"run_workflow\",\"ask_user\",\"request_human_approval\"]}");
+        runExecuteChat(Boolean.TRUE, true, null,
+                List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools()).isNull();
+        assertThat(captured.param.getToolContext()).isNull();
+    }
+
+    @Test
+    void invalidToolPolicyJsonRegistersBothToolsFailSafe() {
+        // 非法 tool_policy JSON：fail-safe 回默认策略（全允许），不阻断聊天
+        // Invalid tool_policy JSON: fail-safe back to the default policy
+        // (allow all), never blocking the chat
+        character.setToolPolicy("{\"builtinDenylist\":[\"run_workflow\"");
+        runExecuteChat(Boolean.TRUE, true, null,
+                List.of(workflow("周报生成", "wf-uuid-1", 1L)), Map.of());
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getBuiltinTools())
+                .extracting(tool -> tool.getClass().getSimpleName())
+                .containsExactly("SearchKnowledgeTool", "RunWorkflowTool", "AskUserTool",
+                        "RequestHumanApprovalTool");
     }
 
     @Test
@@ -401,7 +625,12 @@ class CharacterChatServiceAgenticTest {
     }
 
     @Test
-    void agenticToolContextCarriesMemoryIdOnlyWhenContextUnderstandingEnabled() {
+    void agenticToolContextCarriesMemoryIdWithContextAlwaysOn() {
+        // 上下文恒启用（2026-09-24 产品决策：开关已下线，列保留不读）：
+        // 存量"显式开开关"的用例保留，语义等价于恒接线
+        // Context is always on (2026-09-24 product decision: the toggle is
+        // retired, the column kept but never read): this legacy
+        // "flag explicitly on" case stays, now equivalent to always wired
         character.setUnderstandContextEnable(true);
         runExecuteChat(Boolean.TRUE, true, "mem-1");
 

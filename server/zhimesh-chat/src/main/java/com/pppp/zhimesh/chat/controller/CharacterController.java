@@ -49,6 +49,9 @@ public class CharacterController {
 
     @PostMapping("/add")
     public CharacterDto add(@RequestBody @Validated CharacterAddReq characterAddReq) {
+        // tool_policy 由预设实例化或管理端下发，用户端不可写
+        // tool_policy is provisioned via preset instantiation or the admin console; the user portal cannot write it
+        characterAddReq.setToolPolicy(null);
         return characterService.add(characterAddReq);
     }
 
@@ -60,6 +63,9 @@ public class CharacterController {
 
     @PostMapping("/edit/{uuid}")
     public boolean edit(@PathVariable String uuid, @RequestBody @Validated CharacterEditReq characterEditReq) {
+        // tool_policy 由预设实例化或管理端下发，用户端不可写
+        // tool_policy is provisioned via preset instantiation or the admin console; the user portal cannot write it
+        characterEditReq.setToolPolicy(null);
         return characterService.editOwnedByCurrentUser(uuid, characterEditReq);
     }
 

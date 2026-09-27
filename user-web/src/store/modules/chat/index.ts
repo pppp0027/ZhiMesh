@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { defaultState, findMessageFromCharacter, getDefaultCharacter } from './helper'
+import { defaultState, deriveHistorySuspension, findMessageFromCharacter, getDefaultCharacter } from './helper'
 import { router } from '@/router'
 import { emptyAudioPlayState } from '@/utils/functions'
 import { CHAT_MESSAGE_CONTENT_TYPE } from '@/utils/constant'
@@ -108,10 +108,6 @@ export const useChatStore = defineStore('chat-store', {
   },
 
   actions: {
-    setUsingContext(context: boolean) {
-      this.usingContext = context
-    },
-
     clearDefault() {
       const index = this.characters.findIndex(item => item.uuid === 'default')
       if (index !== -1)
@@ -257,6 +253,9 @@ export const useChatStore = defineStore('chat-store', {
       if (undefined === message.inversion)
         message.inversion = message.messageRole !== 3
       this.initAudioText(message)
+      // 历史回放（首页加载路径）：由轨迹行派生挂起卡片（只读）；实时消息无轨迹行不受影响
+      if (message.messageRole === 1 || message.messageRole === 3)
+        deriveHistorySuspension(message)
 
       if (this.characters.length === 0) {
         this.characters.push(getDefaultCharacter())
@@ -296,6 +295,8 @@ export const useChatStore = defineStore('chat-store', {
       const cachedMsgs = this.chats[chatIndex].data
       messages.forEach((item) => {
         this.initAudioText(item)
+        // 历史回放：由轨迹行派生挂起卡片（只读）
+        deriveHistorySuspension(item)
         cachedMsgs.unshift(item)
       })
     },

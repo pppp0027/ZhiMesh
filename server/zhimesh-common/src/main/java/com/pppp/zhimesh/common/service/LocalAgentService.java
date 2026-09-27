@@ -94,10 +94,15 @@ public class LocalAgentService implements AgentService {
             // user-owned kbIds field. Resolve by Character so every RAG entry
             // point applies the preset binding with the same authorization.
             List<KbInfoResp> filteredKb = characterService.filterEnableKb(user, character);
+            // 上下文恒启用（2026-09-24 产品决策：understandContextEnable 开关已下线，
+            // 列保留不读），检索恒携带短期记忆ID（memoryId 为 null 语义不变）
+            // Context is always on (2026-09-24 product decision: the
+            // understandContextEnable toggle is retired, the column is kept but
+            // never read); retrieval always carries the short-term memory id
+            // (a null memoryId keeps its meaning)
             retrieverWrappers = CharacterChatHelper.retrieve(
                     character.getId(), filteredKb, llmService, embeddingModel,
-                    request.getInputText(), Boolean.TRUE.equals(character.getUnderstandContextEnable())
-                            ? memoryId : null);
+                    request.getInputText(), memoryId);
             retrievalCount = retrieverWrappers.stream()
                     .mapToInt(w -> w.getResponse() != null ? w.getResponse().size() : 0).sum();
         }

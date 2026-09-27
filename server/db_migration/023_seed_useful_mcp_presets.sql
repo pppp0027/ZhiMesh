@@ -10,7 +10,7 @@ UPDATE adi_mcp
 SET stdio_command = 'uvx',
     stdio_arg = '--from mcp-server-fetch --with mcp<2 mcp-server-fetch',
     preset_params = '[{"name":"PYTHONIOENCODING","value":"utf-8"}]'::jsonb,
-    remark = '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。'
+    remark = '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。不要抓取搜索引擎结果页（会被 robots.txt 拒绝），直接抓取目标网站。'
 WHERE title = '网页抓取';
 
 INSERT INTO adi_mcp
@@ -19,8 +19,59 @@ INSERT INTO adi_mcp
 SELECT replace(gen_random_uuid()::text, '-', ''), '网页抓取', 'stdio', 'uvx',
        '--from mcp-server-fetch --with mcp<2 mcp-server-fetch', 'local', '[{"name":"PYTHONIOENCODING","value":"utf-8"}]'::jsonb,
        'https://github.com/modelcontextprotocol/servers',
-       '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。', true
+       '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。不要抓取搜索引擎结果页（会被 robots.txt 拒绝），直接抓取目标网站。多个同类页面尽量在同一轮并行发起多个抓取调用，减少串行轮次；返回内容过短（仅页面标题）视为抓取失败，不要基于该页展开分析；回答中引用抓取到的事实时，在该句句末用脚注标注：正文相应位置写 [^n]，并在回答末尾用脚注定义逐条列出来源（格式：[^n]: [站点名](抓取页URL)（抓取于 年-月））；编号与正文一一对应、按首次出现顺序编号；没有对应抓取页面的表述不得加脚注。', true
 WHERE NOT EXISTS (SELECT 1 FROM adi_mcp WHERE title = '网页抓取');
+
+-- Append behavioral constraints to the Fetch MCP remark: issue parallel
+-- fetch calls for peer pages in one round, treat title-only responses as a
+-- failed fetch, and cite source site plus capture date inline. Idempotent by
+-- verbatim matching (same pattern as the preset amendments below): the
+-- UPDATE only hits the row still carrying the exact previous copy, so
+-- re-running on an upgraded database updates 0 rows and a user-edited
+-- remark is never overwritten. The INSERT branch above already carries the
+-- final copy, so fresh installs are correct without this statement.
+UPDATE adi_mcp
+SET remark = '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。不要抓取搜索引擎结果页（会被 robots.txt 拒绝），直接抓取目标网站。多个同类页面尽量在同一轮并行发起多个抓取调用，减少串行轮次；返回内容过短（仅页面标题）视为抓取失败，不要基于该页展开分析；回答中引用抓取到的事实时，须在该事实后括注来源站点与抓取日期（如：据 notion.com 定价页，2026-09）。'
+WHERE title = '网页抓取'
+  AND remark = '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。不要抓取搜索引擎结果页（会被 robots.txt 拒绝），直接抓取目标网站。';
+
+-- Swap the inline citation instruction in the Fetch MCP remark for a footnote
+-- convention: append [^n] to the cited sentence in the body and list each
+-- source as a [^n]: definition at the end of the answer. Idempotent by
+-- verbatim matching (same pattern as the amendment above): the UPDATE only
+-- hits the row still carrying the exact previous copy, so re-running on an
+-- upgraded database updates 0 rows and a user-edited remark is never
+-- overwritten. Together with the amendment above it forms a chain, so a row
+-- on either earlier copy is upgraded stepwise in one run. The INSERT branch
+-- above already carries the final copy, so fresh installs are correct
+-- without this statement.
+UPDATE adi_mcp
+SET remark = '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。不要抓取搜索引擎结果页（会被 robots.txt 拒绝），直接抓取目标网站。多个同类页面尽量在同一轮并行发起多个抓取调用，减少串行轮次；返回内容过短（仅页面标题）视为抓取失败，不要基于该页展开分析；回答中引用抓取到的事实时，在该句句末用脚注标注：正文相应位置写 [^n]，并在回答末尾用脚注定义逐条列出来源（格式：[^n]: [站点名](抓取页URL)（抓取于 年-月））；编号与正文一一对应、按首次出现顺序编号；没有对应抓取页面的表述不得加脚注。'
+WHERE title = '网页抓取'
+  AND remark = '抓取公开网页内容并提取正文，适合研究、资料整理和知识库准备。首次运行需要安装 uv/uvx，并使用 mcp<2 约束启动（官方包与 mcp SDK 2.x 暂不兼容）。不要抓取搜索引擎结果页（会被 robots.txt 拒绝），直接抓取目标网站。多个同类页面尽量在同一轮并行发起多个抓取调用，减少串行轮次；返回内容过短（仅页面标题）视为抓取失败，不要基于该页展开分析；回答中引用抓取到的事实时，须在该事实后括注来源站点与抓取日期（如：据 notion.com 定价页，2026-09）。';
+
+-- Upgrade the 产品与市场分析师 preset prompt. The earlier draft told the model
+-- to interrogate the user for scope and time windows up front; the new copy
+-- starts from reasonable defaults (e.g. mainland China, trailing 12 months),
+-- states its assumptions at the top of the answer, and only confirms a
+-- direction-changing gap once. Idempotent by verbatim matching: the UPDATE
+-- only hits rows still carrying the exact old copy (title-pinned for the
+-- preset), so re-running is a no-op and user-edited prompts are never touched.
+-- The preset INSERT branch below already carries the new copy, so fresh
+-- installs are correct without this statement.
+UPDATE adi_character_preset
+SET ai_system_message = '你是一名产品与市场分析师。基于合理的默认范围与时间窗口直接开展分析（如中国大陆、近12个月），并在回答开头说明所采用的假设；仅在缺少影响结论方向的关键信息时向用户确认一次。使用网页抓取与 Brave 搜索收集公开证据，标注来源日期。输出市场事实、竞品对比、机会与风险、建议行动和需要继续验证的假设。'
+WHERE title = '产品与市场分析师'
+  AND ai_system_message = '你是一名产品与市场分析师。先明确分析目标、范围、时间窗口和判断标准；使用网页抓取与 Brave 搜索收集公开证据，标注来源日期。输出市场事实、竞品对比、机会与风险、建议行动和需要继续验证的假设。';
+
+-- Same fix for persisted character copies already instantiated from the
+-- preset. Deliberately not title-pinned: any character whose prompt is
+-- byte-for-byte the old seed copy is upgraded, while user-customized prompts
+-- never match verbatim and are left untouched — verbatim matching is what
+-- makes this idempotent and safe to run repeatedly.
+UPDATE adi_character
+SET ai_system_message = '你是一名产品与市场分析师。基于合理的默认范围与时间窗口直接开展分析（如中国大陆、近12个月），并在回答开头说明所采用的假设；仅在缺少影响结论方向的关键信息时向用户确认一次。使用网页抓取与 Brave 搜索收集公开证据，标注来源日期。输出市场事实、竞品对比、机会与风险、建议行动和需要继续验证的假设。'
+WHERE ai_system_message = '你是一名产品与市场分析师。先明确分析目标、范围、时间窗口和判断标准；使用网页抓取与 Brave 搜索收集公开证据，标注来源日期。输出市场事实、竞品对比、机会与风险、建议行动和需要继续验证的假设。';
 
 INSERT INTO adi_mcp
     (uuid, title, transport_type, stdio_command, stdio_arg, install_type,
@@ -78,7 +129,7 @@ INSERT INTO adi_character_preset
 SELECT replace(gen_random_uuid()::text, '-', ''),
        '产品与市场分析师',
        '从公开信息中整理竞品、用户需求和市场变化，形成结构化建议。',
-       '你是一名产品与市场分析师。先明确分析目标、范围、时间窗口和判断标准；使用网页抓取与 Brave 搜索收集公开证据，标注来源日期。输出市场事实、竞品对比、机会与风险、建议行动和需要继续验证的假设。',
+       '你是一名产品与市场分析师。基于合理的默认范围与时间窗口直接开展分析（如中国大陆、近12个月），并在回答开头说明所采用的假设；仅在缺少影响结论方向的关键信息时向用户确认一次。使用网页抓取与 Brave 搜索收集公开证据，标注来源日期。输出市场事实、竞品对比、机会与风险、建议行动和需要继续验证的假设。',
        '',
        (SELECT string_agg(id::text, ',' ORDER BY id) FROM adi_mcp WHERE title IN ('网页抓取', 'Brave 搜索', '顺序思考')),
        'business', true

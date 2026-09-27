@@ -525,6 +525,106 @@ public class SseManager {
         return payload;
     }
 
+    /**
+     * 推送工具开始执行事件（TOOL_STARTED）：工具真正执行前实时点亮前端的执行中步骤，
+     * 与 {@link #sendToolCall} 完成事件配对（完成事件回填时长/结果摘要）。载荷精简版：
+     * toolName（必填，null 兜底 "unknown"）+ args（仅非 null 时放入，截断至
+     * {@link #TOOL_CALL_RESULT_SUMMARY_MAX_CHARS} 字符）。null uuid（blocking 路径无
+     * SSE）与未注册 uuid 的短路口径、发送异常注销连接的处理与 {@link #sendToolCall} 一致。
+     * <p>
+     * Push the tool-started event (TOOL_STARTED): lights up the running tool
+     * step on the frontend in real time right before a tool executes, paired
+     * with the {@link #sendToolCall} completion event (which backfills
+     * duration/result summary). Slim payload: toolName (required, null falls
+     * back to "unknown") plus args (present only when non-null, truncated to
+     * {@link #TOOL_CALL_RESULT_SUMMARY_MAX_CHARS} chars). A null uuid (blocking
+     * path, no SSE), an unregistered uuid short-circuit, and unregister-on-
+     * send-failure all match {@link #sendToolCall}.
+     */
+    public static void sendToolStarted(String uuid, String toolName, String args) {
+        if (uuid == null) {
+            // blocking 路径没有已注册的 emitter，且 entries.get(null) 本身会抛 NPE
+            // The blocking path has no registered emitter, and entries.get(null) itself throws an NPE
+            return;
+        }
+        SseEntry entry = getEntry(uuid);
+        if (entry == null) {
+            return;
+        }
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("toolName", toolName != null ? toolName : "unknown");
+            if (args != null) {
+                payload.put("args", StringUtils.substring(args, 0, TOOL_CALL_RESULT_SUMMARY_MAX_CHARS));
+            }
+            entry.emitter().send(SseEmitter.event().name(ZhiMeshConstant.SSEEventName.TOOL_STARTED)
+                    .data(JsonUtil.toJson(payload)));
+        } catch (Exception e) {
+            log.error("sendToolStarted error", e);
+            SpringUtil.getBean(SseManager.class).unregister(uuid);
+        }
+    }
+
+    /**
+     * 推送 Agent 协作提问事件（agent_question）：ask_user 挂起时的问题卡片载荷
+     * （kind/toolName/question/options，options 可空省略）。null uuid（blocking 路径无
+     * SSE）与未注册 uuid 的短路口径与 {@link #sendToolCall} 一致。
+     * <p>
+     * Push the agent collaborative-question event (agent_question): the
+     * question-card payload (kind/toolName/question/options; options omitted
+     * when null) emitted when ask_user suspends the loop. A null uuid (blocking
+     * path, no SSE) and an unregistered uuid short-circuit exactly like
+     * {@link #sendToolCall}.
+     */
+    public static void sendAgentQuestion(String uuid, Map<String, Object> payload) {
+        sendSuspensionEvent(uuid, ZhiMeshConstant.SSEEventName.AGENT_QUESTION, payload, "sendAgentQuestion");
+    }
+
+    /**
+     * 推送 Agent 协作审批事件（approval_request）：request_human_approval 显式审批与
+     * MCP 需审批工具拦截挂起时的审批卡片载荷（kind/toolName/question/action/summary/
+     * riskLevel，riskLevel 可空省略；kind=APPROVAL/MCP_APPROVAL 供前端区分两种审批形态）。
+     * null uuid 与未注册 uuid 的短路口径与 {@link #sendAgentQuestion} 一致
+     * <p>
+     * Push the agent collaborative-approval event (approval_request): the
+     * approval-card payload (kind/toolName/question/action/summary/riskLevel;
+     * riskLevel omitted when null; kind=APPROVAL/MCP_APPROVAL lets the
+     * frontend tell the two approval shapes apart) emitted when
+     * request_human_approval suspends explicitly or an approval-required MCP
+     * tool is intercepted. A null uuid and an unregistered uuid short-circuit
+     * exactly like {@link #sendAgentQuestion}.
+     */
+    public static void sendApprovalRequest(String uuid, Map<String, Object> payload) {
+        sendSuspensionEvent(uuid, ZhiMeshConstant.SSEEventName.APPROVAL_REQUEST, payload, "sendApprovalRequest");
+    }
+
+    /**
+     * 协作挂起事件的公共发送实现（agent_question / approval_request 同构，仅事件名不同）：
+     * null uuid 短路、未注册 uuid 短路、发送异常注销连接，口径与 {@link #sendToolCall} 一致
+     * <p>
+     * Common send implementation for collaborative-suspension events
+     * (agent_question / approval_request share the shape, differing only in
+     * the event name): null-uuid short-circuit, unregistered-uuid
+     * short-circuit, and unregister-on-send-failure, matching {@link #sendToolCall}.
+     */
+    private static void sendSuspensionEvent(String uuid, String eventName, Map<String, Object> payload,
+                                            String caller) {
+        if (uuid == null) {
+            return;
+        }
+        SseEntry entry = getEntry(uuid);
+        if (entry == null) {
+            return;
+        }
+        try {
+            entry.emitter().send(SseEmitter.event().name(eventName)
+                    .data(JsonUtil.toJson(payload)));
+        } catch (Exception e) {
+            log.error("{} error", caller, e);
+            SpringUtil.getBean(SseManager.class).unregister(uuid);
+        }
+    }
+
     public static void parseAndSendPartialMsg(String uuid, String name, String content) {
         SseEntry entry = getEntry(uuid);
         if (entry == null) return;

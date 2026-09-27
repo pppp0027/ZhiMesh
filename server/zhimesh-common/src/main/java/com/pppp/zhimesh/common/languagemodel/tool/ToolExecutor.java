@@ -28,12 +28,34 @@ public interface ToolExecutor {
     String execute(ToolExecutionRequest request, ToolContext context) throws Exception;
 
     /**
-     * 是否为 MCP 工具包装；MCP 工具在循环层保持原有直调行为（不套超时、不截断结果）
+     * 是否为 MCP 工具包装；默认（mcp-guardrails-enabled=false）时 MCP 工具在循环层保持
+     * 原有直调行为（不套超时、不截断结果），开关打开后与内置工具同受保护（T7）
      * <p>
-     * Whether this wraps an MCP tool; MCP tools keep the legacy direct-invocation
-     * behavior in the loop (no timeout wrapping, no result truncation).
+     * Whether this wraps an MCP tool; by default (mcp-guardrails-enabled=false)
+     * MCP tools keep the legacy direct-invocation behavior in the loop (no
+     * timeout wrapping, no result truncation), and once the switch is on they
+     * join the builtin guardrails (T7).
      */
     default boolean isMcpTool() {
+        return false;
+    }
+
+    /**
+     * 是否为协作类工具（ask_user / request_human_approval 等）：execute 的产物是
+     * {@link ToolContext} 上的挂起信号而非普通文本结果，工具循环据此在挂起预算允许时
+     * 走挂起分支（不递归调模型、落检查点、合成收尾），预算耗尽或未接线挂起回调时
+     * 退回引导文本结果走正常循环。同时是「同轮多协作请求仅第一个挂起」的识别依据。
+     * <p>
+     * Whether this is a collaborative tool (ask_user / request_human_approval
+     * etc.): execute yields a suspension signal on the {@link ToolContext}
+     * instead of a plain text result. The tool loop uses the marker to route
+     * into the suspension branch while the suspension budget allows (no further
+     * model call, checkpoint persisted, synthesized wrap-up), and to fall back
+     * to a guidance-text result when the budget is exhausted or no checkpoint
+     * sink is wired. It is also how "only the first collaborative request in a
+     * round suspends" is detected.
+     */
+    default boolean isCollaborative() {
         return false;
     }
 }

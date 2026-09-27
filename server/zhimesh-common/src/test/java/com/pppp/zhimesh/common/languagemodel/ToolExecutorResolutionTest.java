@@ -55,12 +55,14 @@ import static org.mockito.Mockito.when;
 
 /**
  * T2 统一 ToolExecutor 抽象的行为验证：混合注册按名解析、重名时内置优先、
- * 未知工具名兜底、超时/截断保护只作用于内置工具、循环上限走配置。
+ * 未知工具名兜底、超时/截断保护默认只作用于内置工具（mcp-guardrails-enabled
+ * 开启后 MCP 工具一并纳入）、循环上限走配置。
  * <p>
  * Behavioral verification for the unified ToolExecutor abstraction: by-name
  * resolution across mixed registrations, builtin-wins name conflicts, the
  * unknown-tool fallback, guardrails (timeout/truncation) applied to builtin
- * tools only, and the configuration-driven loop limit.
+ * tools by default (MCP tools join once mcp-guardrails-enabled is on), and
+ * the configuration-driven loop limit.
  */
 class ToolExecutorResolutionTest {
 
@@ -224,9 +226,11 @@ class ToolExecutorResolutionTest {
 
     @Test
     void mcpToolResultIsNeitherTruncatedNorAffectedByBuiltinTimeout() {
-        // 截断阈值远小于结果长度且超时极短：MCP 工具必须原样返回，证明保护只作用于内置工具
+        // 截断阈值远小于结果长度且超时极短：MCP 工具必须原样返回，证明默认（开关关闭）时
+        // 保护只作用于内置工具
         // Truncation threshold far below the result length and a tiny timeout:
-        // the MCP tool must return verbatim, proving guardrails apply to builtin tools only
+        // the MCP tool must return verbatim, proving guardrails apply to builtin
+        // tools only while the switch is off (default)
         stubAgentSettings(agent -> {
             agent.setToolResultMaxChars(10);
             agent.setToolTimeoutMs(1);
@@ -245,6 +249,84 @@ class ToolExecutorResolutionTest {
         assertThat(messages).hasSize(1);
         assertThat(messages.get(0).text()).isEqualTo(longText);
         assertThat(toolContext.getToolTraces().get(0).isSuccess()).isTrue();
+    }
+
+    @Test
+    void mcpToolKeepsDirectCallWhenGuardrailsDisabledByDefault() throws Exception {
+        // 开关保持默认 false：MCP 工具直调——执行慢于超时阈值也不被打断，超长结果原样返回
+        // Switch left at its default false: the MCP tool is invoked directly — an
+        // execution slower than the timeout threshold is not interrupted and an
+        // oversized result comes back verbatim
+        stubAgentSettings(agent -> {
+            agent.setToolTimeoutMs(50);
+            agent.setToolResultMaxChars(10);
+        });
+        String longText = "z".repeat(25);
+        ToolExecutor slowMcp = mcpLikeTool("slow_mcp", () -> {
+            Thread.sleep(200);
+            return longText;
+        });
+        Map<String, ToolExecutor> tools = new HashMap<>(Map.of("slow_mcp", slowMcp));
+        ToolContext toolContext = ToolContext.builder().toolTraces(new ArrayList<>()).build();
+
+        List<ToolExecutionResultMessage> messages = createToolExecutionMessages(
+                aiMessageWithRequests("slow_mcp"), tools, toolContext);
+
+        assertThat(messages).hasSize(1);
+        assertThat(messages.get(0).text()).isEqualTo(longText);
+        assertThat(toolContext.getToolTraces().get(0).isSuccess()).isTrue();
+    }
+
+    @Test
+    void mcpToolTimesOutWhenGuardrailsEnabled() {
+        // 开关打开后 MCP 工具纳入超时：超过 tool-timeout-ms 的执行与内置工具同样按
+        // 失败结果回给模型继续对话
+        // With the switch on, MCP tools join the timeout: an execution exceeding
+        // tool-timeout-ms is fed back to the model as a failure result, same as
+        // builtin tools
+        stubAgentSettings(agent -> {
+            agent.setMcpGuardrailsEnabled(true);
+            agent.setToolTimeoutMs(50);
+        });
+        ToolExecutor slowMcp = mcpLikeTool("slow_mcp", () -> {
+            Thread.sleep(5000);
+            return "late";
+        });
+        Map<String, ToolExecutor> tools = new HashMap<>(Map.of("slow_mcp", slowMcp));
+        ToolContext toolContext = ToolContext.builder().toolTraces(new ArrayList<>()).build();
+
+        List<ToolExecutionResultMessage> messages = createToolExecutionMessages(
+                aiMessageWithRequests("slow_mcp"), tools, toolContext);
+
+        assertThat(messages).hasSize(1);
+        assertThat(messages.get(0).text())
+                .contains("timed out")
+                .contains("slow_mcp");
+        assertThat(toolContext.getToolTraces().get(0).isSuccess()).isFalse();
+    }
+
+    @Test
+    void mcpToolResultIsTruncatedWhenGuardrailsEnabled() {
+        // 开关打开后 MCP 工具结果照内置工具截断到 tool-result-max-chars 并追加标记
+        // With the switch on, MCP tool results are truncated to
+        // tool-result-max-chars with the marker appended, same as builtin tools
+        stubAgentSettings(agent -> {
+            agent.setMcpGuardrailsEnabled(true);
+            agent.setToolResultMaxChars(10);
+        });
+        String longText = "z".repeat(25);
+        ToolExecutor mcp = mcpLikeTool("bulky_mcp", () -> longText);
+        Map<String, ToolExecutor> tools = new HashMap<>(Map.of("bulky_mcp", mcp));
+        ToolContext toolContext = ToolContext.builder().toolTraces(new ArrayList<>()).build();
+
+        List<ToolExecutionResultMessage> messages = createToolExecutionMessages(
+                aiMessageWithRequests("bulky_mcp"), tools, toolContext);
+
+        assertThat(messages).hasSize(1);
+        assertThat(messages.get(0).text()).isEqualTo("z".repeat(10) + "\n...[truncated]");
+        assertThat(toolContext.getToolTraces().get(0).isSuccess()).isTrue();
+        assertThat(toolContext.getToolTraces().get(0).getResultSummary())
+                .isEqualTo("z".repeat(10) + "\n...[truncated]");
     }
 
     @Test
@@ -438,6 +520,39 @@ class ToolExecutorResolutionTest {
             @Override
             public String execute(ToolExecutionRequest request, ToolContext toolContext) {
                 return result;
+            }
+        };
+    }
+
+    /** 可抛异常的工具执行体 / A tool body that may throw */
+    @FunctionalInterface
+    private interface ToolBody {
+        String execute() throws Exception;
+    }
+
+    /**
+     * isMcpTool=true 的最小 fake MCP 执行器，execute 委托 body——用于在不接真实
+     * McpClient 的情况下验证 mcp-guardrails-enabled 两个取值下的循环层行为
+     * <p>
+     * Minimal fake MCP executor with isMcpTool=true whose execute delegates to
+     * body — verifies the loop-level behavior of mcp-guardrails-enabled in both
+     * positions without wiring a real McpClient.
+     */
+    private static ToolExecutor mcpLikeTool(String name, ToolBody body) {
+        return new ToolExecutor() {
+            @Override
+            public ToolSpecification spec() {
+                return toolSpec(name);
+            }
+
+            @Override
+            public boolean isMcpTool() {
+                return true;
+            }
+
+            @Override
+            public String execute(ToolExecutionRequest request, ToolContext toolContext) throws Exception {
+                return body.execute();
             }
         };
     }

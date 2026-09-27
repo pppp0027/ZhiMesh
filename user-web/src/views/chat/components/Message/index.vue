@@ -7,6 +7,7 @@ import { Reload } from '@vicons/ionicons5'
 import AvatarComponent from './Avatar.vue'
 import TextComponent from './Text.vue'
 import ToolSteps from './ToolSteps.vue'
+import SuspensionCard from './SuspensionCard.vue'
 import { SvgIcon } from '@/components/common'
 import { copyText, formatDuration } from '@/utils/format'
 import { useIconRender } from '@/hooks/useIconRender'
@@ -47,6 +48,12 @@ interface Props {
   outputTokens?: number
   duration?: number
   toolCalls?: Chat.ToolCall[]
+  /** 提问侧状态 Map（question.state）：等待期状态条按 state 键流转文案 */
+  state?: Map<string, string>
+  /** Agent 协作挂起载荷（ask_user 追问 / 人工审批卡片） */
+  suspension?: Chat.SuspensionPayload
+  /** 挂起卡片是否可交互（实时挂起未应答 true；历史回放/已应答只读） */
+  suspensionInteractive?: boolean
   /** 正在生成/请求中时禁用重新生成入口，避免点击被静默吞掉 */
   regenerateDisabled?: boolean
 }
@@ -55,6 +62,7 @@ interface Emit {
   (ev: 'regenerate'): void
   (ev: 'delete'): void
   (ev: 'delOneImage', fileUrl: string): void
+  (ev: 'suspensionAnswer', text: string): void
 }
 
 const { isMobile } = useBasicLayout()
@@ -68,6 +76,16 @@ const asRawText = ref(props.inversion)
 const messageRef = ref<HTMLElement>()
 
 const expandedNames = ref<string[]>(['finalAnswer'])
+
+// 工具是否有执行中步骤（[TOOL_STARTED] 已点亮、[TOOL_CALL] 未回填）
+const hasRunningTool = computed(() => !!props.toolCalls?.some(tool => tool.running))
+
+// 等待期状态条键：工具执行中优先；否则跟随 question.state 的 state 键；缺省问题分析中
+const statusKey = computed(() => {
+  if (hasRunningTool.value)
+    return 'tool_running'
+  return props.state?.get('state') || 'question_analysing'
+})
 
 const options = computed(() => {
   const common = [
@@ -154,12 +172,12 @@ function renderToolbarOut2(imageUrl: string) {
   }
 }
 
-watch(() => props.thinking, (thinking) => {
-  if (thinking)
-    expandedNames.value = ['thinking']
-  else
-    expandedNames.value = ['thinking', 'finalAnswer']
-})
+// 相位：仅"思考中且正文未开始"算 thinking；正文首字到达即跃迁为 answer，思考面板随之收起
+const phase = computed(() => (props.thinking && !props.text) ? 'thinking' : 'answer')
+// watch computed 只在相位跃迁时触发：流式期间用户手动展开思考不会被后续 chunk 重置；历史回放/挂起中途挂载（text 已非空）直接进 answer 相位
+watch(phase, (p) => {
+  expandedNames.value = p === 'thinking' ? ['thinking'] : ['finalAnswer']
+}, { immediate: true })
 </script>
 
 <template>
@@ -173,17 +191,25 @@ watch(() => props.thinking, (thinking) => {
     <div class="message-body">
       <p class="message-meta" :class="inversion ? 'text-right' : 'text-left'">
         {{ dateTime }}
-        <span v-if="inputTokens != null" class="message-meta-item">
-          <SvgIcon icon="ri:download-2-line" />{{ inputTokens }}
+        <span v-if="inputTokens != null" class="message-meta-item" :title="t('chat.metaTokensCumulativeTip')">
+          <SvgIcon icon="ri:download-2-line" />{{ t('chat.metaInputTokens') }} {{ inputTokens }}
         </span>
-        <span v-if="outputTokens != null" class="message-meta-item">
-          <SvgIcon icon="ri:upload-2-line" />{{ outputTokens }}
+        <span v-if="outputTokens != null" class="message-meta-item" :title="t('chat.metaTokensCumulativeTip')">
+          <SvgIcon icon="ri:upload-2-line" />{{ t('chat.metaOutputTokens') }} {{ outputTokens }}
         </span>
         <span v-if="duration != null" class="message-meta-item">
           <SvgIcon icon="ri:time-line" />{{ formatDuration(duration) }}
         </span>
       </p>
       <ToolSteps v-if="toolCalls && toolCalls.length" :tool-calls="toolCalls" class="message-tool-steps" />
+      <!-- Agent 协作挂起卡片：实时未应答可交互（选项/审批按钮），历史回放只读 -->
+      <SuspensionCard
+        v-if="suspension"
+        :suspension="suspension"
+        :interactive="!!suspensionInteractive"
+        class="message-tool-steps"
+        @answer="text => emit('suspensionAnswer', text)"
+      />
       <div class="message-content">
         <!-- 消息框侧边下拉选择列表 -->
         <template v-if="type === 'text' || type === 'text-image'">
@@ -213,13 +239,13 @@ watch(() => props.thinking, (thinking) => {
               </template>
               <TextComponent
                 ref="textRef" :inversion="inversion" :error="error" :text="text"
-                :loading="loading" :as-raw-text="asRawText"
+                :loading="loading" :as-raw-text="asRawText" :status-key="statusKey"
               />
             </NCollapseItem>
           </NCollapse>
           <TextComponent
             v-else ref="textRef" :inversion="inversion" :error="error" :text="text"
-            :loading="loading" :as-raw-text="asRawText"
+            :loading="loading" :as-raw-text="asRawText" :status-key="statusKey"
           />
         </template>
       </div>

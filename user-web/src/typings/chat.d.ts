@@ -34,6 +34,37 @@ declare namespace Chat {
 
 		//MCP tool call observability
 		toolCalls?: ToolCall[]
+
+		//Agent 协作挂起载荷（ask_user 追问 / 人工审批），实时轮由 SSE 挂起事件写入，历史轮由 meta/轨迹行派生
+		suspension?: SuspensionPayload
+
+		//Frontend only：挂起卡片是否可交互（实时挂起未应答为 true；历史回放/已应答只读）
+		suspensionActive?: boolean
+	}
+
+	/**
+	 * 挂起载荷：实时 SSE 事件（[AGENT_QUESTION]/[APPROVAL_REQUEST]）用 kind，
+	 * 历史回放 AnswerMeta.suspension 用 type（后端已知键名不对称，前端按 kind ?? type 取值）
+	 */
+	interface SuspensionPayload {
+		/** 挂起类型（实时事件键）：ASK_USER 追问 | APPROVAL 显式审批 | MCP_APPROVAL MCP 拦截审批 */
+		kind?: 'ASK_USER' | 'APPROVAL' | 'MCP_APPROVAL'
+		/** 挂起类型（历史回放/AnswerMeta.suspension 键），取值同 kind */
+		type?: 'ASK_USER' | 'APPROVAL' | 'MCP_APPROVAL'
+		/** 触发挂起的工具名（ask_user / request_human_approval / 被拦截的 MCP 工具名） */
+		toolName?: string
+		/** 问题文本（= 挂起轮消息内容） */
+		question: string
+		/** 可选项列表（ASK_USER 可空，后端空时整个键省略） */
+		options?: string[]
+		/** 审批动作名（APPROVAL/MCP_APPROVAL 可空） */
+		action?: string
+		/** 参数摘要（APPROVAL/MCP_APPROVAL 可空，可能被 ...[truncated] 截断） */
+		summary?: string
+		/** 风险等级（APPROVAL 可空，HIGH/MEDIUM/LOW） */
+		riskLevel?: string
+		/** 挂起检查点 uuid（恢复配对依据） */
+		checkpointUuid?: string
 	}
 
 	//MCP 工具调用观测（实时 SSE toolCallReceived 与历史回放共用结构）
@@ -47,6 +78,12 @@ declare namespace Chat {
 		resultSummary?: string
 		/** 历史回放排序序号（SSE 实时事件不带该字段） */
 		seq?: number
+		/** 挂起节点标记：该步骤为协作挂起（等待用户应答/等待审批），非普通工具执行 */
+		suspensionKind?: 'ASK_USER' | 'APPROVAL' | 'MCP_APPROVAL'
+		/** 恢复节点标记：挂起后用户已提交应答（前端合成行） */
+		resumed?: boolean
+		/** 前端 only：步骤执行中（[TOOL_STARTED] 已点亮、[TOOL_CALL] 尚未回填），仅实时轮存在 */
+		running?: boolean
 	}
 
 	interface CharacterPreset {
@@ -149,7 +186,6 @@ declare namespace Chat {
 	interface ChatState {
 		active: string
 		activeConversationUuid: string
-		usingContext: boolean
 		characters: Character[]
 		conversations: Conversation[]
 		chats: CharacterWithMessages[]
@@ -194,6 +230,8 @@ declare namespace Chat {
 			isRefBm25?: boolean
 			//AnswerMeta 事件同样可能携带工具调用数组（结构同 ToolCall）
 			toolCalls?: ToolCall[]
+			//挂起轮随 meta 事件下发的挂起载荷（键名为 type，与实时事件的 kind 不对称）
+			suspension?: SuspensionPayload
 		},
 		audioInfo: AudioInfo
 	}

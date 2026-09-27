@@ -24,9 +24,6 @@ const uploadedFileInfoList = ref<UploadFileInfo[]>([])
 const uploadedUuidList = ref<string[]>([])
 const currCharacter = computed(() => chatStore.getCurCharacter || getDefaultCharacter())
 const canUploadImage = ref<boolean>(false)
-const isReasoner = ref<boolean>(false)
-const isThinkingClosable = ref<boolean>(false)
-const contextUpdating = ref(false)
 const savingMcps = ref(false)
 const mcpModalShow = ref<boolean>(false)
 const knowledgeModalShow = ref<boolean>(false)
@@ -98,18 +95,9 @@ async function handlerRemove({ file }: { file: UploadFileInfo }) {
   emit('imagesChange', [...uploadedUuidList.value])
 }
 
-// DeepSeek 深度思考模式与工具调用不兼容（langchain4j #3461: partialArguments cannot be null）
-// TODO: 升级 langchain4j 后移除此 workaround，恢复工具调用支持
-const isDeepSeekThinking = computed(() => {
-  const modelName = appStore.selectedLLM?.modelName?.toLowerCase() || ''
-  return currCharacter.value.isEnableThinking && isReasoner.value && modelName.includes('deepseek')
-})
-
+// DeepSeek 深度思考与工具/联网的互斥 workaround 已移除：深度思考改由后端按模型能力自动判定，
+// 前端不再提供开关（保留注释说明历史行为，防止误恢复旧 watch 链）
 function handleMcpModalShow() {
-  if (isDeepSeekThinking.value) {
-    ms.warning(t('chat.deepThinkingIncompatibleWithTool'))
-    return
-  }
   mcpModalShow.value = true
   tmpMcpIds.value = [...currCharacter.value.mcpIds]
 }
@@ -149,55 +137,8 @@ function gotoMcp() {
   mcpModalShow.value = false
 }
 
-async function toggleUsingContext() {
-  if (contextUpdating.value)
-    return
-  const previousValue = currCharacter.value.understandContextEnable
-  const nextValue = !previousValue
-  currCharacter.value.understandContextEnable = nextValue
-  contextUpdating.value = true
-  try {
-    await api.characterToggleUsingContext(currCharacter.value.uuid, nextValue)
-  } catch (error) {
-    currCharacter.value.understandContextEnable = previousValue
-    console.error('toggle context failed', error)
-    ms.error(t('common.wrong'))
-    return
-  } finally {
-    contextUpdating.value = false
-  }
-  if (nextValue)
-    ms.success(t('chat.turnOnContext'))
-  else
-    ms.warning(t('chat.turnOffContext'))
-}
-
-async function toogleThinking() {
-  if (!isReasoner.value || !isThinkingClosable.value) {
-    return
-  }
-  const previousValue = currCharacter.value.isEnableThinking
-  const nextValue = !previousValue
-  try {
-    await api.characterToggleThinking(currCharacter.value.uuid, nextValue)
-    currCharacter.value.isEnableThinking = nextValue
-    if (nextValue)
-      ms.success(t('chat.deepThinkingEnabled'))
-    else
-      ms.warning(t('chat.deepThinkingDisabled'))
-  } catch (error) {
-    currCharacter.value.isEnableThinking = previousValue
-    console.error('toggle thinking failed', error)
-    ms.error(t('chat.operationFailed'))
-  }
-}
-
 async function toogleWebSearch() {
   if (!appStore.selectedLLM.isSupportWebSearch) {
-    return
-  }
-  if (isDeepSeekThinking.value) {
-    ms.warning(t('chat.deepThinkingIncompatibleWithWebSearch'))
     return
   }
   const previousValue = currCharacter.value.isEnableWebSearch
@@ -219,8 +160,6 @@ async function toogleWebSearch() {
 watch(
   () => appStore.selectedLLM,
   async (newVal) => {
-    isReasoner.value = newVal.isReasoner
-    isThinkingClosable.value = newVal.isThinkingClosable
     if (newVal.inputTypes?.includes('image'))
       canUploadImage.value = true
     else
@@ -241,31 +180,6 @@ watch(
     immediate: true,
   },
 )
-
-watch(isDeepSeekThinking, async (newVal) => {
-  if (newVal) {
-    if (currCharacter.value.mcpIds.length > 0) {
-      try {
-        await api.characterEdit(currCharacter.value.uuid, { mcpIds: [] })
-        currCharacter.value.mcpIds = []
-        ms.warning(t('chat.deepThinkingAutoCloseTool'))
-      } catch (error) {
-        console.error('auto disable tools error', error)
-        currCharacter.value.isEnableThinking = false
-        ms.error(t('chat.operationFailed'))
-      }
-    }
-    if (currCharacter.value.isEnableWebSearch) {
-      currCharacter.value.isEnableWebSearch = false
-      try {
-        await api.characterEdit(currCharacter.value.uuid, { isEnableWebSearch: false })
-      } catch (err) {
-        console.error('auto disable webSearch error', err)
-      }
-      ms.warning(t('chat.deepThinkingAutoCloseWebSearch'))
-    }
-  }
-}, { immediate: true })
 </script>
 
 <template>
@@ -274,23 +188,6 @@ watch(isDeepSeekThinking, async (newVal) => {
       <div class="model-control" :title="selectedModelLabel">
         <LLMSelector name-only />
       </div>
-
-      <NPopover v-if="isReasoner && isThinkingClosable" trigger="hover">
-        <template #trigger>
-          <button
-            type="button" class="capability-pill"
-            :class="{ active: currCharacter.isEnableThinking }"
-            :aria-pressed="currCharacter.isEnableThinking"
-            :aria-label="t('chat.deepThinking')"
-            @click="toogleThinking"
-          >
-            <SvgIcon icon="ri:brain-line" />
-            <span>{{ t('chat.deepThinking') }}</span>
-            <span class="capability-state">{{ currCharacter.isEnableThinking ? t('common.enable') : t('common.disable') }}</span>
-          </button>
-        </template>
-        <span>{{ t('chat.deepThinking') }}</span>
-      </NPopover>
 
       <NPopover v-if="appStore.selectedLLM.isSupportWebSearch" trigger="hover">
         <template #trigger>
@@ -324,21 +221,6 @@ watch(isDeepSeekThinking, async (newVal) => {
           <span>{{ t('chat.uploadImageTip') }}</span>
         </NPopover>
       </NUpload>
-
-      <button
-        type="button" class="capability-pill context-pill"
-        :class="{ active: currCharacter.understandContextEnable }"
-        :aria-pressed="currCharacter.understandContextEnable"
-        :aria-busy="contextUpdating"
-        :disabled="contextUpdating"
-        :aria-label="`${t('chat.continuousConversation')}，${currCharacter.understandContextEnable ? t('chat.contextEnabledStatus') : t('chat.contextDisabledStatus')}`"
-        :title="currCharacter.understandContextEnable ? t('chat.contextEnabledStatus') : t('chat.contextDisabledStatus')"
-        @click="toggleUsingContext"
-      >
-        <SvgIcon icon="ri:chat-history-line" />
-        <span>{{ t('chat.continuousConversation') }}</span>
-        <i class="context-status-light" aria-hidden="true" />
-      </button>
 
       <button
         type="button"
@@ -519,28 +401,6 @@ watch(isDeepSeekThinking, async (newVal) => {
   background: color-mix(in srgb, var(--zhimesh-primary) 10%, transparent);
 }
 
-.context-pill.active {
-  border-color: var(--zhimesh-border-subtle);
-  color: var(--zhimesh-text);
-  background: var(--zhimesh-glass);
-}
-
-.context-status-light {
-  display: block;
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-radius: 999px;
-  background: var(--zhimesh-text-muted);
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45), 0 1px 2px rgba(15, 23, 42, 0.22);
-  transition: background 0.2s ease, box-shadow 0.2s ease;
-}
-
-.context-pill.active .context-status-light {
-  background: var(--zhimesh-success-text);
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), 0 1px 5px color-mix(in srgb, var(--zhimesh-success-text) 55%, transparent);
-}
-
 .capability-pill:disabled {
   cursor: wait;
   opacity: 0.65;
@@ -590,11 +450,6 @@ watch(isDeepSeekThinking, async (newVal) => {
 
 :global(.dark) .capability-pill,
 :global(.dark) .menu-pill {
-  background: rgba(30, 41, 59, 0.34);
-}
-
-:global(.dark) .context-pill.active {
-  color: var(--zhimesh-text);
   background: rgba(30, 41, 59, 0.34);
 }
 
@@ -662,11 +517,6 @@ watch(isDeepSeekThinking, async (newVal) => {
     min-width: 14px;
     padding-inline: 3px;
     font-size: 9px;
-  }
-
-  .context-status-light {
-    width: 6px;
-    height: 6px;
   }
 }
 

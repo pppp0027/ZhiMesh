@@ -53,4 +53,65 @@ public class ToolContext {
      * merged by the caller into adi_character_message_ref_* (citation-popup semantics).
      */
     private List<RetrieverWrapper> refCollector;
+
+    /**
+     * 挂起结果槽（请求级，volatile——执行器可能在守护线程池上运行）：协作类工具
+     * （ask_user 等）execute 时置位，工具循环检测到即走挂起路径——不把工具的占位
+     * 返回值当普通结果，也不再递归调模型。一次循环至多一个活跃信号；挂起完成后随
+     * 请求结束自然丢弃，跨请求状态由检查点（adi_agent_pending_checkpoint）承载。
+     * <p>
+     * Suspension slot (request-scoped, volatile — executors may run on the
+     * daemon pool): collaborative tools (ask_user etc.) set it in execute, and
+     * the tool loop takes the suspension path on sight — the tool's placeholder
+     * return value is never treated as a normal result and no further model
+     * call happens. At most one live signal per loop; it dies with the request
+     * once the suspension wraps up, and cross-request state lives in the
+     * checkpoint (adi_agent_pending_checkpoint) instead.
+     */
+    private volatile SuspensionSignal suspensionSignal;
+
+    /**
+     * 本工具链已消耗的挂起次数（跨挂起继承）：恢复轮从检查点的 suspensionCount 续算，
+     * 达到 zhimesh.agent.max-suspensions 后循环不再挂起（ask_user 位置返回引导文本）
+     * <p>
+     * Suspensions already consumed within this tool chain (inherited across
+     * suspensions): a resumed run continues from the checkpoint's
+     * suspensionCount; once zhimesh.agent.max-suspensions is reached the loop
+     * stops suspending (the ask_user slot returns a guidance text instead).
+     */
+    private int suspensionCount;
+
+    /**
+     * 挂起检查点落库回调（可空）：由聊天入口以闭包注入（内部委托
+     * PendingCheckpointService），为空 = 本请求不支持挂起（如 blocking 路径），协作类
+     * 工具将得到「不支持挂起」引导文本而非真的挂起
+     * <p>
+     * Checkpoint-persistence callback (nullable): injected as a closure by the
+     * chat entry (delegating to PendingCheckpointService inside). Absent means
+     * this request cannot suspend (e.g. the blocking path), and collaborative
+     * tools then get a "suspension unsupported" guidance text instead of a real
+     * suspension.
+     */
+    private SuspensionCheckpointSink suspensionSink;
+
+    /**
+     * 审批批准凭证（可空，仅挂起恢复轮携带）：由恢复装配从消费检查点的 approval_grant
+     * 读回（损坏 JSON fail-safe 归 null = 未批准）。需审批 MCP 装饰器据此放行「同工具同
+     * 参数」的真实调用。请求级生命周期 = 凭证仅本恢复链有效：普通请求装配全新上下文无
+     * 凭证，需审批工具照常重新走审批。字段在异步提交前一次性写入，经执行器提交的
+     * happens-before 保证对循环线程可见（与挂起信号不同，循环内无人写它）
+     * <p>
+     * Approval grant (nullable, carried only by suspension-resumed rounds):
+     * read back by the resume assembly from the consumed checkpoint's
+     * approval_grant (corrupt JSON fails safe to null = not approved). The
+     * approval-required MCP decorator lets the real invocation of "the same
+     * tool with the same arguments" through on its basis. The request-scoped
+     * lifetime means the grant is valid only within this resume chain: an
+     * ordinary request assembles a fresh context with no grant and the
+     * approval-required tool goes through approval again. The field is written
+     * once before the async submit; the executor submission's happens-before
+     * makes it visible to the loop thread (unlike the suspension signal,
+     * nothing writes it mid-loop).
+     */
+    private ApprovalGrant approvalGrant;
 }

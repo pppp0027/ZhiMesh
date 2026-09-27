@@ -34,5 +34,7 @@ public class CharacterEditReq {
 
     private Boolean isAgentic;
 
+    private String toolPolicy;
+
     private AudioConfig audioConfig;
 }

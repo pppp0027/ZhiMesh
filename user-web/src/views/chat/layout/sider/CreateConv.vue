@@ -279,6 +279,11 @@ defineExpose({ openModal })
   overflow: hidden;
 }
 
+/* Desktop: bound the preset list so NScrollbar scrolls instead of being clipped by the card. */
+:global(.character-creator-modal .creator-preset-scroll) {
+  max-height: min(calc(100vh - 320px), 600px);
+}
+
 @media (max-width: 767px) {
   :global(.character-creator-modal) {
     width: min(92vw, 420px) !important;

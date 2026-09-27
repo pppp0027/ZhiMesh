@@ -71,6 +71,10 @@ public class Character extends BaseEntity {
     @TableField("is_agentic")
     private Boolean isAgentic;
 
+    @Schema(title = "角色工具策略 JSON（内置工具禁用清单与 MCP 工具需审批标记，NULL 或非法 JSON=默认策略） | Tool policy JSON (builtin denylist and MCP approval-required markers; NULL or invalid JSON falls back to the default policy)")
+    @TableField("tool_policy")
+    private String toolPolicy;
+
     @Schema(title = "外部系统对接密钥 | API key for external system integration")
     @TableField("api_key")
     private String apiKey;

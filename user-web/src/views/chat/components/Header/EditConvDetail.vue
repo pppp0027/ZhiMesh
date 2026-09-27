@@ -41,6 +41,9 @@ function initEditCharacter(item: Chat.Character) {
   tmpCharacter.value.characterKnowledgeList = []
   tmpCharacter.value.kbIds.push(...item.kbIds)
   tmpCharacter.value.characterKnowledgeList.push(...item.characterKnowledgeList)
+  // tool_policy 用户端不可编辑（2026-09-23 产品决策）：接口回显数据经上方 Object.assign 会带回该键，
+  // 此处剥离以保证保存载荷不再携带 toolPolicy（策略仅经预设实例化/管理端下发）
+  delete (tmpCharacter.value as { toolPolicy?: string | null }).toolPolicy
 }
 async function handleEdit(event?: KeyboardEvent) {
   event?.stopPropagation()

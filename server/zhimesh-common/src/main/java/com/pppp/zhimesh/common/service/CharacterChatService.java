@@ -7,6 +7,7 @@ import com.pppp.zhimesh.common.dto.AskReq;
 import com.pppp.zhimesh.common.dto.KbInfoResp;
 import com.pppp.zhimesh.common.dto.RefGraphDto;
 import com.pppp.zhimesh.common.entity.ZhiMeshFile;
+import com.pppp.zhimesh.common.entity.AgentPendingCheckpoint;
 import com.pppp.zhimesh.common.entity.AiModel;
 import com.pppp.zhimesh.common.entity.Character;
 import com.pppp.zhimesh.common.entity.CharacterMessage;
@@ -18,6 +19,7 @@ import com.pppp.zhimesh.common.enums.ChatMessageRoleEnum;
 import com.pppp.zhimesh.common.enums.ErrorEnum;
 import com.pppp.zhimesh.common.enums.LLMCallRecordSourceType;
 import com.pppp.zhimesh.common.enums.MemoryType;
+import com.pppp.zhimesh.common.enums.PendingCheckpointKind;
 import com.pppp.zhimesh.common.enums.WfIODataTypeEnum;
 import com.pppp.zhimesh.common.exception.BaseException;
 import com.pppp.zhimesh.common.file.FileOperatorContext;
@@ -28,8 +30,15 @@ import com.pppp.zhimesh.common.helper.QuotaHelper;
 import com.pppp.zhimesh.common.helper.SseManager;
 import com.pppp.zhimesh.common.languagemodel.AbstractLLMService;
 import com.pppp.zhimesh.common.languagemodel.data.LLMResponseContent;
+import com.pppp.zhimesh.common.languagemodel.tool.ApprovalGrant;
+import com.pppp.zhimesh.common.languagemodel.tool.ApprovalRequiredDecorator;
+import com.pppp.zhimesh.common.languagemodel.tool.CharacterToolPolicy;
+import com.pppp.zhimesh.common.languagemodel.tool.ChatMessageSnapshotCodec;
+import com.pppp.zhimesh.common.languagemodel.tool.AskUserTool;
+import com.pppp.zhimesh.common.languagemodel.tool.RequestHumanApprovalTool;
 import com.pppp.zhimesh.common.languagemodel.tool.RunWorkflowTool;
 import com.pppp.zhimesh.common.languagemodel.tool.SearchKnowledgeTool;
+import com.pppp.zhimesh.common.languagemodel.tool.SuspensionSignal;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolContext;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolExecutor;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolRagContext;
@@ -51,7 +60,11 @@ import com.pppp.zhimesh.common.workflow.WfNodeInputConfig;
 import com.pppp.zhimesh.common.workflow.WorkflowStarter;
 import com.pppp.zhimesh.common.workflow.def.WfNodeIO;
 import com.pppp.zhimesh.common.workflow.def.WfNodeIOText;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
@@ -150,6 +163,21 @@ public class CharacterChatService {
 
     @Resource
     private WorkflowStarter workflowStarter;
+
+    @Resource
+    private PendingCheckpointService pendingCheckpointService;
+
+    /**
+     * 挂起恢复轮注入给“快照中无配对结果的其余协作请求”的占位文本（同轮第二个及之后的
+     * ask_user 请求：挂起时未执行、未产生结果，恢复轮统一补占位，引导模型单独重发）
+     * <p>
+     * Placeholder text injected at resume for the snapshot's collaborative
+     * requests without a paired result (the second and later ask_user requests
+     * of the suspending round: neither executed nor given a result at
+     * suspension); the resume round injects this uniformly, guiding the model
+     * to re-ask alone.
+     */
+    private static final String IGNORED_PEER_RESULT_TEXT = "已被忽略，请单独重新发起";
 
     public SseEmitter sseAsk(AskReq askReq) {
         String sseUuid = UuidUtil.createShort();
@@ -312,6 +340,33 @@ public class CharacterChatService {
                 askReq.setImageUrls(Arrays.asList(originalQuestion.getAttachments().split(",")));
             }
         }
+        // 2.5 挂起恢复前置检查：会话存在 ACTIVE 挂起检查点时本条消息按恢复轮处理。
+        // regenerate 重问（用户对挂起问题换问法）或检查点角色与当前会话角色不符
+        // （角色被切换/重建）→ 作废检查点（SUPERSEDED）按正常轮继续；正常恢复保留
+        // 检查点待第 6.5 步装配
+        // 2.5 Suspension-resume pre-check: when the conversation holds an ACTIVE
+        // pending checkpoint this message is treated as the resumed round. A
+        // regenerate re-ask (the user rephrasing the suspended question) or a
+        // checkpoint character mismatching the current conversation character
+        // (character switched/rebuilt) invalidates the checkpoint (SUPERSEDED)
+        // and continues as a normal round; an ordinary resume keeps the
+        // checkpoint for assembly at step 6.5
+        AgentPendingCheckpoint resumeCheckpoint = null;
+        if (null != chatContext.conversation()) {
+            AgentPendingCheckpoint activeCheckpoint =
+                    pendingCheckpointService.findActive(chatContext.conversation().getId());
+            if (null != activeCheckpoint) {
+                boolean regenerateReAsk = StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid());
+                boolean characterMismatch = !Objects.equals(activeCheckpoint.getCharacterId(), character.getId());
+                if (regenerateReAsk || characterMismatch) {
+                    pendingCheckpointService.markSuperseded(activeCheckpoint.getId());
+                    log.info("Pending checkpoint superseded before resume, checkpointId:{}, conversationId:{}, regenerateReAsk:{}, characterMismatch:{}",
+                            activeCheckpoint.getId(), chatContext.conversation().getId(), regenerateReAsk, characterMismatch);
+                } else {
+                    resumeCheckpoint = activeCheckpoint;
+                }
+            }
+        }
 
         // 3.通知前端：正在分析问题
         SseManager.sendPartial(sseUuid, SSEEventName.STATE_CHANGED, SSEEventData.STATE_QUESTION_ANALYSING);
@@ -338,39 +393,78 @@ public class CharacterChatService {
         if (!checkModelQuota(sseUuid, user, llmService.getAiModel())) {
             return;
         }
+        // 6.5 挂起恢复装配（存在 ACTIVE 检查点时）：①幂等消费检查点先行（消费 CAS 的
+        // 赢者独占恢复权，并发消息输掉后按正常轮走、不碰短期记忆）②赢者把用户答复
+        // 原文按 understandContextEnable 门控 append 进短期记忆（跨挂起的记忆记账
+        // 闭环点，失败降级不阻断恢复）③解码快照（损坏→作废+正常轮）④构造配对结果
+        // （pendingRequestId←答复原文；无配对结果的协作请求←忽略占位）。任一失败都
+        // 降级为正常轮，绝不因检查点问题拒绝用户消息
+        // 6.5 Suspension-resume assembly (when an ACTIVE checkpoint exists):
+        // (1) the idempotent consume goes first (its CAS winner owns the
+        // resume; a concurrent loser takes the normal round without touching
+        // short-term memory); (2) the winner appends the user's raw answer
+        // into short-term memory unconditionally (context is always on — the
+        // cross-suspension memory-bookkeeping closure point; an append
+        // failure degrades without blocking the resume); (3) decode the
+        // snapshot (corrupt → supersede + normal round); (4) build the paired
+        // results (pendingRequestId ← the raw answer; collaborative requests
+        // without a paired result ← the ignored placeholder). Any failure
+        // degrades to a normal round — a checkpoint problem must never reject
+        // the user's message
+        ResumeAssembly resumeAssembly = null;
+        if (null != resumeCheckpoint) {
+            resumeAssembly = tryResumeFromCheckpoint(chatContext, character, askReq, resumeCheckpoint, llmService);
+        }
+        boolean resumed = null != resumeAssembly;
 
-        // 7.如果关联了知识库，筛选出有效的知识库以待后续查询
+        // 7.如果关联了知识库，筛选出有效的知识库以待后续查询（恢复轮同样执行——恢复轮
+        // 重建的工具集合按当前配置取可用知识库；“正在检索知识库”前端状态改由检索
+        // 内部在门控决策放行后才发送，不再无条件预先发送）
+        // 7. Filter the character's enabled KBs (runs on resumed rounds too —
+        // the rebuilt tool set resolves KB availability per current config;
+        // the "searching knowledge" frontend state is now emitted from inside
+        // retrieval after the gate decision admits it, not unconditionally)
         List<KbInfoResp> filteredKb = new ArrayList<>();
         filteredKb = characterService.filterEnableKb(user, character);
-        if (!filteredKb.isEmpty()) {
+        // 8.检索知识库和长期记忆；9.拼装增强后的Prompt（恢复轮跳过：消息链来自
+        // 检查点快照 + 用户答复配对结果，用户答复不进入预检索与增强拼装，避免对
+        // 快照链之外多跑一轮 RAG）
+        // 8. Pre-retrieve KB and long-term memory; 9. build the augmented
+        // prompt (skipped on a resumed round: the message chain comes from the
+        // checkpoint snapshot plus the user-answer pairing, so the answer
+        // neither enters pre-retrieval nor prompt augmentation — no extra RAG
+        // round outside the snapshot chain)
+        List<RetrieverWrapper> retrieverWrappers = resumed
+                ? new ArrayList<>()
+                : CharacterChatHelper.retrieve(
+                        character.getId(), filteredKb, llmService, embeddingModel, askReq.getPrompt(),
+                        // 上下文恒启用（2026-09-24 产品决策：understandContextEnable 开关已下线，
+                        // 列保留不读），预检索恒携带短期记忆ID（无会话时为 null，语义不变）
+                        // Context is always on (2026-09-24 product decision: the
+                        // understandContextEnable toggle is retired, the column is
+                        // kept but never read), so pre-retrieval always carries the
+                        // short-term memory id (null without a conversation, unchanged)
+                        chatContext.shortTermMemoryId(), false, sseUuid);
 
-            //同时发送搜索知识库事件给前端用户
-            SseManager.sendPartial(sseUuid, SSEEventName.STATE_CHANGED, SSEEventData.STATE_KNOWLEDGE_SEARCHING);
-        }
-        //8.检索知识库和长期记忆
-        List<RetrieverWrapper> retrieverWrappers = CharacterChatHelper.retrieve(
-                character.getId(), filteredKb, llmService, embeddingModel, askReq.getPrompt(),
-                Boolean.TRUE.equals(character.getUnderstandContextEnable())
-                        ? chatContext.shortTermMemoryId() : null);
-
-        // 9.拼装增强后的Prompt：用户问题 + 知识库检索结果 + 长期记忆（语义记忆 + 情景记忆）
         int answerContentType = getAnswerContentType(character, askReq);
         // [语音功能已停用] 如需启用语音输出(TTS)，请取消下面一行的注释
         // boolean answerToAudio = TtsUtil.needTts(llmService.getTtsSetting(), answerContentType);
         boolean answerToAudio = false; // 语音输出已停用：始终不追加口语化提示
-        String effectiveLocale = StringUtils.isNotBlank(user.getLocale())
-                ? user.getLocale()
-                : Objects.toString(SysConfigService.getByKey(ZhiMeshConstant.SysConfigKey.DEFAULT_LOCALE), "zh-CN");
-        Pair<String, String> memoryAndKnowledge = CharacterChatHelper.buildMemoryAndKnowledge(retrieverWrappers);
-        // The selected KB scope is request data in its own right. Include a
-        // compact, authorized catalog in the known-information section so a
-        // question such as “你有什么知识库” can be answered from the actual
-        // selection even when no document chunk matches that meta-question.
-        String knowledgeContext = appendKnowledgeScopeCatalog(memoryAndKnowledge.getRight(), filteredKb);
-        String audioExtra = answerToAudio ? (effectiveLocale.startsWith("zh") ? PROMPT_EXTRA_AUDIO : PROMPT_EXTRA_AUDIO_EN) : "";
-        String processedPrompt = PromptUtil.createPrompt(askReq.getPrompt(), memoryAndKnowledge.getLeft(), knowledgeContext, audioExtra, effectiveLocale);
-        if (!Objects.equals(askReq.getPrompt(), processedPrompt)) {
-            askReq.setProcessedPrompt(processedPrompt);
+        if (!resumed) {
+            String effectiveLocale = StringUtils.isNotBlank(user.getLocale())
+                    ? user.getLocale()
+                    : Objects.toString(SysConfigService.getByKey(ZhiMeshConstant.SysConfigKey.DEFAULT_LOCALE), "zh-CN");
+            Pair<String, String> memoryAndKnowledge = CharacterChatHelper.buildMemoryAndKnowledge(retrieverWrappers);
+            // The selected KB scope is request data in its own right. Include a
+            // compact, authorized catalog in the known-information section so a
+            // question such as “你有什么知识库” can be answered from the actual
+            // selection even when no document chunk matches that meta-question.
+            String knowledgeContext = appendKnowledgeScopeCatalog(memoryAndKnowledge.getRight(), filteredKb);
+            String audioExtra = answerToAudio ? (effectiveLocale.startsWith("zh") ? PROMPT_EXTRA_AUDIO : PROMPT_EXTRA_AUDIO_EN) : "";
+            String processedPrompt = PromptUtil.createPrompt(askReq.getPrompt(), memoryAndKnowledge.getLeft(), knowledgeContext, audioExtra, effectiveLocale);
+            if (!Objects.equals(askReq.getPrompt(), processedPrompt)) {
+                askReq.setProcessedPrompt(processedPrompt);
+            }
         }
 
         String questionUuid = StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid()) ? askReq.getRegenerateQuestionUuid() : UuidUtil.createShort();
@@ -390,25 +484,117 @@ public class CharacterChatService {
             sseAskParam.setVoice(character.getAudioConfig().getVoice().getParamName());
         }
         */
-        // 11.装配System Message、短期记忆 + MCP等
+        // 11.装配System Message、短期记忆 + MCP等（恢复轮同样走正常装配——按当前配置
+        // 新建 MCP 客户端/system prompt/工具集合；仅消息链与迭代深度被检查点覆盖）
+        // 11. Assemble System Message, short-term memory + MCP (resumed rounds
+        // take the normal assembly too — fresh MCP clients / system prompt /
+        // tool set per current config; only the message chain and iteration
+        // depth are overridden by the checkpoint)
         ChatModelRequest chatRequestParams = CharacterChatHelper.buildChatRequestParams(
                 character, chatContext.shortTermMemoryId(),
                 askReq.getProcessedPrompt() != null ? askReq.getProcessedPrompt() : askReq.getPrompt(),
                 user, llmService, true, Boolean.TRUE.equals(character.getIsEnableWebSearch()), askReq.getImageUrls());
         chatRequestParams.setShortTermMemoryUserMessage(askReq.getPrompt());
-        // 11.5 Agentic 分支：角色开启 isAgentic 且（绑定可用知识库 或 存在可调用工作流）时
-        // 注册内置工具（search_knowledge / run_workflow 按可用性组装）。混合检索——现有预检索
-        // （scope-gate 判定相关时的自动首检索）完全不动，工具是增量能力；isAgentic=false 时不
-        // 构造任何对象、不触发工作流可见性查询，行为与存量逐字节等价
+        if (resumed) {
+            chatRequestParams.setResumedMessages(resumeAssembly.resumedMessages());
+            chatRequestParams.setResumedToolCallDepth(null != resumeCheckpoint.getToolCallDepth()
+                    ? resumeCheckpoint.getToolCallDepth() : 0);
+        }
+        // 11.5 Agentic 分支：生效判定 = 兜底开关 zhimesh.agent.default-agentic-enabled &&
+        // 角色 is_agentic 列值（开关关 = 全体角色回到非 agentic 现状，迁移 044 存量全开
+        // 的配置回退路径）。注册集合 = 默认集（search_knowledge / run_workflow /
+        // ask_user）∩ tool_policy 策略 ∩ 可用性——ask_user 无外部依赖恒可用，因此上下文
+        // 构造条件收敛为“筛选后的注册集非空”（策略把三件内置工具全部拒绝时才回到非
+        // agentic 行为：不构造上下文、不注册工具）。挂起接线：上下文挂 suspensionSink
+        // 回调（检查点落库闭包），恢复轮继承检查点的已耗挂起次数。混合检索——现有预检索
+        // （scope-gate 判定相关时的自动首检索）完全不动，工具是增量能力；agentic 未生效
+        // 时不构造任何对象、不触发工作流可见性查询，行为与存量逐字节等价
+        // 11.5 Agentic branch: effective = fallback switch
+        // zhimesh.agent.default-agentic-enabled AND the character's is_agentic
+        // column (switch off = every character back to non-agentic legacy, the
+        // rollback path for migration 044's all-on stock). Registration set =
+        // default set (search_knowledge / run_workflow / ask_user) ∩
+        // tool_policy ∩ availability — ask_user has no external dependency and
+        // is always available, so the context-building condition collapses to
+        // "the filtered registration set is non-empty" (only a policy denying
+        // all three builtin tools falls back to non-agentic behavior: no
+        // context, no tools). Suspension wiring: the context carries a
+        // suspensionSink callback (the checkpoint-persistence closure); a
+        // resumed round inherits the checkpoint's consumed suspension count.
+        // Hybrid retrieval — the existing pre-retrieval (the auto first search
+        // when the scope gate deems it relevant) is untouched, tools are
+        // additive; when agentic is not effective nothing is constructed, no
+        // workflow-visibility query fires, byte-for-byte legacy behavior
+        boolean agenticEffective = resolveAgentSettings().isDefaultAgenticEnabled()
+                && Boolean.TRUE.equals(character.getIsAgentic());
+        CharacterToolPolicy toolPolicy = CharacterToolPolicy.fromCharacter(character);
         List<RunWorkflowTool.WorkflowOption> runnableWorkflows =
-                Boolean.TRUE.equals(character.getIsAgentic()) ? listRunnableWorkflowOptions(user) : List.of();
-        ToolContext toolContext = buildAgenticToolContext(character, user, filteredKb, runnableWorkflows,
-                llmService, chatContext.shortTermMemoryId());
+                agenticEffective ? listRunnableWorkflowOptions(user) : List.of();
+        List<ToolExecutor> builtinTools = agenticEffective
+                ? buildBuiltinTools(filteredKb, runnableWorkflows, toolPolicy)
+                : List.of();
+        ToolContext toolContext = CollectionUtils.isNotEmpty(builtinTools)
+                ? buildAgenticToolContext(character, user, filteredKb, llmService, chatContext.shortTermMemoryId())
+                : null;
         if (null != toolContext) {
-            chatRequestParams.setBuiltinTools(buildBuiltinTools(filteredKb, runnableWorkflows));
+            if (resumed && null != resumeCheckpoint.getSuspensionCount()) {
+                // 恢复轮继承已耗挂起次数：max-suspensions 预算跨挂起累计
+                // A resumed round inherits the consumed suspension count: the
+                // max-suspensions budget accumulates across suspensions
+                toolContext.setSuspensionCount(resumeCheckpoint.getSuspensionCount());
+            }
+            if (resumed && StringUtils.isNotBlank(resumeCheckpoint.getApprovalGrant())) {
+                // 结构化拒绝标记（T6 拒绝按钮契约）：恢复答复以固定前缀开头 = 用户明确
+                // 拒绝，跳过凭证装配（fail-closed 硬保证——模型违背拒绝重调同工具同参数
+                // 也无凭证可匹配，照常挂起转审批）；自由文本拒绝不带前缀，维持设计明文
+                // 的「模型服从」口径
+                // The structured rejection marker (the T6 reject-button
+                // contract): a resume answer starting with the fixed prefix is
+                // an explicit user refusal, so the grant is NOT armed (a hard
+                // fail-closed guarantee — a re-invocation defying the refusal
+                // finds no grant to match and suspends for approval again); a
+                // free-text rejection carries no prefix and keeps the
+                // design-documented model-obedience posture
+                if (StringUtils.startsWith(askReq.getPrompt(), ApprovalRequiredDecorator.REJECTION_MARKER_PREFIX)) {
+                    log.info("Resume answer carries the approval rejection marker, approval grant not armed, checkpointId:{}",
+                            resumeCheckpoint.getId());
+                } else {
+                    // 恢复轮读回审批批准凭证（仅 MCP_APPROVAL 检查点携带）：装进请求级上下文，
+                    // 需审批 MCP 装饰器据此放行「同工具同参数」的真实调用；凭证随上下文存活
+                    // = 仅本恢复链有效（新一轮普通请求装配全新上下文、无凭证，须重新审批）。
+                    // 损坏 JSON fail-safe 归 null = 未批准（装饰器照常拦截），绝不因凭证问题
+                    // 拒绝恢复
+                    // The resumed round reads the approval grant back (carried by
+                    // MCP_APPROVAL checkpoints only) into the request-scoped
+                    // context, on which the approval-required MCP decorator lets
+                    // the "same tool, same arguments" real invocation through; the
+                    // grant lives as long as the context = valid only within this
+                    // resume chain (a fresh ordinary request assembles a fresh
+                    // context with no grant and must re-approve). Corrupt JSON
+                    // fails safe to null = not approved (the decorator keeps
+                    // gating); a grant problem never rejects the resume
+                    toolContext.setApprovalGrant(ApprovalGrant.fromJson(resumeCheckpoint.getApprovalGrant()));
+                }
+            }
+            wireSuspensionSink(toolContext, chatContext, character, user);
+            chatRequestParams.setBuiltinTools(builtinTools);
             sseAskParam.setToolContext(toolContext);
-            log.info("Agentic mode enabled, characterId:{}, kbCount:{}, runnableWorkflowCount:{}",
-                    character.getId(), filteredKb.size(), runnableWorkflows.size());
+            log.info("Agentic mode enabled, characterId:{}, kbCount:{}, runnableWorkflowCount:{}, builtinToolNames:{}, resumed:{}",
+                    character.getId(), filteredKb.size(), runnableWorkflows.size(),
+                    builtinTools.stream().map(tool -> tool.spec().name()).toList(), resumed);
+        }
+        // 审批门装配：tool_policy 的 approvalRequiredMcpTools 写入请求参数，由
+        // AbstractLLMService.discoverRequestTools 对命中的 MCP 执行器包审批装饰器。仅在
+        // agentic 生效时接线（兜底开关关闭 = 回到无审批门的现状，验收标准 1 的逐字节
+        // 等价）；集合为空不设置（无审批门，行为不变）
+        // Approval-gate assembly: the tool_policy's approvalRequiredMcpTools
+        // ride the request params, and AbstractLLMService.discoverRequestTools
+        // wraps the hit MCP executors with the approval decorator. Wired only
+        // while agentic is effective (the fallback switch off = back to the
+        // no-gate status quo, the byte-equality of acceptance criterion 1);
+        // an empty set leaves the field unset (no gate, unchanged behavior)
+        if (agenticEffective && CollectionUtils.isNotEmpty(toolPolicy.getApprovalRequiredMcpTools())) {
+            chatRequestParams.setApprovalRequiredTools(toolPolicy.getApprovalRequiredMcpTools());
         }
         // 12.设置temperature、是否返回思考等模型参数
         sseAskParam.setHttpRequestParams(chatRequestParams);
@@ -491,6 +677,26 @@ public class CharacterChatService {
                 if (null != toolContext && CollectionUtils.isNotEmpty(toolContext.getToolTraces())) {
                     answerMeta.setToolCalls(toolContext.getToolTraces());
                 }
+                // 挂起轮：随 meta 事件下发挂起载荷（类型/问题/选项/检查点 uuid；审批类
+                // 再带 action/summary/riskLevel），前端据此渲染问题/审批卡片；非挂起轮
+                // 保持 null 维持旧载荷形状
+                // A suspending round: ship the suspension payload (kind/question/
+                // options/checkpoint uuid; the approval kinds additionally carry
+                // action/summary/riskLevel) on the meta event for the frontend's
+                // question / approval card; null on non-suspending rounds keeps
+                // the legacy payload shape
+                if (null != toolContext && null != toolContext.getSuspensionSignal()) {
+                    SuspensionSignal signal = toolContext.getSuspensionSignal();
+                    answerMeta.setSuspension(SuspensionMeta.builder()
+                            .type(null != signal.getKind() ? signal.getKind().getCode() : null)
+                            .question(signal.getQuestion())
+                            .options(signal.getOptions())
+                            .action(signal.getAction())
+                            .summary(signal.getSummary())
+                            .riskLevel(signal.getRiskLevel())
+                            .checkpointUuid(signal.getCheckpointUuid())
+                            .build());
+                }
                 self.saveAfterAiResponse(chatContext, askReq, effectiveRetrievers, response,
                         questionMeta, answerMeta, audioInfo, llmService,
                         chatRequestParams.getMemoryWindowMaxTokens(), toolContext);
@@ -505,45 +711,41 @@ public class CharacterChatService {
     }
 
     /**
-     * 构造 Agentic 请求级工具上下文；角色未开启 isAgentic、且既无可检索知识库也无
-     * 可调用工作流时返回 null，调用方不注册任何内置工具、不改动请求，存量行为逐字节等价。
-     * 检索依赖（filteredKb/llmService/embeddingModel）封装进 ToolRagContext，
+     * 构造 Agentic 请求级工具上下文。调用条件（注册集非空 = 默认集 ∩ 策略 ∩ 可用性）由
+     * 调用方判定——ask_user 恒可用后，唯一回到非 agentic 行为的情形是策略拒绝全部内置
+     * 工具。检索依赖（filteredKb/llmService/embeddingModel）封装进 ToolRagContext，
      * filteredKb 已过 KnowledgeBaseAccessService 鉴权，是工具检索的唯一合法范围；
-     * filteredKb 为空但工作流可用时 ragContext 置 null（不注册 search_knowledge，
-     * 其对 null ragContext 的短路兼容保持不变）。
+     * filteredKb 为空时 ragContext 置 null（不注册 search_knowledge，其对 null
+     * ragContext 的短路兼容保持不变）。
      * <p>
-     * Build the request-scoped agentic tool context; returns null when the
-     * character has isAgentic off or has neither a searchable knowledge base
-     * nor a runnable workflow, in which case the caller registers no builtin
-     * tools and leaves the request untouched (byte-for-byte legacy behavior).
-     * Retrieval dependencies (filteredKb/llmService/embeddingModel) are wrapped
-     * into ToolRagContext; filteredKb is already authorization-filtered by
+     * Build the request-scoped agentic tool context. The call condition
+     * (non-empty registration set = default set ∩ policy ∩ availability) is
+     * decided by the caller — with ask_user always available, the only way back
+     * to non-agentic behavior is a policy denying every builtin tool. Retrieval
+     * dependencies (filteredKb/llmService/embeddingModel) are wrapped into
+     * ToolRagContext; filteredKb is already authorization-filtered by
      * KnowledgeBaseAccessService and is the only legal retrieval scope for
-     * tools. When filteredKb is empty but workflows are available, ragContext
-     * stays null (search_knowledge is not registered; its null-ragContext
-     * short-circuit compatibility is unchanged).
+     * tools. When filteredKb is empty, ragContext stays null (search_knowledge
+     * is not registered; its null-ragContext short-circuit compatibility is
+     * unchanged).
      *
      * @param character 角色 / Character
      * @param user      当前用户 / Current user
      * @param filteredKb 鉴权后的可用知识库 / Authorization-filtered visible KBs
-     * @param runnableWorkflows 可调用工作流清单 / Visible runnable workflows
      * @param llmService 实际使用的 LLM 服务 / Resolved LLM service
      * @param shortTermMemoryId 短期记忆ID / Short-term memory id
-     * @return 工具上下文，无可注册工具时为 null / Tool context, or null when nothing to register
+     * @return 工具上下文 / Tool context
      */
     private ToolContext buildAgenticToolContext(Character character, User user, List<KbInfoResp> filteredKb,
-                                                List<RunWorkflowTool.WorkflowOption> runnableWorkflows,
                                                 AbstractLLMService llmService, String shortTermMemoryId) {
         boolean hasKnowledgeBases = CollectionUtils.isNotEmpty(filteredKb);
-        if (!Boolean.TRUE.equals(character.getIsAgentic())
-                || (!hasKnowledgeBases && CollectionUtils.isEmpty(runnableWorkflows))) {
-            return null;
-        }
-        // 记忆接线口径与预检索保持一致：仅 understandContextEnable 时携带短期记忆ID
-        // Memory wiring matches pre-retrieval: the short-term memory id is
-        // carried only when understandContextEnable is on
-        String toolMemoryId = Boolean.TRUE.equals(character.getUnderstandContextEnable())
-                ? shortTermMemoryId : null;
+        // 记忆接线口径与预检索保持一致：上下文恒启用（2026-09-24 产品决策：
+        // understandContextEnable 开关已下线，列保留不读），恒携带短期记忆ID
+        // Memory wiring matches pre-retrieval: context is always on (2026-09-24
+        // product decision: the understandContextEnable toggle is retired, the
+        // column is kept but never read), the short-term memory id is always
+        // carried
+        String toolMemoryId = shortTermMemoryId;
         ToolContext.ToolContextBuilder builder = ToolContext.builder()
                 .user(user)
                 .characterId(character.getId())
@@ -621,24 +823,351 @@ public class CharacterChatService {
     }
 
     /**
-     * 按可用性组装内置工具：filteredKb 非空 → search_knowledge；可调用工作流非空 →
-     * run_workflow（内部超时取 tool-timeout-ms - 5000，先于外层 guardrail 返回）
+     * 按可用性与角色工具策略组装内置工具：filteredKb 非空 → search_knowledge；
+     * 可调用工作流非空 → run_workflow（内部超时取 tool-timeout-ms - 5000，先于外层
+     * guardrail 返回）；ask_user 与 request_human_approval 无外部依赖恒注册（挂起内核
+     * 就绪，经 ToolContext.suspensionSink 落检查点；审批工具挂起事件为 approval_request）。
+     * tool_policy 的 builtinDenylist 命中的工具不注册——注册集合 = 默认集 ∩ policy ∩
+     * 可用性（request_human_approval 与 ask_user 同口径：默认注册、策略可单独摘除）
      * <p>
-     * Assemble builtin tools by availability: search_knowledge when filteredKb
-     * is non-empty; run_workflow when runnable workflows exist (its internal
-     * timeout is tool-timeout-ms - 5000, returning ahead of the outer guardrail).
+     * Assemble builtin tools by availability and the character tool policy:
+     * search_knowledge when filteredKb is non-empty; run_workflow when runnable
+     * workflows exist (its internal timeout is tool-timeout-ms - 5000, returning
+     * ahead of the outer guardrail); ask_user and request_human_approval have
+     * no external dependency and are always registered (the suspension kernel
+     * is in place, persisting via ToolContext.suspensionSink; the approval
+     * tool's suspension event is approval_request). Tools hit by the tool_policy
+     * builtinDenylist are not registered — the registration set = default set ∩
+     * policy ∩ availability (request_human_approval follows ask_user's
+     * convention: registered by default, individually removable via policy).
      */
     private List<ToolExecutor> buildBuiltinTools(List<KbInfoResp> filteredKb,
-                                                 List<RunWorkflowTool.WorkflowOption> runnableWorkflows) {
+                                                 List<RunWorkflowTool.WorkflowOption> runnableWorkflows,
+                                                 CharacterToolPolicy toolPolicy) {
         List<ToolExecutor> builtinTools = new ArrayList<>();
-        if (CollectionUtils.isNotEmpty(filteredKb)) {
+        if (CollectionUtils.isNotEmpty(filteredKb) && toolPolicy.isBuiltinAllowed(SearchKnowledgeTool.NAME)) {
             builtinTools.add(new SearchKnowledgeTool());
         }
-        if (CollectionUtils.isNotEmpty(runnableWorkflows)) {
+        if (CollectionUtils.isNotEmpty(runnableWorkflows) && toolPolicy.isBuiltinAllowed(RunWorkflowTool.NAME)) {
             builtinTools.add(new RunWorkflowTool(workflowStarter, runnableWorkflows,
                     resolveRunWorkflowInternalTimeoutMs()));
         }
+        if (toolPolicy.isBuiltinAllowed(AskUserTool.NAME)) {
+            builtinTools.add(new AskUserTool());
+        }
+        if (toolPolicy.isBuiltinAllowed(RequestHumanApprovalTool.NAME)) {
+            builtinTools.add(new RequestHumanApprovalTool());
+        }
         return builtinTools;
+    }
+
+    /**
+     * 挂起恢复轮的装配结果：resumedMessages = 检查点快照链 + 配对结果消息（快照中
+     * 末条带工具请求的 AiMessage 的每个请求都有结果：pendingRequestId←用户答复原文、
+     * 无配对结果的协作请求←忽略占位），由 AbstractLLMService.createChatRequest 直接
+     * 作为本次请求的 messages
+     * <p>
+     * Assembly outcome of a resumed round: resumedMessages = the checkpoint
+     * snapshot chain plus the paired result messages (every request of the
+     * snapshot's last AiMessage carrying tool requests gets a result:
+     * pendingRequestId ← the user's raw answer; collaborative requests without
+     * a paired result ← the ignored placeholder), used directly as the
+     * request's messages by AbstractLLMService.createChatRequest.
+     */
+    private record ResumeAssembly(List<ChatMessage> resumedMessages) {
+    }
+
+    /**
+     * 挂起恢复装配（第 6.5 步实现），任一失败返回 null 按正常轮继续：
+     * ①幂等消费检查点先行——消费 CAS 的赢者独占恢复权，并发到达的第二条消息在此
+     * 输掉后直接按正常轮走、不向短期记忆写入任何内容（若 append 先于消费，输者的
+     * 原文会永久插在赢者两轮之间，且随后撞轮次锁报错，无法自愈）；②消费赢者把答复
+     * 原文无条件 append 进短期记忆（上下文恒启用）——跨挂起的记忆记账闭环点
+     * （挂起轮的 AiMessage 已由 saveAfterAiResponse 记账，答复在此补记；append 失败
+     * 不阻断恢复：答复已进快照配对链，本轮模型可见，仅后续轮次记忆缺这一条，warn
+     * 降级记账；正常轮装配记忆窗口时会去重末尾 UserMessage，不会双写）；③解码消息
+     * 快照（SnapshotDecodeException → 作废检查点 + 正常轮 fail-safe）；④构造配对
+     * 结果消息。工具迭代深度不在此处理——由检查点经 ChatModelRequest.resumedToolCallDepth
+     * 继承
+     * <p>
+     * Suspension-resume assembly (step 6.5); any failure returns null and the
+     * message proceeds as a normal round: (1) the idempotent consume goes
+     * first — its CAS winner owns the resume exclusively, so a concurrently
+     * arriving second message loses here and takes the normal round without
+     * writing anything into short-term memory (with an append-first order the
+     * loser's raw text would sit forever between the winner's turns and then
+     * die on the turn-lease error, with no self-healing); (2) the consume
+     * winner appends the raw answer into short-term memory unconditionally
+     * (context is always on) — the cross-suspension memory-bookkeeping
+     * closure point (the suspending round's AiMessage was already recorded by
+     * saveAfterAiResponse, the answer is recorded here; an append failure
+     * never blocks the resume: the answer already rides in the snapshot
+     * pairing chain, so this round's model sees it and only later turns'
+     * memory misses the entry — warn + degraded bookkeeping; the normal
+     * round's memory-window assembly dedups a trailing UserMessage, so a
+     * later normal fallback never double-writes); (3) decode the message
+     * snapshot (SnapshotDecodeException → supersede + normal-round
+     * fail-safe); (4) build the paired result messages. The tool-iteration
+     * depth is not handled here — it is inherited from the checkpoint via
+     * ChatModelRequest.resumedToolCallDepth.
+     */
+    private ResumeAssembly tryResumeFromCheckpoint(ChatContext chatContext, Character character, AskReq askReq,
+                                                   AgentPendingCheckpoint checkpoint, AbstractLLMService llmService) {
+        String userAnswer = askReq.getPrompt();
+        if (!pendingCheckpointService.consume(checkpoint.getId())) {
+            log.info("Pending checkpoint no longer ACTIVE (consumed/expired/superseded concurrently), falling back to a normal round, checkpointId:{}",
+                    checkpoint.getId());
+            return null;
+        }
+        try {
+            // 上下文恒启用（2026-09-24 产品决策：understandContextEnable 开关已下线，
+            // 列保留不读），恢复轮无条件补记用户答复；事务/降级语义不变（append 失败
+            // 仅 warn，不阻断恢复）
+            // Context is always on (2026-09-24 product decision: the
+            // understandContextEnable toggle is retired, the column is kept but
+            // never read), so the resume round appends the user's answer
+            // unconditionally; transaction/degradation semantics are unchanged
+            // (an append failure only warns and never blocks the resume)
+            Integer maxInputTokens = llmService.getAiModel().getMaxInputTokens();
+            int maxTokens = null != maxInputTokens && maxInputTokens > 0
+                    ? maxInputTokens : LLM_MAX_INPUT_TOKENS_DEFAULT;
+            ShortTermMemoryWindow.append(
+                    shortTermMemoryService,
+                    chatContext.shortTermMemoryId(),
+                    maxTokens,
+                    llmService.resolveTokenCountEstimator(),
+                    UserMessage.from(userAnswer));
+        } catch (Exception e) {
+            log.warn("Failed to append the resume answer into short-term memory, resuming anyway (the answer rides in the snapshot pairing chain), memoryId:{}",
+                    chatContext.shortTermMemoryId(), e);
+        }
+        List<ChatMessage> snapshot;
+        try {
+            snapshot = ChatMessageSnapshotCodec.decode(checkpoint.getMessagesSnapshot());
+        } catch (ChatMessageSnapshotCodec.SnapshotDecodeException e) {
+            log.warn("Pending checkpoint snapshot undecodable, superseding and falling back to a normal round, checkpointId:{}",
+                    checkpoint.getId(), e);
+            pendingCheckpointService.markSuperseded(checkpoint.getId());
+            return null;
+        }
+        List<ChatMessage> resumedMessages = buildResumeMessages(snapshot, checkpoint.getPendingRequestId(), userAnswer,
+                isApprovalResume(checkpoint));
+        if (null == resumedMessages) {
+            log.warn("Pending tool request not found in the snapshot, superseding and falling back to a normal round, checkpointId:{}, pendingRequestId:{}",
+                    checkpoint.getId(), checkpoint.getPendingRequestId());
+            pendingCheckpointService.markSuperseded(checkpoint.getId());
+            return null;
+        }
+        log.info("Chat resumed from pending checkpoint, checkpointId:{}, toolCallDepth:{}, suspensionCount:{}, snapshotMessages:{}",
+                checkpoint.getId(), checkpoint.getToolCallDepth(), checkpoint.getSuspensionCount(), resumedMessages.size());
+        return new ResumeAssembly(resumedMessages);
+    }
+
+    /**
+     * 由检查点快照构造恢复轮消息链：定位快照中最后一条带工具请求的 AiMessage（挂起
+     * 轮），其每个请求都必须有配对结果——快照中已有结果的沿用；pendingRequestId 对应
+     * 请求的结果=用户答复原文（按工具结果同口径截断防超长）；其余无配对结果的请求
+     * （挂起时被跳过的同轮协作请求）注入忽略占位。找不到带工具请求的 AiMessage 或
+     * 匹配不到 pendingRequestId 时返回 null（调用方作废检查点按正常轮处理）
+     * <p>
+     * Build the resumed round's message chain from the checkpoint snapshot:
+     * locate the last AiMessage of the snapshot carrying tool requests (the
+     * suspending round); every one of its requests must have a paired result —
+     * existing snapshot results are reused; the pendingRequestId request's
+     * result is the user's raw answer (truncated with the tool-result
+     * convention against oversized pastes); the remaining unpaired requests
+     * (the same-round collaborative requests skipped at suspension) get the
+     * ignored placeholder. Returns null when no AiMessage with tool requests
+     * exists or the pendingRequestId cannot be matched (the caller supersedes
+     * the checkpoint and takes the normal round).
+     */
+    private List<ChatMessage> buildResumeMessages(List<ChatMessage> snapshot, String pendingRequestId, String userAnswer,
+                                                  boolean approvalResume) {
+        AiMessage suspensionRound = null;
+        for (int i = snapshot.size() - 1; i >= 0; i--) {
+            if (snapshot.get(i) instanceof AiMessage aiMessage && aiMessage.hasToolExecutionRequests()) {
+                suspensionRound = aiMessage;
+                break;
+            }
+        }
+        if (null == suspensionRound) {
+            return null;
+        }
+        Set<String> pairedIds = new HashSet<>();
+        for (ChatMessage message : snapshot) {
+            if (message instanceof ToolExecutionResultMessage resultMessage) {
+                pairedIds.add(resultMessage.id());
+            }
+        }
+        boolean pendingFound = false;
+        List<ChatMessage> resumedMessages = new ArrayList<>(snapshot);
+        for (ToolExecutionRequest request : suspensionRound.toolExecutionRequests()) {
+            if (pairedIds.contains(request.id())) {
+                continue;
+            }
+            boolean isPendingRequest = !pendingFound
+                    && StringUtils.isNotBlank(pendingRequestId)
+                    && idMatchesPending(request.id(), pendingRequestId);
+            resumedMessages.add(ToolExecutionResultMessage.from(request,
+                    isPendingRequest ? resumeAnswerToolResult(userAnswer, approvalResume) : IGNORED_PEER_RESULT_TEXT));
+            if (isPendingRequest) {
+                pendingFound = true;
+            }
+        }
+        return pendingFound ? resumedMessages : null;
+    }
+
+    /**
+     * 恢复轮答复注入工具结果消息的最终文本：审批类挂起（APPROVAL / MCP_APPROVAL）且
+     * 答复不带结构化拒绝前缀时，在截断后的答复原文外包一层机器可读引导——T8 集成剧本
+     * 实测（2026-09-23）部分模型会把注入的「同意」原文当工具结果、不重调工具并虚构
+     * 「已提交」；引导明确「这只是用户的审批意见、相关操作尚未实际执行」，让批准后的
+     * 重调不依赖模型自觉。结构化拒绝（[APPROVAL_REJECTED] 前缀）与 ASK_USER 挂起保持
+     * 原文注入：拒绝语义模型转述即可，追问的答复本身就是答案
+     * <p>
+     * Final tool-result text for the resumed round's user answer: for approval
+     * suspensions (APPROVAL / MCP_APPROVAL) whose answer lacks the structured
+     * rejection prefix, wrap the truncated raw answer in machine-readable
+     * guidance — the T8 integration script (2026-09-23) observed some models
+     * treating the injected bare "同意" as the tool's own result, skipping the
+     * re-invocation and fabricating success; the guidance makes explicit that
+     * this is only the user's approval opinion and nothing has executed yet, so
+     * the post-approval re-invocation no longer leans on model obedience alone.
+     * Structured rejections ([APPROVAL_REJECTED] prefix) and ASK_USER
+     * suspensions keep the raw-text injection: a rejection just needs relaying,
+     * and a clarifying answer is itself the answer.
+     */
+    private String resumeAnswerToolResult(String userAnswer, boolean approvalResume) {
+        String answer = truncateResumeAnswer(userAnswer);
+        if (!approvalResume || StringUtils.startsWith(userAnswer, ApprovalRequiredDecorator.REJECTION_MARKER_PREFIX)) {
+            return answer;
+        }
+        return "用户对挂起审批的回复（原文）：「" + answer + "」。注意：这只是用户的审批意见，被审批的操作尚未实际执行；若用户同意，请重新调用相应工具完成实际执行，不要凭空声称已执行。";
+    }
+
+    /**
+     * 检查点是否为审批类挂起（决定恢复答复是否包审批引导文本）
+     * <p>
+     * Whether the checkpoint is an approval suspension (decides whether the
+     * resumed answer gets the approval guidance wrapper).
+     */
+    private static boolean isApprovalResume(AgentPendingCheckpoint checkpoint) {
+        return PendingCheckpointKind.APPROVAL.getCode().equals(checkpoint.getKind())
+                || PendingCheckpointKind.MCP_APPROVAL.getCode().equals(checkpoint.getKind());
+    }
+
+    /**
+     * 挂起请求 id 与检查点 pendingRequestId 的匹配：相等，或（落库前截断到 128 的情形）
+     * 检查点值是完整 id 的前缀
+     * <p>
+     * Match a suspended request's id against the checkpoint's pendingRequestId:
+     * equal, or (for the truncated-to-128 case at persistence) the checkpoint
+     * value is a prefix of the full id.
+     */
+    private static boolean idMatchesPending(String requestId, String pendingRequestId) {
+        return StringUtils.equals(requestId, pendingRequestId)
+                || (requestId.length() > pendingRequestId.length()
+                        && StringUtils.startsWith(requestId, pendingRequestId));
+    }
+
+    /**
+     * 恢复轮用户答复的长度防护：与 AbstractLLMService 工具结果截断同口径
+     * （zhimesh.agent.tool-result-max-chars，截断时末尾追加标记）。答复以工具结果
+     * 消息形态注入快照链，不经常规轮 fixedMessageTokens 的预算度量，超长原文会把
+     * 恢复轮请求顶爆模型输入上限——届时检查点已消费，挂起链无法重来
+     * <p>
+     * Length guard for the resumed round's user answer: the same convention
+     * as AbstractLLMService's tool-result truncation
+     * (zhimesh.agent.tool-result-max-chars, marker appended when truncated).
+     * The answer is injected into the snapshot chain as a tool-result message
+     * and bypasses the ordinary round's fixedMessageTokens budgeting, so an
+     * oversized paste would blow the resumed request past the model's input
+     * cap — with the checkpoint already consumed, the suspension chain could
+     * not be retried.
+     */
+    private String truncateResumeAnswer(String answer) {
+        int maxChars = resolveAgentSettings().getToolResultMaxChars();
+        if (null == answer || answer.length() <= maxChars) {
+            return answer;
+        }
+        return answer.substring(0, maxChars) + "\n...[truncated]";
+    }
+
+    /**
+     * 给请求级工具上下文接线挂起回调（闭包捕获会话/角色/用户，AbstractLLMService 保持
+     * 无 Spring 依赖）：协作类工具挂起时由内核回调，落一条 ACTIVE 检查点并返回其 uuid。
+     * 无会话上下文（conversation 为 null 的入口）不接线——ask_user 在内核里走“不支持
+     * 挂起”的内联回答分支，行为安全
+     * <p>
+     * Wire the suspension callback onto the request-scoped tool context (the
+     * closure captures conversation/character/user, keeping AbstractLLMService
+     * free of Spring dependencies): when a collaborative tool suspends, the
+     * kernel invokes it to persist one ACTIVE checkpoint and returns its uuid.
+     * Without a conversation (conversation-null entries) nothing is wired —
+     * ask_user then takes the kernel's "suspension unsupported" inline-answer
+     * branch, which is safe.
+     */
+    private void wireSuspensionSink(ToolContext toolContext, ChatContext chatContext, Character character, User user) {
+        if (null == chatContext.conversation()) {
+            return;
+        }
+        Long conversationId = chatContext.conversation().getId();
+        toolContext.setSuspensionSink((signal, messagesSnapshot, toolCallDepth, suspensionCount) ->
+                pendingCheckpointService.create(
+                        conversationId,
+                        character.getId(),
+                        user.getId(),
+                        signal.getKind(),
+                        signal.getToolName(),
+                        signal.getRequestId(),
+                        suspensionPayload(signal),
+                        messagesSnapshot,
+                        toolCallDepth,
+                        suspensionCount,
+                        // 审批批准凭证（仅 MCP_APPROVAL 携带：装饰器在挂起信号上构造；
+                        // ASK_USER/APPROVAL 为 null，列留空）
+                        // The approval grant (carried by MCP_APPROVAL only,
+                        // built by the decorator onto the suspension signal;
+                        // null — column empty — for ASK_USER/APPROVAL)
+                        signal.getApprovalGrant()).getUuid());
+    }
+
+    /**
+     * 检查点 payload（按挂起类型分形，键名与 AgentPendingCheckpoint.payload 列注释钉死
+     * 的契约一致）：ASK_USER = question（必带）+ options（非空才带）；APPROVAL /
+     * MCP_APPROVAL = action / summary（非空才带）+ risk_level（非空才带；MCP 拦截挂起
+     * 无声明等级时省略）。question 文本不落审批 payload（消息行 remark 已承载，可由
+     * action/summary/risk_level 重建）
+     * <p>
+     * Checkpoint payload (kind-shaped; the key names follow the contract
+     * pinned by the AgentPendingCheckpoint.payload column comment): ASK_USER =
+     * question (always) + options (only when non-empty); APPROVAL /
+     * MCP_APPROVAL = action / summary (only when non-blank) + risk_level (only
+     * when non-blank; omitted for MCP interceptions with no declared level).
+     * The question text does not ride the approval payload (the message row's
+     * remark already carries it; it is rebuildable from action/summary/
+     * risk_level).
+     */
+    private Map<String, Object> suspensionPayload(SuspensionSignal signal) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        if (PendingCheckpointKind.APPROVAL == signal.getKind()
+                || PendingCheckpointKind.MCP_APPROVAL == signal.getKind()) {
+            if (StringUtils.isNotBlank(signal.getAction())) {
+                payload.put("action", signal.getAction());
+            }
+            if (StringUtils.isNotBlank(signal.getSummary())) {
+                payload.put("summary", signal.getSummary());
+            }
+            if (StringUtils.isNotBlank(signal.getRiskLevel())) {
+                payload.put("risk_level", signal.getRiskLevel());
+            }
+            return payload;
+        }
+        payload.put("question", signal.getQuestion());
+        if (CollectionUtils.isNotEmpty(signal.getOptions())) {
+            payload.put("options", signal.getOptions());
+        }
+        return payload;
     }
 
     /**
@@ -661,6 +1190,21 @@ public class CharacterChatService {
         ZhiMeshProperties.Agent agentSettings = null != adiProperties && null != adiProperties.getAgent()
                 ? adiProperties.getAgent() : new ZhiMeshProperties.Agent();
         return Math.max(1_000L, agentSettings.getToolTimeoutMs() - 5_000L);
+    }
+
+    /**
+     * 读取 Agent 工具循环配置；注入的配置不可用时回退到默认值（对齐
+     * AbstractLLMService#resolveAgentSettings 的防御口径——adiProperties 在
+     * 部分单测里为 null，defaultAgenticEnabled 等默认值必须照常生效）
+     * <p>
+     * Resolve the agent tool-loop settings; falls back to defaults when the
+     * injected properties are unavailable (mirroring the defensive posture of
+     * AbstractLLMService#resolveAgentSettings — adiProperties is null in some
+     * unit tests, and defaults like defaultAgenticEnabled must still apply).
+     */
+    private ZhiMeshProperties.Agent resolveAgentSettings() {
+        return null != adiProperties && null != adiProperties.getAgent()
+                ? adiProperties.getAgent() : new ZhiMeshProperties.Agent();
     }
 
     @Transactional
@@ -755,24 +1299,26 @@ public class CharacterChatService {
 
         calcTodayCost(user, character, questionMeta, answerMeta, aiModel.getIsFree());
 
-        //Short-term memory
-        if (Boolean.TRUE.equals(character.getUnderstandContextEnable())) {
-            // reasoning_content is stored in AiMessage.thinking() via returnThinking(true),
-            // and will be sent back to DeepSeek API via sendThinking(true) during multi-turn tool-call scenarios.
-            // <p>
-            // reasoning_content 通过 returnThinking(true) 存入 AiMessage.thinking()，
-            // 并在多轮工具调用场景中通过 sendThinking(true) 自动回传 DeepSeek API。
-            int maxTokens = memoryWindowMaxTokens != null && memoryWindowMaxTokens > 0
-                    ? memoryWindowMaxTokens
-                    : aiModel.getMaxInputTokens();
-            TokenCountEstimator tokenCountEstimator = llmService.resolveTokenCountEstimator();
-            ShortTermMemoryWindow.append(
-                    shortTermMemoryService,
-                    chatContext.shortTermMemoryId(),
-                    maxTokens,
-                    tokenCountEstimator,
-                    AiMessage.builder().text(response.getContent()).thinking(response.getThinkingContent()).build());
-        }
+        //Short-term memory — 上下文恒启用（2026-09-24 产品决策：understandContextEnable
+        //开关已下线，列保留不读），无条件 append Ai 轮记忆
+        //Short-term memory — context is always on (2026-09-24 product decision:
+        //the understandContextEnable toggle is retired, the column is kept but
+        //never read), the Ai turn is appended unconditionally
+        // reasoning_content is stored in AiMessage.thinking() via returnThinking(true),
+        // and will be sent back to DeepSeek API via sendThinking(true) during multi-turn tool-call scenarios.
+        // <p>
+        // reasoning_content 通过 returnThinking(true) 存入 AiMessage.thinking()，
+        // 并在多轮工具调用场景中通过 sendThinking(true) 自动回传 DeepSeek API。
+        int maxTokens = memoryWindowMaxTokens != null && memoryWindowMaxTokens > 0
+                ? memoryWindowMaxTokens
+                : aiModel.getMaxInputTokens();
+        TokenCountEstimator tokenCountEstimator = llmService.resolveTokenCountEstimator();
+        ShortTermMemoryWindow.append(
+                shortTermMemoryService,
+                chatContext.shortTermMemoryId(),
+                maxTokens,
+                tokenCountEstimator,
+                AiMessage.builder().text(response.getContent()).thinking(response.getThinkingContent()).build());
 
         if (!SpringUtil.getBean(MemoryRetrievalPolicy.class).shouldExtract(askReq.getPrompt())) {
             log.info("Skipping long-term memory extraction for a trivial turn, characterId:{}", character.getId());

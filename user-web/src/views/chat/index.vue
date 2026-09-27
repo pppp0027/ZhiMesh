@@ -181,6 +181,47 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
     return
   }
   const isCurrentRequest = () => requestId === chatRequestGeneration
+  // 流式渲染批量 flush：chunk 先入请求闭包内的缓冲（每请求独立，防 regenerate/多页签串包），
+  // ~60ms 定时一次性 appendChunk，消除逐字符 append 触发全量 markdown 重渲染的 O(n²) 卡顿；
+  // done/suspension/error 入口先同步 flush，防丢尾字符、防挂起卡片与文本错位
+  let textBuffer = ''
+  let thinkingBuffer = ''
+  let flushTimer: ReturnType<typeof setTimeout> | undefined
+  const flushBuffers = () => {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = undefined
+    }
+    const question = requestQuestion
+    if (!question || !isCurrentRequest()) {
+      textBuffer = ''
+      thinkingBuffer = ''
+      return
+    }
+    try {
+      if (thinkingBuffer) {
+        appendChunk(
+          requestChatKey,
+          question.children[0].uuid,
+          thinkingBuffer,
+          true, // thinking is true
+        )
+        chatMessageReceiving(question.uuid)
+      }
+      if (textBuffer) {
+        appendChunk(
+          requestChatKey,
+          question.children[0].uuid,
+          textBuffer,
+        )
+        chatMessageReceiving(question.uuid)
+      }
+    } catch (error) {
+      console.error(error)
+    }
+    textBuffer = ''
+    thinkingBuffer = ''
+  }
   return api.sseProcess({
     options: {
       prompt: '',
@@ -219,19 +260,9 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
         ms.error(t('chat.questionNotFound'))
         return
       }
-      try {
-        for (let i = 0; i < chunk.length; i++) {
-          appendChunk(
-            requestChatKey,
-            question.children[0].uuid,
-            chunk[i],
-            true, // thinking is true
-          )
-          chatMessageReceiving(question.uuid)
-        }
-      } catch (error) {
-        console.error(error)
-      }
+      thinkingBuffer += chunk
+      if (!flushTimer)
+        flushTimer = setTimeout(flushBuffers, 60)
       // 推理阶段无需显示状态
       question.state = new Map<string, string>()
     },
@@ -243,18 +274,9 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
         ms.error(t('chat.questionNotFound'))
         return
       }
-      try {
-        for (let i = 0; i < chunk.length; i++) {
-          appendChunk(
-            requestChatKey,
-            question.children[0].uuid,
-            chunk[i],
-          )
-          chatMessageReceiving(question.uuid)
-        }
-      } catch (error) {
-        console.error(error)
-      }
+      textBuffer += chunk
+      if (!flushTimer)
+        flushTimer = setTimeout(flushBuffers, 60)
       const answerContentType = chatStore.answerContentType(character, question.audioUuid)
       const ttsPartText = chunk.replace('\n', '')
       if (ttsPartText && appStore.audioSynthesizerSide === AUDIO_SYNTHESIZER_SIDE.client && answerContentType === CHAT_MESSAGE_CONTENT_TYPE.audio && character.isAutoplayAnswer) {
@@ -271,6 +293,24 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
       if (appStore.audioSynthesizerSide !== AUDIO_SYNTHESIZER_SIDE.client && audioFrame)
         childAudioPlayState.audioFrame = audioFrame
     },
+    toolStartedReceived: (data) => {
+      if (!isCurrentRequest())
+        return
+      const question = requestQuestion
+      if (!question)
+        return
+      // 工具开始执行：先点亮一条 running 步骤，完成事件（[TOOL_CALL]）再回填时长/结果
+      const answer = question.children[0]
+      if (!answer.toolCalls)
+        answer.toolCalls = []
+      answer.toolCalls.push({
+        toolName: data.toolName,
+        args: data.args,
+        running: true,
+        durationMs: 0,
+        success: true,
+      })
+    },
     toolCallReceived: (data) => {
       if (!isCurrentRequest())
         return
@@ -280,9 +320,75 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
       const answer = question.children[0]
       if (!answer.toolCalls)
         answer.toolCalls = []
-      answer.toolCalls.push(data)
+      // 回填策略：从后往前找同名 running 步骤（[TOOL_STARTED] 已点亮）回填；
+      // 未命中（无 started 的完成事件/历史回放/乱序）按旧逻辑直插，兼容 TOOL_LIMIT_MARKER
+      let runningIdx = -1
+      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
+        const tool = answer.toolCalls[i]
+        if (tool.toolName === data.toolName && tool.running === true) {
+          runningIdx = i
+          break
+        }
+      }
+      if (runningIdx !== -1) {
+        const step = answer.toolCalls[runningIdx]
+        step.running = false
+        step.durationMs = data.durationMs
+        step.success = data.success
+        if (data.resultSummary !== undefined)
+          step.resultSummary = data.resultSummary
+      } else {
+        answer.toolCalls.push(data)
+      }
+    },
+    suspensionReceived: (payload) => {
+      // 先同步 flush 已缓冲文本，防挂起卡片与文本错位
+      flushBuffers()
+      if (!isCurrentRequest())
+        return
+      const question = requestQuestion
+      if (!question)
+        return
+      // 挂起事件：在回答消息上挂卡片载荷（可交互），并在步骤条补挂起节点
+      const answer = question.children[0]
+      answer.suspension = payload
+      answer.suspensionActive = true
+      if (!answer.toolCalls)
+        answer.toolCalls = []
+      // 同名 running 步骤原地翻挂起节点：协作工具（ask_user 等）的 [TOOL_STARTED]
+      // 已点亮一条 running 行，挂起路径后端不会再发 [TOOL_CALL]，直接 push 会双行
+      // 且 spinner 无人回填；未命中（无 started 的异常序/历史路径）才补新行
+      // Rewrite the same-name running step in place: collaborative tools
+      // already lit a running row via [TOOL_STARTED] and the suspension path
+      // never sends [TOOL_CALL], so pushing would duplicate the row and leave
+      // a spinner unbackfilled; append only on a miss (abnormal order/history)
+      const toolName = payload.toolName || ''
+      let suspendIdx = -1
+      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
+        const tool = answer.toolCalls[i]
+        if (tool.toolName === toolName && tool.running === true) {
+          suspendIdx = i
+          break
+        }
+      }
+      if (suspendIdx !== -1) {
+        const step = answer.toolCalls[suspendIdx]
+        step.running = false
+        step.resultSummary = payload.question
+        step.suspensionKind = payload.kind ?? payload.type
+      } else {
+        answer.toolCalls.push({
+          toolName,
+          durationMs: 0,
+          success: true,
+          resultSummary: payload.question,
+          suspensionKind: payload.kind ?? payload.type,
+        })
+      }
     },
     doneCallback: (chunk) => {
+      // 先同步 flush 已缓冲文本，防丢尾字符
+      flushBuffers()
       if (!isCurrentRequest())
         return
       const question = requestQuestion
@@ -307,7 +413,12 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
           console.error('SSE conversation mismatch', { expected: requestConversationUuid, actual: metaData.conversationUuid })
         updateMessageSomeFields(requestChatKey, question.uuid, { ...metaData.question, inputTokens: metaData.question.inputTokens, loading: false, state: new Map<string, string>() })
         // inputTokens/outputTokens 由 AnswerMeta 直接提供 | inputTokens/outputTokens provided directly by AnswerMeta
-        updateMessageSomeFields(requestChatKey, answer.uuid, { ...metaData.answer, inputTokens: metaData.answer.inputTokens, outputTokens: metaData.answer.outputTokens, duration: metaData.answer.duration, uuid: answer.uuid, loading: false })
+        // 挂起载荷兜底：实时事件未达时 [META] 同样携带（键名 type）；实时载荷（kind+
+        // toolName 更全）优先防覆盖，兜底命中才置交互态（原判断在 assign 后恒 false 属死代码）
+        const liveSuspension = answer.suspension
+        updateMessageSomeFields(requestChatKey, answer.uuid, { ...metaData.answer, suspension: liveSuspension || metaData.answer.suspension, inputTokens: metaData.answer.inputTokens, outputTokens: metaData.answer.outputTokens, duration: metaData.answer.duration, uuid: answer.uuid, loading: false })
+        if (answer.suspension && !answer.suspensionActive)
+          answer.suspensionActive = true
         if (metaData.audioInfo) {
           answer.audioPlayState.audioUrl = metaData.audioInfo.url
           answer.audioDuration = metaData.audioInfo.duration
@@ -321,6 +432,8 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
       isChatting.value = false
     },
     errorCallback: (error) => {
+      // 先同步 flush 已缓冲文本，防错误提示覆盖丢尾字符
+      flushBuffers()
       if (!isCurrentRequest())
         return
       ms.warning(error)
@@ -343,6 +456,15 @@ async function onRegenerate(questionUuid: string) {
   const message = chatStore.getMsgByCurCharacter(questionUuid)
   if (!message)
     return
+
+  // 重新生成把 ACTIVE 检查点置 SUPERSEDED：旧答案页签上的挂起卡片全部翻只读，点击旧
+  // 卡不再发出游离的用户消息
+  messages.value.forEach((qa) => {
+    qa.children?.forEach((child) => {
+      if (child.suspensionActive)
+        child.suspensionActive = false
+    })
+  })
 
   isChatting.value = true
   const requestId = ++chatRequestGeneration
@@ -395,6 +517,26 @@ function selectedLatestAnswer(questionUuid: string) {
       tabsActiveTab.value[index] = `tab_${messages.value[index].children[0].uuid}`
     }
   })
+}
+
+// 挂起卡片应答（选项/审批结论）：走既有消息发送入口当普通用户消息提交；
+// 同时把挂起卡片翻只读并在步骤条补恢复节点
+function handleSuspensionAnswer(questionUuid: string, answerUuid: string, text: string) {
+  if (isChatting.value) {
+    ms.warning(t('chat.suspension.chatInProgress'))
+    return
+  }
+  const question = messages.value.find((msg: { uuid: string }) => msg.uuid === questionUuid)
+  const answer = question?.children.find(child => child.uuid === answerUuid)
+  // 先提交后翻只读：submitMessage 内部守卫（未登录/未选会话）静默退出时卡片保持可交
+  // 互可重试，不出现「卡片已杀死但消息没发出」
+  inputEditorRef.value?.submitMessage(text)
+  if (answer) {
+    answer.suspensionActive = false
+    if (!answer.toolCalls)
+      answer.toolCalls = []
+    answer.toolCalls.push({ toolName: '', durationMs: 0, success: true, resumed: true })
+  }
 }
 
 async function loadMoreMessage(callback?: Function) {
@@ -522,23 +664,6 @@ function openMobilePromptStore() {
   openPromptStore()
 }
 
-async function toggleUsingContext() {
-  const character = currCharacter.value
-  const nextValue = !character.understandContextEnable
-  try {
-    await api.characterToggleUsingContext(character.uuid, nextValue)
-    character.understandContextEnable = nextValue
-  } catch (error) {
-    console.error('toggle context failed', error)
-    ms.error(t('common.wrong'))
-    return
-  }
-  if (nextValue)
-    ms.success(t('chat.turnOnContext'))
-  else
-    ms.warning(t('chat.turnOffContext'))
-}
-
 function imagesChange(uuids: string[]) {
   imageUuids.value = uuids
 }
@@ -591,8 +716,7 @@ onDeactivated(() => {
 <template>
   <div class="chat-box flex flex-col w-full h-full">
     <HeaderComponent
-      v-if="isMobile" :using-context="currCharacter.understandContextEnable"
-      @toggle-using-context="toggleUsingContext"
+      v-if="isMobile"
       @scroll-to-top="scrollToTop"
     />
     <PcHeader v-if="!isMobile" :character="currCharacter" />
@@ -745,9 +869,12 @@ onDeactivated(() => {
                       :input-tokens="answer.inputTokens" :output-tokens="answer.outputTokens"
                       :duration="answer.duration"
                       :tool-calls="answer.toolCalls"
+                      :state="qaMessage.state"
+                      :suspension="answer.suspension" :suspension-interactive="answer.suspensionActive"
                       :ai-model-id="answer.aiModelId" :ai-model-platform="answer.aiModelPlatform"
                       @regenerate="onRegenerate(qaMessage.uuid)"
                       @delete="handleDelete(qaMessage.uuid, answer.uuid)"
+                      @suspension-answer="text => handleSuspensionAnswer(qaMessage.uuid, answer.uuid, text)"
                     >
                       <template #actions>
                         <AnswerEvidenceActions
@@ -786,9 +913,12 @@ onDeactivated(() => {
                   :input-tokens="qaMessage.children[0].inputTokens" :output-tokens="qaMessage.children[0].outputTokens"
                   :duration="qaMessage.children[0].duration"
                   :tool-calls="qaMessage.children[0].toolCalls"
+                  :state="qaMessage.state"
+                  :suspension="qaMessage.children[0].suspension" :suspension-interactive="qaMessage.children[0].suspensionActive"
                   :ai-model-id="qaMessage.children[0].aiModelId"
                   :ai-model-platform="qaMessage.children[0].aiModelPlatform" @regenerate="onRegenerate(qaMessage.uuid)"
                   @delete="handleDelete(qaMessage.uuid, qaMessage.children[0].uuid)"
+                  @suspension-answer="text => handleSuspensionAnswer(qaMessage.uuid, qaMessage.children[0].uuid, text)"
                 >
                   <template #actions>
                     <AnswerEvidenceActions

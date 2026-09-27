@@ -66,6 +66,52 @@
 		}
 	}
 
+	// 脚注式来源标注（markdown-it-footnote 插件输出）：文末参考来源区块弱化为小字 muted
+	.footnotes-sep {
+		display: none;
+	}
+
+	.footnotes {
+		margin-top: 8px;
+		padding-top: 10px;
+		border-top: 1px solid var(--zhimesh-border-subtle);
+		color: var(--zhimesh-text-muted);
+		font-size: 12px;
+		line-height: 1.6;
+
+		.footnotes-list {
+			margin: 0;
+			padding-left: 18px;
+		}
+
+		.footnote-item p {
+			margin: 2px 0;
+		}
+
+		.footnote-backref {
+			margin-left: 4px;
+			text-decoration: none;
+		}
+	}
+
+	// 行内句末上标标记：小号圆角徽标、accent 色，暗示可点击跳转文末来源
+	sup.footnote-ref a {
+		padding: 1px 6px;
+		border: 1px solid var(--zhimesh-border-subtle);
+		border-radius: 999px;
+		color: var(--zhimesh-accent);
+		font-size: 10px;
+		font-weight: 600;
+		text-decoration: none;
+		background: var(--zhimesh-glass-soft);
+		transition: border-color 0.2s ease, background 0.2s ease;
+
+		&:hover {
+			border-color: var(--zhimesh-accent);
+			background: var(--zhimesh-glass);
+		}
+	}
+
 }
 
 .text-wrap {

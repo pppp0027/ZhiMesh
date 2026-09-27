@@ -6,6 +6,7 @@ import dev.langchain4j.exception.InternalServerException;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
+import java.io.IOException;
 import java.net.http.HttpTimeoutException;
 import java.util.ArrayList;
 import java.util.List;
@@ -108,6 +109,28 @@ class GraphExtractionRequestExecutorTest {
             if (attempts.incrementAndGet() < 2) {
                 throw new InternalServerException(
                         new HttpException(502, "error code: 502"));
+            }
+            return "ok";
+        });
+
+        assertEquals("ok", result);
+        assertEquals(2, attempts.get());
+    }
+
+    @Test
+    void retriesConnectionResetLikeTimeouts() {
+        // Congested relays and unstable cross-border paths drop live requests;
+        // the JDK client surfaces this as RuntimeException wrapping
+        // IOException(SocketException: Connection reset), which langchain4j
+        // does not map to a retriable class. The executor must retry it.
+        GraphExtractionRequestExecutor requestExecutor =
+                new GraphExtractionRequestExecutor(2, 3, 1, 2);
+        AtomicInteger attempts = new AtomicInteger();
+
+        String result = requestExecutor.execute("segment", "extract", () -> {
+            if (attempts.incrementAndGet() < 2) {
+                throw new RuntimeException(new IOException(
+                        new java.net.SocketException("Connection reset")));
             }
             return "ok";
         });

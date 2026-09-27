@@ -91,7 +91,9 @@ public class AiModelInitializer {
 
 // OpenAI API compatible model
         // OpenAi api 兼容模型
-        initOpenAiCompatibleService(nameToPlatform, modelType, (model, modelPlatformName) -> new OpenAiCompatibleLLMService(model, nameToPlatform.get(modelPlatformName)).setProxyAddress(proxyAddress));
+        initOpenAiCompatibleService(nameToPlatform, modelType, (model, modelPlatformName) -> new OpenAiCompatibleLLMService(model, nameToPlatform.get(modelPlatformName))
+                .setCustomHeaders(headerConfigOf(modelPlatformName))
+                .setProxyAddress(proxyAddress));
 
         //deepseek
         initLLMService(ZhiMeshConstant.ModelPlatform.DEEPSEEK, modelType, model -> new DeepSeekLLMService(model, nameToPlatform.get(ZhiMeshConstant.ModelPlatform.DEEPSEEK)).setProxyAddress(proxyAddress));
@@ -107,6 +109,15 @@ public class AiModelInitializer {
 
         // 硅基流动
         initLLMService(ZhiMeshConstant.ModelPlatform.SILICONFLOW, modelType, model -> new SiliconflowLLMService(model, nameToPlatform.get(ZhiMeshConstant.ModelPlatform.SILICONFLOW)));
+    }
+
+    /**
+     * 读取 zhimesh.platform-headers 中某个平台的自定义请求头配置。
+     * Reads the custom-header config of one platform from zhimesh.platform-headers.
+     */
+    private Map<String, String> headerConfigOf(String platformName) {
+        Map<String, Map<String, String>> platformHeaders = adiProperties.getPlatformHeaders();
+        return platformHeaders == null ? null : platformHeaders.get(platformName);
     }
 
     /**

@@ -105,13 +105,26 @@ def main() -> None:
             edges = [{"element_id": str(ag_scalar(row[0]))} for row in cursor.fetchall()]
 
             cursor.execute(
+                f"""
+                SELECT * FROM cypher('{graph}', $$
+                  MATCH (n)-[r]->(n)
+                  WHERE r.metadata.kb_uuid = '{kb}'
+                  RETURN id(r)
+                $$) AS (element_id agtype)
+                """
+            )
+            self_loop_edges = [
+                {"element_id": str(ag_scalar(row[0]))} for row in cursor.fetchall()
+            ]
+
+            cursor.execute(
                 """
                 SELECT count(*),
                        count(*) FILTER (WHERE embedding_status = 3),
                        count(*) FILTER (WHERE graphical_status = 3),
                        count(*) FILTER (WHERE graphical_status = 4)
                 FROM adi_knowledge_base_item
-                WHERE kb_uuid = %s AND is_deleted = false
+                WHERE kb_uuid = %s
                 """,
                 (kb,),
             )
@@ -124,7 +137,7 @@ def main() -> None:
                        percentile_cont(0.95) WITHIN GROUP (ORDER BY token_count),
                        max(token_count)
                 FROM adi_knowledge_base_chunk
-                WHERE kb_uuid = %s AND is_deleted = false
+                WHERE kb_uuid = %s
                 """,
                 (kb,),
             )
@@ -133,7 +146,7 @@ def main() -> None:
                 """
                 SELECT count(*)
                 FROM adi_knowledge_base_graph_segment
-                WHERE kb_uuid = %s AND is_deleted = false
+                WHERE kb_uuid = %s
                 """,
                 (kb,),
             )
@@ -143,7 +156,7 @@ def main() -> None:
                 """
                 SELECT element_type, element_id, graph_segment_uuid
                 FROM adi_knowledge_base_graph_element_source
-                WHERE kb_uuid = %s AND is_deleted = false
+                WHERE kb_uuid = %s
                 """,
                 (kb,),
             )
@@ -161,14 +174,11 @@ def main() -> None:
                 FROM adi_knowledge_base_graph_element_source s
                 LEFT JOIN adi_knowledge_base_graph_segment g
                   ON g.uuid = s.graph_segment_uuid
-                 AND g.is_deleted = false
                  AND g.kb_uuid = s.kb_uuid
                 LEFT JOIN adi_knowledge_base_item i
                   ON i.uuid = s.kb_item_uuid
-                 AND i.is_deleted = false
                  AND i.kb_uuid = s.kb_uuid
                 WHERE s.kb_uuid = %s
-                  AND s.is_deleted = false
                   AND (g.uuid IS NULL OR i.uuid IS NULL)
                 """,
                 (kb,),
@@ -215,6 +225,8 @@ def main() -> None:
         "graph_segment_count": graph_segment_count,
         "entity_count": len(nodes),
         "relation_count": len(edges),
+        "self_loop_edge_count": len(self_loop_edges),
+        "self_loop_edge_rate": len(self_loop_edges) / len(edges) if edges else None,
         "entities_per_graphed_document": len(nodes) / graphed_docs if graphed_docs else None,
         "relations_per_graphed_document": len(edges) / graphed_docs if graphed_docs else None,
         "average_node_degree": statistics.fmean(row["degree"] for row in nodes)

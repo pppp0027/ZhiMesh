@@ -114,7 +114,14 @@ def main() -> None:
     embedding_key = os.getenv("RAGAS_EMBEDDING_API_KEY", "").strip() or api_key
     embedding_base_url = os.getenv("RAGAS_EMBEDDING_BASE_URL", "").strip() or judge_base_url
     embedding_model = os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-3-small").strip()
-    judge_client = AsyncOpenAI(api_key=api_key, base_url=judge_base_url)
+    # The opencode zen/go/v1 gateway requires a stable x-opencode-session
+    # header on every request; other OpenAI-compatible providers ignore it.
+    judge_session = os.getenv("RAGAS_JUDGE_SESSION", "").strip()
+    judge_client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=judge_base_url,
+        default_headers={"x-opencode-session": judge_session} if judge_session else None,
+    )
     cache = DiskCacheBackend(str(resolve_path(
         config.get("ragas_cache", "output/.ragas-cache")
     )))

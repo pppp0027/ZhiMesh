@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.net.http.HttpTimeoutException;
 import java.util.Objects;
 import java.util.concurrent.Semaphore;
@@ -85,8 +86,14 @@ public class GraphExtractionRequestExecutor {
             // The latter is how 5xx gateway replies (502/503 from upstream
             // relays) surface, and one such reply must not fail the whole
             // document — the exponential backoff below is exactly for them.
+            // Plain IOException covers transport-level connection drops
+            // (Connection reset, broken pipe) with which congested relays and
+            // unstable cross-border paths cut live requests; ExceptionMapper
+            // wraps them in a non-retriable RuntimeException, so they must be
+            // matched on the cause chain or a single reset kills the document.
             if (current instanceof RetriableException
-                    || current instanceof HttpTimeoutException) {
+                    || current instanceof HttpTimeoutException
+                    || current instanceof IOException) {
                 return true;
             }
             current = current.getCause();
