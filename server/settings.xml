@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 镜像构建专用：自建 runner（腾讯云）跨境直连 Maven Central 拉依赖 >55min 仍下不完，
+     2026-09-27 发版实测构建 60min 超时。改走阿里云公共镜像（国内直达）。
+     只镜像 central，不影响 pom 里的 project-local-repo（file:// vendored 仓）。 -->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+  <mirrors>
+    <mirror>
+      <id>aliyun-public</id>
+      <mirrorOf>central</mirrorOf>
+      <name>Aliyun public repository (central)</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+    </mirror>
+  </mirrors>
+</settings>

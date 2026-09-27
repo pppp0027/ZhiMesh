@@ -3,6 +3,9 @@ FROM maven:3.9-eclipse-temurin-17 AS build
 
 WORKDIR /app
 
+# 依赖走阿里云镜像：自建 runner 跨境直连 Maven Central >55min 下不完，构建 60min 超时（2026-09-27 实测）
+COPY settings.xml /root/.m2/settings.xml
+
 COPY pom.xml ./
 COPY zhimesh-common/pom.xml zhimesh-common/
 COPY zhimesh-chat/pom.xml zhimesh-chat/
