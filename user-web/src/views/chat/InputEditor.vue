@@ -32,6 +32,8 @@ interface Emit {
 }
 const prompt = ref<string>('')
 const { isMobile } = useBasicLayout()
+// 全角空格(U+3000)前缀：让占位提示右移一个字宽，与输入光标起点对齐
+const placeholderPrefix = String.fromCharCode(0x3000)
 const { addMessage, updateMessageSomeFields, appendChunk } = useChat()
 const appStore = useAppStore()
 const chatStore = useChatStore()
@@ -591,7 +593,7 @@ defineExpose({
       <template #default="{ handleInput, handleBlur, handleFocus }">
         <NInput
           ref="inputRef" v-model:value="prompt" type="textarea"
-          :placeholder="isMobile ? t('chat.placeholderMobile') : t('chat.placeholder')"
+          :placeholder="placeholderPrefix + t('chat.placeholder')"
           :autosize="{ minRows: 1, maxRows: isMobile ? 4 : 8 }" @input="handleInput" @focus="handleFocus"
           @blur="handleBlur" @keyup.up="handleUp" @keyup.down="handleDown" @keypress="handleEnter"
         />
@@ -632,7 +634,7 @@ defineExpose({
 }
 
 .composer-input :deep(.n-input) {
-  min-height: 42px;
+  min-height: 40px;
   border-radius: 13px !important;
   background: var(--zhimesh-glass-nav);
 }
@@ -684,7 +686,7 @@ defineExpose({
   }
 
   .composer-input :deep(.n-input) {
-    min-height: 46px;
+    min-height: 44px;
     border-radius: 16px !important;
   }
 

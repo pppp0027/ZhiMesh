@@ -183,25 +183,25 @@ onBeforeUnmount(() => {
         </NButton>
       </div>
       <NFlex v-if="selectedVertex" vertical>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('chat.entity') }}
         </NDivider>
         <div>{{ selectedVertex.id }}</div>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('common.name') }}
         </NDivider>
         <div>{{ selectedVertex.name }}</div>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('common.description') }}
         </NDivider>
         <div>{{ selectedVertex.description }}</div>
       </NFlex>
       <NFlex v-if="selectedEdge" vertical>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('chat.relation') }}
         </NDivider>
         <div>{{ selectedEdge.id }}</div>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('common.description') }}
         </NDivider>
         <div>{{ selectedEdge.description }}</div>

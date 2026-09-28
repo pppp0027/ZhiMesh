@@ -18,7 +18,6 @@ import RefKeyword from './RefKeyword.vue'
 import AnswerEvidenceActions from './components/AnswerEvidenceActions.vue'
 import EvidenceMarkdown from './components/EvidenceMarkdown.vue'
 import LoginTip from '@/views/user/LoginTip.vue'
-import brandLogo from '@/assets/zhimesh-logo.svg'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
 import { useAppStore, useAuthStore, useChatStore, useKbStore, useWfStore } from '@/store'
 import { getDefaultCharacter } from '@/store/modules/chat/helper'
@@ -67,9 +66,6 @@ const currentHistory = computed(() => curConversationUuid.value
 const hasCharacter = computed(() => !!currCharacter.value.uuid && currCharacter.value.uuid !== 'default')
 const needsConversation = computed(() => hasCharacter.value && conversationEnabled.value && !curConversationUuid.value)
 const canChat = computed(() => hasCharacter.value && !needsConversation.value)
-const openCharacterCreator = inject<(tab?: 'presetCharacter' | 'newCharacter') => void>('openCharacterCreator', () => {})
-const createConversation = inject<(character?: Chat.Character | null) => Promise<void>>('createConversation', async () => {})
-const creatingConversation = inject<Ref<boolean>>('creatingConversation', ref(false))
 const openPromptStore = inject<() => void>('openPromptStore', () => {})
 const imageUuids = ref<string[]>([])
 const isChatting = ref<boolean>(false)
@@ -621,7 +617,8 @@ function handleDelete(questionUuid: string, answerUuid: string, isQuestion = fal
 }
 
 const footerClass = computed(() => {
-  let classes = ['p-4']
+  // 桌面端横向 padding 交给 .chat-input-layout（0 16px），保证消息头像与输入框左缘对齐
+  let classes = ['py-4']
   if (isMobile.value)
     classes = ['sticky', 'left-0', 'bottom-0', 'right-0', 'p-2', 'pr-3', 'overflow-hidden']
   return classes
@@ -723,79 +720,12 @@ onDeactivated(() => {
     <main class="flex-1 overflow-hidden">
       <div ref="scrollRef" class="h-full overflow-hidden overflow-y-auto" @scroll="handleScroll">
         <div
-          class="w-full max-w-screen-xl m-auto"
+          class="chat-message-surface m-auto"
           :class="[isMobile ? 'p-2' : 'p-4', { 'chat-empty-stage': authStore.token && !messages.length }]"
         >
           <template v-if="!authStore.token">
             <LoginTip />
           </template>
-          <template v-else-if="!messages.length">
-            <div class="chat-onboarding">
-              <div class="onboarding-intro">
-                <div class="onboarding-mark-shell" aria-hidden="true">
-                  <img
-                    class="onboarding-mark" :src="brandLogo" alt="" width="64" height="64"
-                    draggable="false"
-                  >
-                </div>
-                <div class="onboarding-copy">
-                  <h1 v-if="!hasCharacter">{{ t('chat.noCharacterTitle') }}</h1>
-                  <h1 v-else>{{ t('chat.startChatWith', { name: currCharacter.title }) }}</h1>
-                  <p v-if="!canChat" class="onboarding-lead">
-                    {{ !hasCharacter ? t('chat.noCharacterLead') : needsConversation ? t('chat.noConversationLead') : t('chat.readyToChatLead') }}
-                  </p>
-                </div>
-              </div>
-
-              <div class="onboarding-status">
-                <div :class="{ complete: hasCharacter }">
-                  <span>1</span>
-                  <div>
-                    <strong>{{ t('chat.chooseCharacterStep') }}</strong>
-                    <small>{{ hasCharacter ? currCharacter.title : t('chat.notCompleted') }}</small>
-                  </div>
-                </div>
-                <i :class="{ complete: hasCharacter }" />
-                <div :class="{ complete: !conversationEnabled || !!curConversationUuid }">
-                  <span>2</span>
-                  <div>
-                    <strong>{{ t('chat.createConversationStep') }}</strong>
-                    <small>{{ curConversationUuid ? (currentHistory?.title || t('chat.completed')) : (conversationEnabled ? t('chat.notCompleted') : t('chat.notRequired')) }}</small>
-                  </div>
-                </div>
-                <i :class="{ complete: !conversationEnabled || !!curConversationUuid }" />
-                <div :class="{ complete: canChat }">
-                  <span>3</span>
-                  <div>
-                    <strong>{{ t('chat.sendMessageStep') }}</strong>
-                    <small>{{ canChat ? t('chat.ready') : t('chat.waiting') }}</small>
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="!canChat" class="onboarding-actions">
-                <template v-if="!hasCharacter">
-                  <NButton type="primary" size="large" @click="openCharacterCreator('presetCharacter')">
-                    <template #icon><SvgIcon icon="ri:user-star-line" /></template>
-                    {{ t('chat.choosePresetCharacter') }}
-                  </NButton>
-                  <NButton size="large" @click="openCharacterCreator('newCharacter')">
-                    {{ t('chat.customCharacter') }}
-                  </NButton>
-                </template>
-                <template v-else-if="needsConversation">
-                  <NButton type="primary" size="large" :loading="creatingConversation" @click="createConversation(currCharacter)">
-                    <template #icon><SvgIcon icon="ri:chat-new-line" /></template>
-                    {{ t('chat.createFirstConversation') }}
-                  </NButton>
-                  <NButton size="large" @click="openCharacterCreator('presetCharacter')">
-                    {{ t('chat.chooseOtherCharacter') }}
-                  </NButton>
-                </template>
-              </div>
-            </div>
-          </template>
-
           <template v-else>
             <TransitionGroup name="message-list" tag="div" class="message-thread">
               <div v-for="(qaMessage, index) of messages" :key="qaMessage.uuid" class="pb-3">
@@ -986,7 +916,7 @@ onDeactivated(() => {
       </NDrawerContent>
     </NDrawer>
 
-    <NModal v-model:show="showRefEmbeddingModal" style="width: min(640px, 92vw);" preset="card" :title="t('chat.referenceMaterial')">
+    <NModal v-model:show="showRefEmbeddingModal" class="evidence-modal" preset="card" :title="t('chat.referenceMaterial')">
       <div v-show="knowledgeEmbeddingRef.length === 0" class="flex items-center justify-center h-64">
         <span v-show="!loaddingEmbeddingRef">{{ t('common.noData') }}</span>
         <NSpin v-show="loaddingEmbeddingRef" size="medium" />
@@ -1003,21 +933,21 @@ onDeactivated(() => {
     </NModal>
 
     <NModal
-      v-model:show="showMemoryModal" display-directive="show" style="width: min(640px, 92vw);"
+      v-model:show="showMemoryModal" class="evidence-modal" display-directive="show"
       preset="card" :title="t('chat.hitMemory')"
     >
       <RefMemory :msg-uuid="selectedMemoryMsgUuid" />
     </NModal>
 
     <NModal
-      v-model:show="showRefGraphModal" class="graph-modal" display-directive="show" style="width: min(860px, 92vw);" preset="card"
+      v-model:show="showRefGraphModal" class="graph-modal evidence-modal" display-directive="show" preset="card"
       :title="t('chat.referenceGraph')"
     >
       <RefGraph :msg-uuid="showRefGraphMsgUuid" />
     </NModal>
 
     <NModal
-      v-model:show="showKeywordModal" display-directive="show" style="width: min(640px, 92vw);"
+      v-model:show="showKeywordModal" class="evidence-modal" display-directive="show"
       preset="card" :title="t('chat.keywordReference')"
     >
       <RefKeyword :msg-uuid="selectedKeywordMsgUuid" />
@@ -1161,9 +1091,21 @@ onDeactivated(() => {
   gap: 10px;
 }
 
+/* 消息面与输入列共用同一容器几何（min(980px,100%) 居中），
+ * 消息面 p-4 与输入列桌面端 padding:0 16px 相抵，头像严格对齐输入框左缘 */
+.chat-message-surface {
+  width: min(980px, 100%);
+}
+
 .chat-input-layout {
   width: min(980px, 100%);
   margin: 0 auto;
+}
+
+@media (min-width: 768px) {
+  .chat-input-layout {
+    padding: 0 16px;
+  }
 }
 
 .chat-composer-footer {

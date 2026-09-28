@@ -512,7 +512,8 @@ onMounted(() => {
   max-width: 100%;
   min-width: 0;
   align-items: center;
-  justify-self: center;
+  /* 左对齐而非居中：多角色名称长短不一时，头像与标题在各卡片间保持同一起点 */
+  justify-self: start;
   gap: 9px;
 }
 

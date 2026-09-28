@@ -261,7 +261,7 @@ watch(
       </NListItem>
     </NList>
     <NModal
-      v-model:show="knowledgeModalShow" display-directive="show" style="width: min(860px, 92vw);"
+      v-model:show="knowledgeModalShow" class="evidence-modal" display-directive="show"
       preset="card" :title="t('chat.configCharacterKnowledge')"
     >
       <ConvKnowledgeSelector :tmp-save="false" :character="currCharacter" @submitted="handleKnowledgeSave" />

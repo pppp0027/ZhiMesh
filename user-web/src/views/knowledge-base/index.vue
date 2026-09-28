@@ -309,6 +309,9 @@ const qaRecords = computed(() => {
   return kbStore.getRecords(currKbUuid)
 })
 
+// 全角空格(U+3000)前缀：让占位提示右移一个字宽，与输入光标起点对齐（同 chat/InputEditor）
+const placeholderPrefix = String.fromCharCode(0x3000)
+
 const buttonDisabled = computed(() => {
   return sseRequesting.value || !prompt.value || prompt.value.trim() === ''
 })
@@ -337,7 +340,8 @@ function handleComposerAction() {
 }
 
 const footerClass = computed(() => {
-  let classes = ['p-4']
+  // 桌面端横向 padding 交给 .knowledge-input-layout（0 16px），保证消息头像与输入框左缘对齐
+  let classes = ['py-4']
   if (isMobile.value)
     classes = ['sticky', 'left-0', 'bottom-0', 'right-0', 'p-2', 'pr-3', 'overflow-hidden']
   return classes
@@ -509,7 +513,7 @@ onActivated(async () => {
         </div>
         <div class="knowledge-composer">
           <NInput
-            ref="inputRef" v-model:value="prompt" class="knowledge-composer-input" type="textarea" placeholder=""
+            ref="inputRef" v-model:value="prompt" class="knowledge-composer-input" type="textarea" :placeholder="placeholderPrefix + t('chat.placeholder')"
             :autosize="{ minRows: 1, maxRows: isMobile ? 4 : 8 }" :disabled="noKbAvailable" @keypress="handleEnter"
           />
           <NButton
@@ -555,7 +559,7 @@ onActivated(async () => {
       </NDrawerContent>
     </NDrawer>
 
-    <NModal v-model:show="showReferenceModal" style="width: min(640px, 92vw);" preset="card" :title="t('chat.referenceMaterial')">
+    <NModal v-model:show="showReferenceModal" class="evidence-modal" preset="card" :title="t('chat.referenceMaterial')">
       <div v-show="references.length === 0">
         {{ t('common.none') }}
       </div>
@@ -570,16 +574,24 @@ onActivated(async () => {
       </NCollapse>
     </NModal>
 
-    <NModal v-model:show="showRefGraphModal" class="graph-modal" display-directive="show" style="width: min(860px, 92vw);" preset="card" :title="t('chat.referenceGraph')">
+    <NModal v-model:show="showRefGraphModal" class="graph-modal evidence-modal" display-directive="show" preset="card" :title="t('chat.referenceGraph')">
       <RefGraph :qa-record-uuid="showRefGraphRecordUuid" />
     </NModal>
   </div>
 </template>
 
 <style scoped lang="less">
+/* 与消息面 knowledge-message-surface（min(980px,100%) + p-4）同几何，
+ * 桌面端 0 16px 横向 padding 使输入框左缘 == 消息头像左缘 */
 .knowledge-input-layout {
   width: min(980px, 100%);
   margin: 0 auto;
+}
+
+@media (min-width: 768px) {
+  .knowledge-input-layout {
+    padding: 0 16px;
+  }
 }
 
 .knowledge-composer-footer {
@@ -603,6 +615,7 @@ onActivated(async () => {
 }
 
 .knowledge-model-control :deep(.n-button) {
+  height: 30px;
   min-height: 30px;
   padding: 0 10px;
   border: 0;

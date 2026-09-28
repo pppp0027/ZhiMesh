@@ -213,7 +213,7 @@ export default {
     presetTypeOther: 'Other',
     systemKnowledgeConnected: 'System knowledge connected',
     systemKnowledgeReadOnlyTip: 'Provided by the preset role for retrieval only. Content and settings cannot be changed here.',
-    placeholder: 'Type a message (Shift + Enter for a new line)',
+    placeholder: 'Type a message',
     placeholderMobile: 'Type a message',
     copy: 'Copy',
     copied: 'Copied',

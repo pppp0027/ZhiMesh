@@ -138,6 +138,12 @@ async function handleVisibilityChange(show: boolean) {
   white-space: nowrap;
 }
 
+/* line-height 默认继承按钮的 1，11px 字号下 g/p/y 等下伸部会被 overflow 裁掉 */
+.model-selector-label {
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .model-option-name.is-disabled {
   opacity: 0.58;
 }

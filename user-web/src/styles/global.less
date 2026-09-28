@@ -318,6 +318,52 @@ html.dark .nav-actions .n-button:hover {
 	box-shadow: var(--zhimesh-shadow-soft);
 }
 
+/* 知识库问答 / 工作流 / MCP 页外壳统一成 chat-workspace 的悬浮卡片：
+ * 与左侧主导航留 10px 空隙，上下右 12px 内收，高度与主导航一致。 */
+.knowledge-workspace-layout,
+.workflow-layout-shell,
+.mcp-page-shell {
+	margin: 12px 12px 12px 10px;
+	height: calc(100% - 24px) !important;
+	overflow: hidden;
+	border: 1px solid var(--zhimesh-border) !important;
+	border-radius: var(--zhimesh-radius-lg) !important;
+	background: var(--zhimesh-glass) !important;
+	box-shadow: var(--zhimesh-shadow-soft);
+}
+
+/* mcp-page-shell 自带 w-full 工具类，配合左右 margin 需要回到自动宽度 */
+.mcp-page-shell {
+	width: auto !important;
+}
+
+.knowledge-workspace-layout > .n-layout-scroll-container,
+.workflow-layout-shell > .n-layout-scroll-container {
+	background: transparent !important;
+}
+
+/* 证据弹窗（引用资料/图谱/关键词/命中记忆）统一尺寸：
+ * 同宽 min(640px, 92vw)，内容区封顶 min(64vh, 640px) 内部滚动，避免长条卡片。
+ * 宽度用 .n-modal.evidence-modal 双类选择器：naive 的 NCard 样式带 .n-card{width:100%}
+ * 且运行时注入在后，单类选择器会被它压掉（弹窗左右铺满的根因）。 */
+.n-modal.evidence-modal {
+	width: min(760px, 92vw);
+	/* 居中于右侧工作区卡片而非整个视口：左侧内收 12+72+10=94px、右侧 12px，
+	 * 故右移 (94-12)/2=41px；上下对称无需垂直偏移 */
+	transform: translateX(41px);
+}
+
+.n-modal.evidence-modal > .n-card__content {
+	box-sizing: border-box;
+	/* 固定高度（而非仅封顶）：内容少时留白、多时内滚，所有卡片尺寸完全一致。
+	 * naive 注入的是 .n-card > .n-card__content（0,2,0，含 flex:1 1 0% 会吞掉 height），
+	 * 这里用三重类子代选择器（0,3,0）稳定压过它 */
+	flex: 0 0 auto;
+	height: min(64vh, 640px);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+}
+
 .conversation-sider {
 	border-right: 1px solid var(--zhimesh-border-subtle) !important;
 	background: var(--zhimesh-glass-nav) !important;
@@ -889,7 +935,12 @@ html.dark {
 	.chat-workspace,
 	.chat-workspace > .n-layout-scroll-container,
 	.chat-content,
-	.chat-content > .n-layout-scroll-container {
+	.chat-content > .n-layout-scroll-container,
+	.knowledge-workspace-layout,
+	.knowledge-workspace-layout > .n-layout-scroll-container,
+	.workflow-layout-shell,
+	.workflow-layout-shell > .n-layout-scroll-container,
+	.mcp-page-shell {
 		background: var(--zhimesh-page-bg) !important;
 	}
 }
@@ -903,8 +954,7 @@ html.dark {
 }
 
 .zhimesh-graph-canvas {
-	width: 80%;
-	flex: 0 0 80%;
+	flex: 1 1 auto;
 	min-width: 0;
 	height: 400px;
 	overflow: hidden;
@@ -915,8 +965,7 @@ html.dark {
 
 .zhimesh-graph-inspector {
 	display: flex;
-	width: 16.666667%;
-	flex: 0 0 16.666667%;
+	flex: 0 0 clamp(170px, 27%, 230px);
 	height: 400px;
 	min-width: 0;
 	max-height: 400px;
@@ -924,6 +973,9 @@ html.dark {
 	gap: 12px;
 	overflow: auto;
 	overscroll-behavior: contain;
+	/* 实体/名称/描述 等信息居中展示，长 id/文本允许任意断行 */
+	text-align: center;
+	overflow-wrap: anywhere;
 	overflow-wrap: anywhere;
 	word-break: break-word;
 }
@@ -1156,6 +1208,11 @@ html.dark {
 		border-radius: 16px !important;
 	}
 
+	/* 移动端证据卡片全宽铺满，取消工作区居中偏移 */
+	.n-modal.evidence-modal {
+		transform: none;
+	}
+
 	.n-modal .n-card__content {
 		max-height: calc(100dvh - 132px);
 		overflow-y: auto;
@@ -1177,6 +1234,18 @@ html.dark {
 
 	.chat-workspace {
 		margin: 0 !important;
+		height: 100% !important;
+		border: 0 !important;
+		border-radius: 0 !important;
+		box-shadow: none;
+	}
+
+	/* 移动端同样让三个页外壳回到全幅平铺，与 chat-workspace 一致 */
+	.knowledge-workspace-layout,
+	.workflow-layout-shell,
+	.mcp-page-shell {
+		margin: 0 !important;
+		width: 100% !important;
 		height: 100% !important;
 		border: 0 !important;
 		border-radius: 0 !important;

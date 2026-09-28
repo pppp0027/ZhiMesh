@@ -183,25 +183,25 @@ onBeforeUnmount(() => {
         </NButton>
       </div>
       <NFlex v-if="selectedVertex" vertical>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('workflow.entity') }}
         </NDivider>
         <div>{{ selectedVertex.id }}</div>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('workflow.nameLabel') }}
         </NDivider>
         <div>{{ selectedVertex.name }}</div>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('workflow.descriptionLabel') }}
         </NDivider>
         <div>{{ selectedVertex.description }}</div>
       </NFlex>
       <NFlex v-if="selectedEdge" vertical>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('workflow.relation') }}
         </NDivider>
         <div>{{ selectedEdge.id }}</div>
-        <NDivider title-placement="left">
+        <NDivider title-placement="center">
           {{ t('workflow.descriptionLabel') }}
         </NDivider>
         <div>{{ selectedEdge.description }}</div>

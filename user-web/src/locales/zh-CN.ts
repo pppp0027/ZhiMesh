@@ -213,7 +213,7 @@ export default {
     presetTypeOther: '其他',
     systemKnowledgeConnected: '系统知识已接入',
     systemKnowledgeReadOnlyTip: '由预设角色提供，仅用于检索；内容和配置不可在用户端修改。',
-    placeholder: '输入消息（Shift + Enter 换行）',
+    placeholder: '请输入',
     placeholderMobile: '输入消息',
     copy: '复制',
     copied: '复制成功',
