@@ -1,11 +1,17 @@
 name: deploy
 
 # 发版流水线：push 到云端 main 分支（任意本地分支推送到远端 main 均可触发）
-# 或在 Actions 页面手动 Run workflow
+# 或在 Actions 页面手动 Run workflow（services 输入可只构建部分服务）
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      services:
+        description: '构建哪些服务，逗号分隔（api / user-web / admin-web，all=全部）'
+        required: false
+        default: 'all'
+        type: string
 
 # 同一时间只允许一条发版流水线，后来的排队等待，避免交叉部署
 concurrency:
@@ -13,8 +19,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 阶段零：检测本次 push 各服务路径是否有变更，未变更的服务后续跳过构建。
+  # 仓库全量历史 800MB+，不做 fetch-depth:0 的整仓克隆，改用 compare API
+  # 取变更文件列表；取不到（首次推送/强推/接口异常/文件过多）时保守回退
+  # 为全部构建。
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.detect.outputs.api }}
+      user-web: ${{ steps.detect.outputs.user-web }}
+      admin-web: ${{ steps.detect.outputs.admin-web }}
+    steps:
+      - name: Detect changed services
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          mark() {
+            echo "api=$1" >> "$GITHUB_OUTPUT"
+            echo "user-web=$2" >> "$GITHUB_OUTPUT"
+            echo "admin-web=$3" >> "$GITHUB_OUTPUT"
+          }
+          # 手动 dispatch 没有可比对的 before：全部交给各构建 job 的 dispatch
+          # 条件判断，这里输出全 false
+          if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+            mark false false false
+            exit 0
+          fi
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "::warning::拿不到 push 前的基线提交，保守起见全部构建"
+            mark true true true
+            exit 0
+          fi
+          RESP=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/compare/$BEFORE...$AFTER?per_page=300") || {
+            echo "::warning::compare API 调用失败，保守起见全部构建"
+            mark true true true
+            exit 0
+          }
+          if [ "$(echo "$RESP" | jq -r '.truncated')" = "true" ]; then
+            echo "::warning::变更文件超过 300 个，保守起见全部构建"
+            mark true true true
+            exit 0
+          fi
+          FILES=$(echo "$RESP" | jq -r '.files[]?.filename')
+          echo "本次变更文件："
+          echo "$FILES"
+          has() { echo "$FILES" | grep -q "^$1/"; }
+          if has server; then a=true; else a=false; fi
+          if has user-web; then u=true; else u=false; fi
+          if has admin-web; then d=true; else d=false; fi
+          mark "$a" "$u" "$d"
+
   # 阶段一：后端单元测试（纯单测，不依赖外部数据库/Redis）
+  # 仅 server/ 有变更或手动发版时运行，纯前端发版直接跳过
   test:
+    needs: changes
+    if: needs.changes.outputs.api == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,25 +92,22 @@ jobs:
         working-directory: server
         run: mvn -B -ntp test
 
-  # 阶段二：构建三个镜像并推送到镜像仓库
+  # 阶段二：构建镜像并推送到镜像仓库，每个服务一个 job，未变更的跳过。
   # 在自建 runner（腾讯云服务器）上执行：构建与推镜像全部国内完成，彻底
   # 绕开美国 runner 推 TCR 的跨境链路。api 使用多阶段 Dockerfile 在 Docker
   # 内构建 Maven——宿主机 docker 驱动下 --mount=type=cache 的依赖缓存与
   # 层缓存持久保存在 /var/lib/docker，跨次构建复用（ephemeral GitHub
   # runner 做不到这点，当时才引入 Dockerfile.ci 方案，保留作回退路径）。
-  build-push:
-    needs: test
+  # 构建条件：push 时该服务路径有变更，或 dispatch 的 services 输入包含
+  # 该服务；test 被跳过（skipped）不阻塞，只有失败才阻塞。
+  build-api:
+    needs: [changes, test]
+    if: >-
+      !cancelled() && needs.test.result != 'failure' &&
+      (needs.changes.outputs.api == 'true' ||
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.services == 'all' || contains(inputs.services, 'api'))))
     runs-on: [self-hosted]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: api
-            context: ./server
-          - name: user-web
-            context: ./user-web
-          - name: admin-web
-            context: ./admin-web
     steps:
       - uses: actions/checkout@v4
 
@@ -80,17 +140,115 @@ jobs:
       - uses: docker/build-push-action@v6
         timeout-minutes: 60
         with:
-          context: ${{ matrix.context }}
+          context: ./server
           push: true
           # docker 驱动不支持 attestation，显式关闭
           provenance: false
           tags: |
-            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-${{ matrix.name }}:latest
-            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-${{ matrix.name }}:sha-${{ github.sha }}
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-api:latest
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-api:sha-${{ github.sha }}
+
+  build-user-web:
+    # 同 build-api，仅服务与触发条件不同
+    needs: [changes, test]
+    if: >-
+      !cancelled() && needs.test.result != 'failure' &&
+      (needs.changes.outputs.user-web == 'true' ||
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.services == 'all' || contains(inputs.services, 'user-web'))))
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
+
+      - name: Login to registry (with retry)
+        timeout-minutes: 10
+        env:
+          REGISTRY: ${{ secrets.REGISTRY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          for attempt in 1 2 3; do
+            if echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin; then
+              echo "registry login ok (attempt $attempt)"
+              exit 0
+            fi
+            echo "registry login attempt $attempt failed; retrying in 30s"
+            sleep 30
+          done
+          echo "registry login failed after 3 attempts"
+          exit 1
+
+      - uses: docker/build-push-action@v6
+        timeout-minutes: 60
+        with:
+          context: ./user-web
+          push: true
+          provenance: false
+          tags: |
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-user-web:latest
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-user-web:sha-${{ github.sha }}
+
+  build-admin-web:
+    # 同 build-api，仅服务与触发条件不同
+    needs: [changes, test]
+    if: >-
+      !cancelled() && needs.test.result != 'failure' &&
+      (needs.changes.outputs.admin-web == 'true' ||
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.services == 'all' || contains(inputs.services, 'admin-web'))))
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
+
+      - name: Login to registry (with retry)
+        timeout-minutes: 10
+        env:
+          REGISTRY: ${{ secrets.REGISTRY }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          for attempt in 1 2 3; do
+            if echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin; then
+              echo "registry login ok (attempt $attempt)"
+              exit 0
+            fi
+            echo "registry login attempt $attempt failed; retrying in 30s"
+            sleep 30
+          done
+          echo "registry login failed after 3 attempts"
+          exit 1
+
+      - uses: docker/build-push-action@v6
+        timeout-minutes: 60
+        with:
+          context: ./admin-web
+          push: true
+          provenance: false
+          tags: |
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-admin-web:latest
+            ${{ secrets.REGISTRY }}/${{ secrets.REGISTRY_NAMESPACE }}/zhimesh-admin-web:sha-${{ github.sha }}
 
   # 阶段三：拉取新镜像并滚动更新容器（runner 就在部署机上，直接本机执行）
+  # 仅在本次确实构建了至少一个镜像、且没有任何构建失败时部署；
+  # 未重建的服务镜像 digest 不变，compose 不会动它们的容器
   deploy:
-    needs: build-push
+    needs: [build-api, build-user-web, build-admin-web]
+    if: >-
+      !cancelled() &&
+      needs.build-api.result != 'failure' &&
+      needs.build-user-web.result != 'failure' &&
+      needs.build-admin-web.result != 'failure' &&
+      (needs.build-api.result == 'success' ||
+      needs.build-user-web.result == 'success' ||
+      needs.build-admin-web.result == 'success')
     runs-on: [self-hosted]
     steps:
       - name: Deploy containers
