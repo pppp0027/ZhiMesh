@@ -15,6 +15,17 @@
         "@gongrzhe/server-redis-mcp",
         "redis://<host>:6379/0"
       ]
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp",
+        "--no-usageStatistics",
+        "--headless",
+        "--executablePath",
+        "<chrome.exe绝对路径>"
+      ]
     }
   }
 }

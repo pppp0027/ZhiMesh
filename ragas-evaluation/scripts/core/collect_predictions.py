@@ -255,6 +255,29 @@ def unwrap_response(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+async def login_admin_token(base_url: str) -> str:
+    """Auto login so runs need no manually pasted ZHIMESH_ADMIN_TOKEN (valid 8h per login)."""
+    email = os.getenv("ZHIMESH_ADMIN_EMAIL", "").strip()
+    password = os.getenv("ZHIMESH_ADMIN_PASSWORD", "").strip()
+    if not email or not password:
+        raise SystemExit(
+            "ZHIMESH_ADMIN_TOKEN is missing; either fill it, or set "
+            "ZHIMESH_ADMIN_EMAIL + ZHIMESH_ADMIN_PASSWORD in .env for auto login"
+        )
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            base_url.rstrip("/") + "/auth/login",
+            json={"email": email, "password": password},
+        )
+        response.raise_for_status()
+        login_data = unwrap_response(response.json())
+        token = str(login_data.get("token") or "")
+        if not token:
+            raise SystemExit(f"Login succeeded but API returned no token for {email}")
+    print(f"auto login ok: {email} (token valid for 8h)")
+    return token
+
+
 def bm25_not_ready_hint(exc: Exception, bm25_requested: bool = False) -> str:
     """Return a BM25 hint when a backend error looks like a missing full-text index.
 
@@ -318,7 +341,7 @@ async def main() -> None:
     include_query_embedding = bool(config.get("include_query_embedding", False))
     token = os.getenv("ZHIMESH_ADMIN_TOKEN", "").strip()
     if not token:
-        raise SystemExit("ZHIMESH_ADMIN_TOKEN is missing; copy .env.example to .env and fill it")
+        token = await login_admin_token(str(config.get("base_url") or "http://localhost:9999"))
 
     dataset = read_jsonl(config["dataset"])
     ids = set(args.ids or [])
