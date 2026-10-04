@@ -56,6 +56,18 @@ def parse_args() -> argparse.Namespace:
         help="JSON file containing dedicated benchmark accounts and Character UUIDs",
     )
     parser.add_argument("--warmups", type=int, help="Override warm-up request count")
+    parser.add_argument("--model-platform", help="Force a model platform in /chat/process body (e.g. opencode, mock)")
+    parser.add_argument("--model-name", help="Force a model name in /chat/process body")
+    parser.add_argument(
+        "--keep-conversations",
+        action="store_true",
+        help="Keep benchmark conversations (ladder mode): enables post-run ai_model_id distribution checks",
+    )
+    parser.add_argument(
+        "--ttft-probe",
+        action="store_true",
+        help="Concurrency mode: abort every stream at first token (isolates queue+retrieval+first-token latency from LLM generation)",
+    )
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
     parser.add_argument("--check-only", action="store_true", help="Validate API, auth and configuration without sending chat requests")
     return parser.parse_args()
@@ -190,6 +202,9 @@ class Benchmark:
         self.character_uuid = str(config["character_uuid"])
         self.timeout = float(config.get("sse_timeout_seconds", 180))
         self.manage_conversations = bool(config.get("manage_conversations", True))
+        self.keep_conversations = bool(config.get("keep_conversations", False))
+        self.model_platform = str(config.get("model_platform") or "").strip() or None
+        self.model_name = str(config.get("model_name") or "").strip() or None
 
     async def preflight(self, client: httpx.AsyncClient) -> None:
         public_response = await client.get(self.base_url + "/auth/search-engine/list")
@@ -258,6 +273,10 @@ class Benchmark:
                 "prompt": row["question"],
                 "characterUuid": self.character_uuid,
             }
+            if self.model_platform:
+                body["modelPlatform"] = self.model_platform
+            if self.model_name:
+                body["modelName"] = self.model_name
             if conversation_uuid:
                 body["conversationUuid"] = conversation_uuid
             async with client.stream("POST", self.endpoint, json=body) as response:
@@ -288,11 +307,14 @@ class Benchmark:
             error_type = type(exc).__name__
             error_message = str(exc)[:500]
         finally:
-            try:
-                await self.delete_conversation(client, conversation_uuid)
-            except Exception:
-                if error_type is None:
-                    error_type = "ConversationCleanupError"
+            if self.keep_conversations:
+                pass  # 阶梯模式保留会话：供事后 ai_model_id 分布验证
+            else:
+                try:
+                    await self.delete_conversation(client, conversation_uuid)
+                except Exception:
+                    if error_type is None:
+                        error_type = "ConversationCleanupError"
         return {
             "id": str(row["id"]),
             "run_id": run_id,
@@ -307,6 +329,11 @@ class Benchmark:
             else None,
             "client_elapsed_ms": round((finished - request_started) * 1000),
             "token_event_count": token_events,
+            "ms_per_token": (
+                round((done_at - request_started) * 1000 / token_events)
+                if done_at is not None and token_events > 0
+                else None
+            ),
             "received_done": done_at is not None,
             "received_error_event": error_event,
             "aborted_after_first_token": abort_after_first_token and first_token_at is not None,
@@ -342,6 +369,11 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in rows
         if finite(row.get("client_elapsed_ms")) is not None
     ]
+    ms_per_token = [
+        float(row["ms_per_token"])
+        for row in rows
+        if finite(row.get("ms_per_token")) is not None
+    ]
     wall_seconds = sum(elapsed) / 1000 if elapsed else 0
     return {
         "requests": len(rows),
@@ -369,6 +401,11 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "max": max(full) if full else None,
         },
         "serial_equivalent_qps": len(rows) / wall_seconds if wall_seconds else None,
+        "ms_per_token": {
+            "count": len(ms_per_token),
+            "mean": statistics.fmean(ms_per_token) if ms_per_token else None,
+            "p50": nearest_rank(ms_per_token, 0.50),
+        },
         "error_types": {
             error_type: sum(row.get("error_type") == error_type for row in rows)
             for error_type in sorted(
@@ -406,6 +443,16 @@ async def main() -> None:
         args.character_uuid
         or os.getenv("ZHIMESH_BENCHMARK_CHARACTER_UUID", "").strip()
         or config.get("character_uuid")
+    )
+    config["model_platform"] = (
+        args.model_platform
+        or os.getenv("ZHIMESH_BENCHMARK_MODEL_PLATFORM", "").strip()
+        or config.get("model_platform")
+    )
+    config["model_name"] = (
+        args.model_name
+        or os.getenv("ZHIMESH_BENCHMARK_MODEL_NAME", "").strip()
+        or config.get("model_name")
     )
     accounts_file = (
         args.accounts_file
@@ -482,6 +529,7 @@ async def main() -> None:
             )
             account_config = dict(config)
             account_config["character_uuid"] = spec["character_uuid"]
+            account_config["keep_conversations"] = bool(args.keep_conversations)
             benchmark = Benchmark(account_config, token)
             client = await stack.enter_async_context(
                 httpx.AsyncClient(
@@ -549,7 +597,8 @@ async def main() -> None:
                     async with semaphore:
                         row = dataset[index % len(dataset)]
                         result = await runtime.benchmark.request(
-                            runtime.client, row, f"c{concurrency}-{index + 1}"
+                            runtime.client, row, f"c{concurrency}-{index + 1}",
+                            abort_after_first_token=bool(args.ttft_probe),
                         )
                         result["account_index"] = runtime.index
                         result["account_email"] = runtime.email
@@ -599,6 +648,10 @@ async def main() -> None:
         "selected_samples": len(dataset),
         "warmup_requests": warmups,
         "tls_verification": verify_tls,
+        "model_platform": primary.benchmark.model_platform,
+        "model_name": primary.benchmark.model_name,
+        "ttft_probe": bool(args.ttft_probe),
+        "keep_conversations": bool(args.keep_conversations),
     }
     if args.mode == "concurrency" and rows:
         summary["wall_seconds"] = rows[0].get("wall_seconds")
