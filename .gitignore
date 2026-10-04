@@ -67,6 +67,9 @@ docx_qa/
 .models/
 outputs/
 ZhiMesh项目面试PPT/
+
+# 个人面试准备材料（简历、问答），仅本地使用不入库
+/Knowledges/
 ragas-evaluation.tar.gz
 
 # The committed Maven cache is not source and is rebuildable from POM metadata.
