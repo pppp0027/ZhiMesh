@@ -132,6 +132,17 @@ function commonSseProcess(
     errorCallback: (error: string) => void
   },
 ): Promise<void> {
+  // 连接期自动重试：[START] 未达前失败零副作用（后端尚未开始处理本请求），
+  // 网络抖动/服务重启场景安全重发；[START] 之后绝不重试——后端无幂等去重，
+  // 重发会导致重复回答。致错路径（401/用户中止）不参与重试。
+  // Connect-phase auto-retry: a failure before [START] has zero side effects
+  // (the backend has not begun processing), so transient network blips and
+  // server restarts safely re-send. Never retry after [START] — the backend
+  // has no idempotency dedup, a resend would produce a duplicate answer.
+  // Fatal paths (401 / user abort) never retry.
+  let started = false
+  let connectRetries = 0
+  const MAX_CONNECT_RETRIES = 2
   return fetchEventSource(url, {
     method: 'POST',
     headers: {
@@ -160,6 +171,7 @@ function commonSseProcess(
     },
     onmessage(eventMessage) {
       if (eventMessage.event === '[START]') {
+        started = true
         params.startCallback(eventMessage.data)
         return
       } else if (eventMessage.event === '[ERROR]') {
@@ -212,6 +224,14 @@ function commonSseProcess(
       params.messageReceived(eventMessage.data, eventMessage.event ? eventMessage.event : '')
     },
     onerror(error) {
+      // fetchEventSource 契约：onerror 返回数字 = 按毫秒延迟后自动重连，throw = 终止
+      // fetchEventSource contract: returning a number retries after that many ms, throwing gives up
+      if (!(error instanceof FatalError) && (error as any)?.name !== 'AbortError' && !started && connectRetries < MAX_CONNECT_RETRIES) {
+        connectRetries++
+        const delay = connectRetries === 1 ? 800 : 2000
+        console.warn(`sse connect failed, retrying ${connectRetries}/${MAX_CONNECT_RETRIES} in ${delay}ms`, error)
+        return delay
+      }
       const errorMessage = error instanceof Error ? error.message : String(error)
       console.log(`sse error:${errorMessage}`)
       params.errorCallback(errorMessage)

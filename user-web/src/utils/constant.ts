@@ -37,6 +37,32 @@ export const CHAT_MESSAGE_CONTENT_TYPE = {
   text: 2, // 文本
   audio: 3, // 音频
 }
+
+/**
+ * 聊天等待期状态键（[STATE_CHANGED] 载荷值）：
+ * 后端 SseManager.SSEEventData.STATE_* 与前端 i18n `chat.state.*` 共同的键契约，
+ * 三处必须同步——新增状态时后端常量、本表、zh-CN/en-US 文案一起加。
+ * Chat waiting-state keys (the [STATE_CHANGED] payload values): the shared key
+ * contract between the backend SseManager.SSEEventData.STATE_* constants and
+ * the i18n `chat.state.*` entries — all three must move together.
+ */
+export const CHAT_STATE = {
+  QUESTION_ANALYSING: 'question_analysing',
+  KNOWLEDGE_SEARCHING: 'knowledge_searching',
+  TOOL_RUNNING: 'tool_running',
+  THINKING: 'thinking',
+  RESPONDING: 'responding',
+} as const
+
+/** 解析 [STATE_CHANGED] 载荷为状态 Map，坏载荷安全返回 undefined / Parse a [STATE_CHANGED] payload into a state Map; bad payloads yield undefined */
+export function parseChatState(raw: string): Map<string, string> | undefined {
+  try {
+    return new Map(Object.entries(JSON.parse(raw)))
+  } catch (error) {
+    console.warn('Invalid SSE state payload', error)
+    return undefined
+  }
+}
 /**
  * 音频合成位置：客户端(web)或服务端
  */

@@ -8,6 +8,7 @@ import { AudioMessage, Message } from './components'
 import { useScroll } from './hooks/useScroll'
 import { useChat } from './hooks/useChat'
 import { useCopyCode } from './hooks/useCopyCode'
+import { appendToolStart, applySuspension, backfillToolCall, createChunkFlusher, parseMetaData } from './hooks/sseChatHandlers'
 import HeaderComponent from './components/Header/index.vue'
 import PcHeader from './components/Header/pc.vue'
 import InputToolbar from './InputToolbar.vue'
@@ -21,7 +22,7 @@ import LoginTip from '@/views/user/LoginTip.vue'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
 import { useAppStore, useAuthStore, useChatStore, useKbStore, useWfStore } from '@/store'
 import { getDefaultCharacter } from '@/store/modules/chat/helper'
-import { AUDIO_SYNTHESIZER_SIDE, CHAT_MESSAGE_CONTENT_TYPE } from '@/utils/constant'
+import { AUDIO_SYNTHESIZER_SIDE, CHAT_MESSAGE_CONTENT_TYPE, parseChatState } from '@/utils/constant'
 import { SvgIcon } from '@/components/common'
 import api from '@/api'
 import { t } from '@/locales'
@@ -177,47 +178,13 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
     return
   }
   const isCurrentRequest = () => requestId === chatRequestGeneration
-  // 流式渲染批量 flush：chunk 先入请求闭包内的缓冲（每请求独立，防 regenerate/多页签串包），
-  // ~60ms 定时一次性 appendChunk，消除逐字符 append 触发全量 markdown 重渲染的 O(n²) 卡顿；
-  // done/suspension/error 入口先同步 flush，防丢尾字符、防挂起卡片与文本错位
-  let textBuffer = ''
-  let thinkingBuffer = ''
-  let flushTimer: ReturnType<typeof setTimeout> | undefined
-  const flushBuffers = () => {
-    if (flushTimer) {
-      clearTimeout(flushTimer)
-      flushTimer = undefined
-    }
-    const question = requestQuestion
-    if (!question || !isCurrentRequest()) {
-      textBuffer = ''
-      thinkingBuffer = ''
-      return
-    }
-    try {
-      if (thinkingBuffer) {
-        appendChunk(
-          requestChatKey,
-          question.children[0].uuid,
-          thinkingBuffer,
-          true, // thinking is true
-        )
-        chatMessageReceiving(question.uuid)
-      }
-      if (textBuffer) {
-        appendChunk(
-          requestChatKey,
-          question.children[0].uuid,
-          textBuffer,
-        )
-        chatMessageReceiving(question.uuid)
-      }
-    } catch (error) {
-      console.error(error)
-    }
-    textBuffer = ''
-    thinkingBuffer = ''
-  }
+  const flusher = createChunkFlusher({
+    isCurrentRequest,
+    getAnswerUuid: () => requestQuestion.children[0]?.uuid,
+    appendChunk,
+    chatKey: requestChatKey,
+    onReceiving: () => chatMessageReceiving(requestQuestion.uuid),
+  })
   return api.sseProcess({
     options: {
       prompt: '',
@@ -238,42 +205,24 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
     stateChanged: (state) => {
       if (!isCurrentRequest())
         return
-      const question = requestQuestion
-      if (!question)
-        return
-
-      try {
-        question.state = new Map(Object.entries(JSON.parse(state)))
-      } catch (error) {
-        console.warn('Invalid SSE state payload', error)
-      }
+      const parsed = state ? parseChatState(state) : undefined
+      if (parsed)
+        requestQuestion.state = parsed
     },
     thinkingDataReceived: (chunk) => {
       if (!isCurrentRequest())
         return
-      const question = requestQuestion
-      if (!question) {
-        ms.error(t('chat.questionNotFound'))
-        return
-      }
-      thinkingBuffer += chunk
-      if (!flushTimer)
-        flushTimer = setTimeout(flushBuffers, 60)
+      flusher.pushThinking(chunk)
       // 推理阶段无需显示状态
-      question.state = new Map<string, string>()
+      requestQuestion.state = new Map<string, string>()
     },
     messageReceived: (chunk) => {
       if (!isCurrentRequest())
         return
-      const question = requestQuestion
-      if (!question) {
-        ms.error(t('chat.questionNotFound'))
-        return
-      }
-      textBuffer += chunk
-      if (!flushTimer)
-        flushTimer = setTimeout(flushBuffers, 60)
-      const answerContentType = chatStore.answerContentType(character, question.audioUuid)
+      flusher.pushText(chunk)
+      // 回复阶段无需显示状态
+      requestQuestion.state = new Map<string, string>()
+      const answerContentType = chatStore.answerContentType(character, requestQuestion.audioUuid)
       const ttsPartText = chunk.replace('\n', '')
       if (ttsPartText && appStore.audioSynthesizerSide === AUDIO_SYNTHESIZER_SIDE.client && answerContentType === CHAT_MESSAGE_CONTENT_TYPE.audio && character.isAutoplayAnswer) {
         // settimeout是防止执行太快导致 AudioMessage 中的 watch 没有触发
@@ -292,122 +241,39 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
     toolStartedReceived: (data) => {
       if (!isCurrentRequest())
         return
-      const question = requestQuestion
-      if (!question)
-        return
       // 工具开始执行：先点亮一条 running 步骤，完成事件（[TOOL_CALL]）再回填时长/结果
-      const answer = question.children[0]
-      if (!answer.toolCalls)
-        answer.toolCalls = []
-      answer.toolCalls.push({
-        toolName: data.toolName,
-        args: data.args,
-        running: true,
-        durationMs: 0,
-        success: true,
-      })
+      appendToolStart(requestQuestion.children[0], data)
     },
     toolCallReceived: (data) => {
       if (!isCurrentRequest())
         return
-      const question = requestQuestion
-      if (!question)
-        return
-      const answer = question.children[0]
-      if (!answer.toolCalls)
-        answer.toolCalls = []
-      // 回填策略：从后往前找同名 running 步骤（[TOOL_STARTED] 已点亮）回填；
-      // 未命中（无 started 的完成事件/历史回放/乱序）按旧逻辑直插，兼容 TOOL_LIMIT_MARKER
-      let runningIdx = -1
-      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
-        const tool = answer.toolCalls[i]
-        if (tool.toolName === data.toolName && tool.running === true) {
-          runningIdx = i
-          break
-        }
-      }
-      if (runningIdx !== -1) {
-        const step = answer.toolCalls[runningIdx]
-        step.running = false
-        step.durationMs = data.durationMs
-        step.success = data.success
-        if (data.resultSummary !== undefined)
-          step.resultSummary = data.resultSummary
-      } else {
-        answer.toolCalls.push(data)
-      }
+      backfillToolCall(requestQuestion.children[0], data)
     },
     suspensionReceived: (payload) => {
       // 先同步 flush 已缓冲文本，防挂起卡片与文本错位
-      flushBuffers()
+      flusher.flush()
       if (!isCurrentRequest())
         return
-      const question = requestQuestion
-      if (!question)
-        return
       // 挂起事件：在回答消息上挂卡片载荷（可交互），并在步骤条补挂起节点
-      const answer = question.children[0]
-      answer.suspension = payload
-      answer.suspensionActive = true
-      if (!answer.toolCalls)
-        answer.toolCalls = []
-      // 同名 running 步骤原地翻挂起节点：协作工具（ask_user 等）的 [TOOL_STARTED]
-      // 已点亮一条 running 行，挂起路径后端不会再发 [TOOL_CALL]，直接 push 会双行
-      // 且 spinner 无人回填；未命中（无 started 的异常序/历史路径）才补新行
-      // Rewrite the same-name running step in place: collaborative tools
-      // already lit a running row via [TOOL_STARTED] and the suspension path
-      // never sends [TOOL_CALL], so pushing would duplicate the row and leave
-      // a spinner unbackfilled; append only on a miss (abnormal order/history)
-      const toolName = payload.toolName || ''
-      let suspendIdx = -1
-      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
-        const tool = answer.toolCalls[i]
-        if (tool.toolName === toolName && tool.running === true) {
-          suspendIdx = i
-          break
-        }
-      }
-      if (suspendIdx !== -1) {
-        const step = answer.toolCalls[suspendIdx]
-        step.running = false
-        step.resultSummary = payload.question
-        step.suspensionKind = payload.kind ?? payload.type
-      } else {
-        answer.toolCalls.push({
-          toolName,
-          durationMs: 0,
-          success: true,
-          resultSummary: payload.question,
-          suspensionKind: payload.kind ?? payload.type,
-        })
-      }
+      applySuspension(requestQuestion.children[0], payload)
     },
     doneCallback: (chunk) => {
       // 先同步 flush 已缓冲文本，防丢尾字符
-      flushBuffers()
+      flusher.flush()
       if (!isCurrentRequest())
         return
-      const question = requestQuestion
-      if (!question) {
-        ms.error(t('chat.questionNotFound'))
+      const answer = requestQuestion.children[0]
+      const metaData = parseMetaData(chunk)
+      if (metaData === null) {
+        updateMessageSomeFields(requestChatKey, requestQuestion.uuid, { loading: false, state: new Map<string, string>() })
+        updateMessageSomeFields(requestChatKey, answer.uuid, { remark: `${t('common.systemTip')}${t('common.wrong')}`, loading: false })
+        isChatting.value = false
         return
       }
-      const answer = question.children[0]
-      if (chunk.includes('[META]')) {
-        const meta = chunk.replace('[META]', '')
-        let metaData: Chat.MetaData
-        try {
-          metaData = JSON.parse(meta)
-        } catch (error) {
-          console.error('Invalid SSE metadata payload', error)
-          updateMessageSomeFields(requestChatKey, question.uuid, { loading: false })
-          updateMessageSomeFields(requestChatKey, answer.uuid, { remark: `${t('common.systemTip')}${t('common.wrong')}`, loading: false })
-          isChatting.value = false
-          return
-        }
+      if (metaData) {
         if (metaData.conversationUuid && metaData.conversationUuid !== requestConversationUuid)
           console.error('SSE conversation mismatch', { expected: requestConversationUuid, actual: metaData.conversationUuid })
-        updateMessageSomeFields(requestChatKey, question.uuid, { ...metaData.question, inputTokens: metaData.question.inputTokens, loading: false, state: new Map<string, string>() })
+        updateMessageSomeFields(requestChatKey, requestQuestion.uuid, { ...metaData.question, inputTokens: metaData.question.inputTokens, loading: false, state: new Map<string, string>() })
         // inputTokens/outputTokens 由 AnswerMeta 直接提供 | inputTokens/outputTokens provided directly by AnswerMeta
         // 挂起载荷兜底：实时事件未达时 [META] 同样携带（键名 type）；实时载荷（kind+
         // toolName 更全）优先防覆盖，兜底命中才置交互态（原判断在 assign 后恒 false 属死代码）
@@ -429,17 +295,12 @@ const fetchChatAPIOnce = async (regenerateQuestionUuid: string, childAudioPlaySt
     },
     errorCallback: (error) => {
       // 先同步 flush 已缓冲文本，防错误提示覆盖丢尾字符
-      flushBuffers()
+      flusher.flush()
       if (!isCurrentRequest())
         return
       ms.warning(error)
       isChatting.value = false
-      const question = requestQuestion
-      if (!question) {
-        ms.error(t('chat.questionNotFound'))
-        return
-      }
-      updateMessageSomeFields(requestChatKey, question.children[0].uuid, { remark: `${t('common.systemTip')}${error}`, loading: false })
+      updateMessageSomeFields(requestChatKey, requestQuestion.children[0].uuid, { remark: `${t('common.systemTip')}${error}`, loading: false })
     },
   })
 }

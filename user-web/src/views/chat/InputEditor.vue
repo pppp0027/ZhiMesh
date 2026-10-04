@@ -4,11 +4,12 @@ import { NAutoComplete, NButton, NInput, useMessage } from 'naive-ui'
 import { storeToRefs } from 'pinia'
 import { v4 as uuidv4 } from 'uuid'
 import { useChat } from './hooks/useChat'
+import { appendToolStart, applySuspension, backfillToolCall, createChunkFlusher, parseMetaData } from './hooks/sseChatHandlers'
 import { SvgIcon } from '@/components/common'
 import { useAppStore, useAuthStore, useChatStore, usePromptStore } from '@/store'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
 import { emptyAudioPlayState, emptyChatMessage } from '@/utils/functions'
-import { CHAT_MESSAGE_CONTENT_TYPE } from '@/utils/constant'
+import { CHAT_MESSAGE_CONTENT_TYPE, parseChatState } from '@/utils/constant'
 import { t } from '@/locales'
 import api from '@/api'
 interface Props {
@@ -187,48 +188,13 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
   }
   const requestMessage = chattingMsg.value
   const isCurrentRequest = () => requestId === activeRequestId
-  // 流式渲染批量 flush：chunk 先入请求闭包内的缓冲（每请求独立），~60ms 定时一次性 appendChunk，
-  // 消除逐字符 append 触发全量 markdown 重渲染的 O(n²) 卡顿；
-  // done/suspension/error 入口先同步 flush，防丢尾字符、防挂起卡片与文本错位
-  let textBuffer = ''
-  let thinkingBuffer = ''
-  let flushTimer: ReturnType<typeof setTimeout> | undefined
-  const flushBuffers = () => {
-    if (flushTimer) {
-      clearTimeout(flushTimer)
-      flushTimer = undefined
-    }
-    if (!isCurrentRequest() || !requestMessage.children[0]) {
-      textBuffer = ''
-      thinkingBuffer = ''
-      return
-    }
-    try {
-      const answer = requestMessage.children[0]
-      if (thinkingBuffer) {
-        appendChunk(
-          requestChatKey,
-          answer.uuid,
-          thinkingBuffer,
-          true, // thinking is true
-        )
-        emit('messageReceiving', requestMessage.uuid)
-      }
-      if (textBuffer) {
-        appendChunk(
-          requestChatKey,
-          answer.uuid,
-          textBuffer,
-          false, // thinking is false
-        )
-        emit('messageReceiving', requestMessage.uuid)
-      }
-    } catch (error) {
-      console.error(error)
-    }
-    textBuffer = ''
-    thinkingBuffer = ''
-  }
+  const flusher = createChunkFlusher({
+    isCurrentRequest,
+    getAnswerUuid: () => requestMessage.children[0]?.uuid,
+    appendChunk,
+    chatKey: requestChatKey,
+    onReceiving: () => emit('messageReceiving', requestMessage.uuid),
+  })
   return api.sseProcess({
     options: {
       prompt: message,
@@ -249,13 +215,9 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
     stateChanged: (state) => {
       if (!isCurrentRequest())
         return
-      if (state) {
-        try {
-          requestMessage.state = new Map(Object.entries(JSON.parse(state)))
-        } catch (error) {
-          console.warn('Invalid SSE state payload', error)
-        }
-      }
+      const parsed = state ? parseChatState(state) : undefined
+      if (parsed)
+        requestMessage.state = parsed
     },
     thinkingDataReceived: (chunk) => {
       if (!isCurrentRequest())
@@ -263,9 +225,7 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
       // 处理思考数据
       if (!requestMessage.children[0])
         return
-      thinkingBuffer += chunk
-      if (!flushTimer)
-        flushTimer = setTimeout(flushBuffers, 60)
+      flusher.pushThinking(chunk)
       // 推理阶段无需显示状态
       requestMessage.state = new Map<string, string>()
     },
@@ -274,9 +234,7 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
         return
       if (!requestMessage.children[0])
         return
-      textBuffer += chunk
-      if (!flushTimer)
-        flushTimer = setTimeout(flushBuffers, 60)
+      flusher.pushText(chunk)
       // 回复阶段无需显示状态
       requestMessage.state = new Map<string, string>()
     },
@@ -286,107 +244,38 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
       if (!requestMessage.children[0])
         return
       // 工具开始执行：先点亮一条 running 步骤，完成事件（[TOOL_CALL]）再回填时长/结果
-      const answer = requestMessage.children[0]
-      if (!answer.toolCalls)
-        answer.toolCalls = []
-      answer.toolCalls.push({
-        toolName: data.toolName,
-        args: data.args,
-        running: true,
-        durationMs: 0,
-        success: true,
-      })
+      appendToolStart(requestMessage.children[0], data)
     },
     toolCallReceived: (data) => {
       if (!isCurrentRequest())
         return
       if (!requestMessage.children[0])
         return
-      const answer = requestMessage.children[0]
-      if (!answer.toolCalls)
-        answer.toolCalls = []
-      // 回填策略：从后往前找同名 running 步骤（[TOOL_STARTED] 已点亮）回填；
-      // 未命中（无 started 的完成事件/历史回放/乱序）按旧逻辑直插，兼容 TOOL_LIMIT_MARKER
-      let runningIdx = -1
-      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
-        const tool = answer.toolCalls[i]
-        if (tool.toolName === data.toolName && tool.running === true) {
-          runningIdx = i
-          break
-        }
-      }
-      if (runningIdx !== -1) {
-        const step = answer.toolCalls[runningIdx]
-        step.running = false
-        step.durationMs = data.durationMs
-        step.success = data.success
-        if (data.resultSummary !== undefined)
-          step.resultSummary = data.resultSummary
-      } else {
-        answer.toolCalls.push(data)
-      }
+      backfillToolCall(requestMessage.children[0], data)
     },
     suspensionReceived: (payload) => {
       // 先同步 flush 已缓冲文本，防挂起卡片与文本错位
-      flushBuffers()
+      flusher.flush()
       if (!isCurrentRequest())
         return
       // 挂起事件：在回答消息上挂卡片载荷（可交互），并在步骤条补挂起节点
-      const answer = requestMessage.children[0]
-      answer.suspension = payload
-      answer.suspensionActive = true
-      if (!answer.toolCalls)
-        answer.toolCalls = []
-      // 同名 running 步骤原地翻挂起节点：协作工具（ask_user 等）的 [TOOL_STARTED]
-      // 已点亮一条 running 行，挂起路径后端不会再发 [TOOL_CALL]，直接 push 会双行
-      // 且 spinner 无人回填；未命中（无 started 的异常序/历史路径）才补新行
-      // Rewrite the same-name running step in place: collaborative tools
-      // already lit a running row via [TOOL_STARTED] and the suspension path
-      // never sends [TOOL_CALL], so pushing would duplicate the row and leave
-      // a spinner unbackfilled; append only on a miss (abnormal order/history)
-      const toolName = payload.toolName || ''
-      let suspendIdx = -1
-      for (let i = answer.toolCalls.length - 1; i >= 0; i--) {
-        const tool = answer.toolCalls[i]
-        if (tool.toolName === toolName && tool.running === true) {
-          suspendIdx = i
-          break
-        }
-      }
-      if (suspendIdx !== -1) {
-        const step = answer.toolCalls[suspendIdx]
-        step.running = false
-        step.resultSummary = payload.question
-        step.suspensionKind = payload.kind ?? payload.type
-      } else {
-        answer.toolCalls.push({
-          toolName,
-          durationMs: 0,
-          success: true,
-          resultSummary: payload.question,
-          suspensionKind: payload.kind ?? payload.type,
-        })
-      }
+      applySuspension(requestMessage.children[0], payload)
       emit('messageReceiving', requestMessage.uuid)
     },
     doneCallback: (chunk) => {
       // 先同步 flush 已缓冲文本，防丢尾字符
-      flushBuffers()
+      flusher.flush()
       if (!isCurrentRequest())
         return
       const answer = requestMessage.children[0]
-      if (chunk.includes('[META]')) {
-        const meta = chunk.replace('[META]', '')
-        let metaData: Chat.MetaData
-        try {
-          metaData = JSON.parse(meta)
-        } catch (error) {
-          console.error('Invalid SSE metadata payload', error)
-          updateMessageSomeFields(requestChatKey, requestMessage.uuid, { loading: false, thinking: false })
-          updateMessageSomeFields(requestChatKey, answer.uuid, { remark: `${t('common.systemTip')}${t('common.wrong')}`, loading: false, thinking: false })
-          isChatting.value = false
-          return
-        }
+      const metaData = parseMetaData(chunk)
+      if (metaData === null) {
+        updateMessageSomeFields(requestChatKey, requestMessage.uuid, { loading: false, thinking: false })
+        updateMessageSomeFields(requestChatKey, answer.uuid, { remark: `${t('common.systemTip')}${t('common.wrong')}`, loading: false, thinking: false })
+        isChatting.value = false
+        return
+      }
+      if (metaData) {
         if (metaData.conversationUuid && metaData.conversationUuid !== requestConversationUuid)
           console.error('SSE conversation mismatch', { expected: requestConversationUuid, actual: metaData.conversationUuid })
         updateMessageSomeFields(requestChatKey, requestMessage.uuid, { ...metaData.question, thinking: false, loading: false })
@@ -419,7 +308,7 @@ const fetchChatAPIOnce = async (message: string, requestId: number) => {
     },
     errorCallback: (error) => {
       // 先同步 flush 已缓冲文本，防错误提示覆盖丢尾字符
-      flushBuffers()
+      flusher.flush()
       if (!isCurrentRequest())
         return
       ms.warning(error)
