@@ -343,33 +343,12 @@ public class CharacterChatService {
                 askReq.setImageUrls(Arrays.asList(originalQuestion.getAttachments().split(",")));
             }
         }
-        // 2.5 挂起恢复前置检查：会话存在 ACTIVE 挂起检查点时本条消息按恢复轮处理。
-        // regenerate 重问（用户对挂起问题换问法）或检查点角色与当前会话角色不符
-        // （角色被切换/重建）→ 作废检查点（SUPERSEDED）按正常轮继续；正常恢复保留
-        // 检查点待第 6.5 步装配
-        // 2.5 Suspension-resume pre-check: when the conversation holds an ACTIVE
-        // pending checkpoint this message is treated as the resumed round. A
-        // regenerate re-ask (the user rephrasing the suspended question) or a
-        // checkpoint character mismatching the current conversation character
-        // (character switched/rebuilt) invalidates the checkpoint (SUPERSEDED)
-        // and continues as a normal round; an ordinary resume keeps the
-        // checkpoint for assembly at step 6.5
-        AgentPendingCheckpoint resumeCheckpoint = null;
-        if (null != chatContext.conversation()) {
-            AgentPendingCheckpoint activeCheckpoint =
-                    pendingCheckpointService.findActive(chatContext.conversation().getId());
-            if (null != activeCheckpoint) {
-                boolean regenerateReAsk = StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid());
-                boolean characterMismatch = !Objects.equals(activeCheckpoint.getCharacterId(), character.getId());
-                if (regenerateReAsk || characterMismatch) {
-                    pendingCheckpointService.markSuperseded(activeCheckpoint.getId());
-                    log.info("Pending checkpoint superseded before resume, checkpointId:{}, conversationId:{}, regenerateReAsk:{}, characterMismatch:{}",
-                            activeCheckpoint.getId(), chatContext.conversation().getId(), regenerateReAsk, characterMismatch);
-                } else {
-                    resumeCheckpoint = activeCheckpoint;
-                }
-            }
-        }
+        // 2.5 挂起恢复前置检查（详见 resolveResumeCheckpoint）：返回 ACTIVE 检查点 =
+        // 本条消息按恢复轮处理，保留检查点待第 6.5 步装配
+        // 2.5 Suspension-resume pre-check (see resolveResumeCheckpoint): a
+        // returned ACTIVE checkpoint means this message is the resumed round,
+        // kept for assembly at step 6.5
+        AgentPendingCheckpoint resumeCheckpoint = resolveResumeCheckpoint(chatContext, character, askReq);
 
         // 3.通知前端：正在分析问题
         SseManager.sendPartial(sseUuid, SSEEventName.STATE_CHANGED, SSEEventData.STATE_QUESTION_ANALYSING);
@@ -537,77 +516,20 @@ public class CharacterChatService {
         // when the scope gate deems it relevant) is untouched, tools are
         // additive; when agentic is not effective nothing is constructed, no
         // workflow-visibility query fires, byte-for-byte legacy behavior
-        boolean agenticEffective = resolveAgentSettings().isDefaultAgenticEnabled()
-                && Boolean.TRUE.equals(character.getIsAgentic());
-        CharacterToolPolicy toolPolicy = CharacterToolPolicy.fromCharacter(character);
-        List<RunWorkflowTool.WorkflowOption> runnableWorkflows =
-                agenticEffective ? listRunnableWorkflowOptions(user) : List.of();
-        List<ToolExecutor> builtinTools = agenticEffective
-                ? buildBuiltinTools(filteredKb, runnableWorkflows, toolPolicy)
-                : List.of();
-        ToolContext toolContext = CollectionUtils.isNotEmpty(builtinTools)
-                ? buildAgenticToolContext(character, user, filteredKb, llmService, chatContext.shortTermMemoryId())
-                : null;
-        if (null != toolContext) {
-            if (resumed && null != resumeCheckpoint.getSuspensionCount()) {
-                // 恢复轮继承已耗挂起次数：max-suspensions 预算跨挂起累计
-                // A resumed round inherits the consumed suspension count: the
-                // max-suspensions budget accumulates across suspensions
-                toolContext.setSuspensionCount(resumeCheckpoint.getSuspensionCount());
-            }
-            if (resumed && StringUtils.isNotBlank(resumeCheckpoint.getApprovalGrant())) {
-                // 结构化拒绝标记（T6 拒绝按钮契约）：恢复答复以固定前缀开头 = 用户明确
-                // 拒绝，跳过凭证装配（fail-closed 硬保证——模型违背拒绝重调同工具同参数
-                // 也无凭证可匹配，照常挂起转审批）；自由文本拒绝不带前缀，维持设计明文
-                // 的「模型服从」口径
-                // The structured rejection marker (the T6 reject-button
-                // contract): a resume answer starting with the fixed prefix is
-                // an explicit user refusal, so the grant is NOT armed (a hard
-                // fail-closed guarantee — a re-invocation defying the refusal
-                // finds no grant to match and suspends for approval again); a
-                // free-text rejection carries no prefix and keeps the
-                // design-documented model-obedience posture
-                if (StringUtils.startsWith(askReq.getPrompt(), ApprovalRequiredDecorator.REJECTION_MARKER_PREFIX)) {
-                    log.info("Resume answer carries the approval rejection marker, approval grant not armed, checkpointId:{}",
-                            resumeCheckpoint.getId());
-                } else {
-                    // 恢复轮读回审批批准凭证（仅 MCP_APPROVAL 检查点携带）：装进请求级上下文，
-                    // 需审批 MCP 装饰器据此放行「同工具同参数」的真实调用；凭证随上下文存活
-                    // = 仅本恢复链有效（新一轮普通请求装配全新上下文、无凭证，须重新审批）。
-                    // 损坏 JSON fail-safe 归 null = 未批准（装饰器照常拦截），绝不因凭证问题
-                    // 拒绝恢复
-                    // The resumed round reads the approval grant back (carried by
-                    // MCP_APPROVAL checkpoints only) into the request-scoped
-                    // context, on which the approval-required MCP decorator lets
-                    // the "same tool, same arguments" real invocation through; the
-                    // grant lives as long as the context = valid only within this
-                    // resume chain (a fresh ordinary request assembles a fresh
-                    // context with no grant and must re-approve). Corrupt JSON
-                    // fails safe to null = not approved (the decorator keeps
-                    // gating); a grant problem never rejects the resume
-                    toolContext.setApprovalGrant(ApprovalGrant.fromJson(resumeCheckpoint.getApprovalGrant()));
-                }
-            }
-            wireSuspensionSink(toolContext, chatContext, character, user);
-            chatRequestParams.setBuiltinTools(builtinTools);
-            sseAskParam.setToolContext(toolContext);
-            log.info("Agentic mode enabled, characterId:{}, kbCount:{}, runnableWorkflowCount:{}, builtinToolNames:{}, resumed:{}",
-                    character.getId(), filteredKb.size(), runnableWorkflows.size(),
-                    builtinTools.stream().map(tool -> tool.spec().name()).toList(), resumed);
-        }
-        // 审批门装配：tool_policy 的 approvalRequiredMcpTools 写入请求参数，由
-        // AbstractLLMService.discoverRequestTools 对命中的 MCP 执行器包审批装饰器。仅在
-        // agentic 生效时接线（兜底开关关闭 = 回到无审批门的现状，验收标准 1 的逐字节
-        // 等价）；集合为空不设置（无审批门，行为不变）
-        // Approval-gate assembly: the tool_policy's approvalRequiredMcpTools
-        // ride the request params, and AbstractLLMService.discoverRequestTools
-        // wraps the hit MCP executors with the approval decorator. Wired only
-        // while agentic is effective (the fallback switch off = back to the
-        // no-gate status quo, the byte-equality of acceptance criterion 1);
-        // an empty set leaves the field unset (no gate, unchanged behavior)
-        if (agenticEffective && CollectionUtils.isNotEmpty(toolPolicy.getApprovalRequiredMcpTools())) {
-            chatRequestParams.setApprovalRequiredTools(toolPolicy.getApprovalRequiredMcpTools());
-        }
+        // 11.5 Agentic 分支：生效判定、注册集组装（默认集 ∩ tool_policy ∩ 可用性）、
+        // 挂起接线（suspensionSink / 恢复轮继承已耗挂起次数与审批凭证）、审批门装配
+        // ——全部收敛在 assembleAgenticBranch（方法注释含完整语义与回退口径）
+        // 11.5 Agentic branch: effectiveness decision, registration-set assembly
+        // (default set ∩ tool_policy ∩ availability), suspension wiring
+        // (suspensionSink / the resumed round inheriting the consumed
+        // suspension count and approval grant), approval-gate assembly — all
+        // collapsed into assembleAgenticBranch (its javadoc carries the full
+        // semantics and rollback posture)
+        // 完成回调仍需 toolContext（工具证据合并 / 轨迹与挂起载荷随 meta 下发）
+        // The completion callback still needs toolContext (tool-evidence
+        // merging, traces and the suspension payload on the meta event)
+        ToolContext toolContext = assembleAgenticBranch(chatContext, character, user, askReq, filteredKb,
+                llmService, resumeCheckpoint, resumed, sseAskParam, chatRequestParams);
         // 12.设置temperature、是否返回思考等模型参数
         sseAskParam.setHttpRequestParams(chatRequestParams);
         sseAskParam.setModelProperties(
@@ -890,6 +812,112 @@ public class CharacterChatService {
     }
 
     /**
+     * Agentic 分支装配（executeChat 第 11.5 步）：生效判定 = 兜底开关
+     * zhimesh.agent.default-agentic-enabled && 角色 is_agentic 列值（开关关 = 全体角色
+     * 回到非 agentic 现状，迁移 044 存量全开的配置回退路径）。注册集合 = 默认集
+     * （search_knowledge / run_workflow / ask_user）∩ tool_policy 策略 ∩ 可用性——
+     * ask_user 无外部依赖恒可用，因此上下文构造条件收敛为“筛选后的注册集非空”（策略
+     * 把内置工具全部拒绝时才回到非 agentic 行为：不构造上下文、不注册工具）。挂起接线：
+     * 上下文挂 suspensionSink 回调（检查点落库闭包），恢复轮继承检查点的已耗挂起次数
+     * 与审批批准凭证。混合检索——现有预检索（scope-gate 判定相关时的自动首检索）完全
+     * 不动，工具是增量能力；agentic 未生效时不构造任何对象、不触发工作流可见性查询，
+     * 行为与存量逐字节等价。审批门：tool_policy 的 approvalRequiredMcpTools 写入请求
+     * 参数，由 AbstractLLMService.discoverRequestTools 对命中的 MCP 执行器包审批装饰器；
+     * 仅 agentic 生效时接线，集合为空不设置（无审批门，行为不变）
+     * <p>
+     * Agentic branch assembly (executeChat step 11.5): effective = fallback
+     * switch zhimesh.agent.default-agentic-enabled AND the character's
+     * is_agentic column (switch off = every character back to non-agentic
+     * legacy, the rollback path for migration 044's all-on stock).
+     * Registration set = default set (search_knowledge / run_workflow /
+     * ask_user) ∩ tool_policy ∩ availability — ask_user has no external
+     * dependency and is always available, so the context-building condition
+     * collapses to "the filtered registration set is non-empty" (only a
+     * policy denying every builtin tool falls back to non-agentic behavior:
+     * no context, no tools). Suspension wiring: the context carries a
+     * suspensionSink callback (the checkpoint-persistence closure); a resumed
+     * round inherits the checkpoint's consumed suspension count and the
+     * approval grant. Hybrid retrieval — the existing pre-retrieval (the auto
+     * first search when the scope gate deems it relevant) is untouched, tools
+     * are additive; when agentic is not effective nothing is constructed, no
+     * workflow-visibility query fires, byte-for-byte legacy behavior.
+     * Approval gate: the tool_policy's approvalRequiredMcpTools ride the
+     * request params, and AbstractLLMService.discoverRequestTools wraps the
+     * hit MCP executors with the approval decorator; wired only while agentic
+     * is effective, and an empty set leaves the field unset (no gate,
+     * unchanged behavior). Returns the assembled request-scoped ToolContext
+     * (null = agentic not effective) — the completion callback still needs it
+     * for tool-evidence merging, trace/meta emission.
+     */
+    private ToolContext assembleAgenticBranch(ChatContext chatContext, Character character, User user, AskReq askReq,
+                                              List<KbInfoResp> filteredKb, AbstractLLMService llmService,
+                                              AgentPendingCheckpoint resumeCheckpoint, boolean resumed,
+                                              SseAskParam sseAskParam, ChatModelRequest chatRequestParams) {
+        boolean agenticEffective = resolveAgentSettings().isDefaultAgenticEnabled()
+                && Boolean.TRUE.equals(character.getIsAgentic());
+        CharacterToolPolicy toolPolicy = CharacterToolPolicy.fromCharacter(character);
+        List<RunWorkflowTool.WorkflowOption> runnableWorkflows =
+                agenticEffective ? listRunnableWorkflowOptions(user) : List.of();
+        List<ToolExecutor> builtinTools = agenticEffective
+                ? buildBuiltinTools(filteredKb, runnableWorkflows, toolPolicy)
+                : List.of();
+        ToolContext toolContext = CollectionUtils.isNotEmpty(builtinTools)
+                ? buildAgenticToolContext(character, user, filteredKb, llmService, chatContext.shortTermMemoryId())
+                : null;
+        if (null != toolContext) {
+            if (resumed && null != resumeCheckpoint.getSuspensionCount()) {
+                // 恢复轮继承已耗挂起次数：max-suspensions 预算跨挂起累计
+                // A resumed round inherits the consumed suspension count: the
+                // max-suspensions budget accumulates across suspensions
+                toolContext.setSuspensionCount(resumeCheckpoint.getSuspensionCount());
+            }
+            if (resumed && StringUtils.isNotBlank(resumeCheckpoint.getApprovalGrant())) {
+                // 结构化拒绝标记（T6 拒绝按钮契约）：恢复答复以固定前缀开头 = 用户明确
+                // 拒绝，跳过凭证装配（fail-closed 硬保证——模型违背拒绝重调同工具同参数
+                // 也无凭证可匹配，照常挂起转审批）；自由文本拒绝不带前缀，维持设计明文
+                // 的「模型服从」口径
+                // The structured rejection marker (the T6 reject-button
+                // contract): a resume answer starting with the fixed prefix is
+                // an explicit user refusal, so the grant is NOT armed (a hard
+                // fail-closed guarantee — a re-invocation defying the refusal
+                // finds no grant to match and suspends for approval again); a
+                // free-text rejection carries no prefix and keeps the
+                // design-documented model-obedience posture
+                if (StringUtils.startsWith(askReq.getPrompt(), ApprovalRequiredDecorator.REJECTION_MARKER_PREFIX)) {
+                    log.info("Resume answer carries the approval rejection marker, approval grant not armed, checkpointId:{}",
+                            resumeCheckpoint.getId());
+                } else {
+                    // 恢复轮读回审批批准凭证（仅 MCP_APPROVAL 检查点携带）：装进请求级上下文，
+                    // 需审批 MCP 装饰器据此放行「同工具同参数」的真实调用；凭证随上下文存活
+                    // = 仅本恢复链有效（新一轮普通请求装配全新上下文、无凭证，须重新审批）。
+                    // 损坏 JSON fail-safe 归 null = 未批准（装饰器照常拦截），绝不因凭证问题
+                    // 拒绝恢复
+                    // The resumed round reads the approval grant back (carried by
+                    // MCP_APPROVAL checkpoints only) into the request-scoped
+                    // context, on which the approval-required MCP decorator lets
+                    // the "same tool, same arguments" real invocation through; the
+                    // grant lives as long as the context = valid only within this
+                    // resume chain (a fresh ordinary request assembles a fresh
+                    // context with no grant and must re-approve). Corrupt JSON
+                    // fails safe to null = not approved (the decorator keeps
+                    // gating); a grant problem never rejects the resume
+                    toolContext.setApprovalGrant(ApprovalGrant.fromJson(resumeCheckpoint.getApprovalGrant()));
+                }
+            }
+            wireSuspensionSink(toolContext, chatContext, character, user);
+            chatRequestParams.setBuiltinTools(builtinTools);
+            sseAskParam.setToolContext(toolContext);
+            log.info("Agentic mode enabled, characterId:{}, kbCount:{}, runnableWorkflowCount:{}, builtinToolNames:{}, resumed:{}",
+                    character.getId(), filteredKb.size(), runnableWorkflows.size(),
+                    builtinTools.stream().map(tool -> tool.spec().name()).toList(), resumed);
+        }
+        if (agenticEffective && CollectionUtils.isNotEmpty(toolPolicy.getApprovalRequiredMcpTools())) {
+            chatRequestParams.setApprovalRequiredTools(toolPolicy.getApprovalRequiredMcpTools());
+        }
+        return toolContext;
+    }
+
+    /**
      * 按可用性与角色工具策略组装内置工具：filteredKb 非空 → search_knowledge；
      * 可调用工作流非空 → run_workflow（内部超时取 tool-timeout-ms - 5000，先于外层
      * guardrail 返回）；ask_user 与 request_human_approval 无外部依赖恒注册（挂起内核
@@ -926,6 +954,45 @@ public class CharacterChatService {
             builtinTools.add(new RequestHumanApprovalTool());
         }
         return builtinTools;
+    }
+
+    /**
+     * 挂起恢复前置检查（executeChat 第 2.5 步）：会话存在 ACTIVE 挂起检查点时本条
+     * 消息按恢复轮处理。regenerate 重问（用户对挂起问题换问法）或检查点角色与当前
+     * 会话角色不符（角色被切换/重建）→ 作废检查点（SUPERSEDED）按正常轮继续；
+     * 正常恢复返回检查点，待第 6.5 步 tryResumeFromCheckpoint 装配。必须在额度检查
+     * （第 6 步）之前作废——重问意味着用户放弃挂起问题，晚作废会让额度不足的错误
+     * 抢先挡住本应发生的作废
+     * <p>
+     * Suspension-resume pre-check (executeChat step 2.5): when the conversation
+     * holds an ACTIVE pending checkpoint this message is treated as the resumed
+     * round. A regenerate re-ask (the user rephrasing the suspended question)
+     * or a checkpoint character mismatching the current conversation character
+     * (character switched/rebuilt) invalidates the checkpoint (SUPERSEDED) and
+     * continues as a normal round; an ordinary resume returns the checkpoint
+     * for assembly at step 6.5 (tryResumeFromCheckpoint). Invalidation must
+     * happen before the quota check (step 6) — a re-ask means the user
+     * abandoned the suspended question, and a late invalidation would let the
+     * quota error preempt the supersession that should have happened.
+     */
+    private AgentPendingCheckpoint resolveResumeCheckpoint(ChatContext chatContext, Character character, AskReq askReq) {
+        if (null == chatContext.conversation()) {
+            return null;
+        }
+        AgentPendingCheckpoint activeCheckpoint =
+                pendingCheckpointService.findActive(chatContext.conversation().getId());
+        if (null == activeCheckpoint) {
+            return null;
+        }
+        boolean regenerateReAsk = StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid());
+        boolean characterMismatch = !Objects.equals(activeCheckpoint.getCharacterId(), character.getId());
+        if (regenerateReAsk || characterMismatch) {
+            pendingCheckpointService.markSuperseded(activeCheckpoint.getId());
+            log.info("Pending checkpoint superseded before resume, checkpointId:{}, conversationId:{}, regenerateReAsk:{}, characterMismatch:{}",
+                    activeCheckpoint.getId(), chatContext.conversation().getId(), regenerateReAsk, characterMismatch);
+            return null;
+        }
+        return activeCheckpoint;
     }
 
     /**
