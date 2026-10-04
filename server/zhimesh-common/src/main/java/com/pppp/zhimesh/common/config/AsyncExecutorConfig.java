@@ -39,6 +39,25 @@ public class AsyncExecutorConfig {
         return executor("rag-retrieval-", settings);
     }
 
+    /**
+     * Outer-level executor for the retrieval CHANNELS (memory channel / KB channel)
+     * that fan out their leaf vector/graph/BM25 routes on ragRetrievalExecutor.
+     * Channels must not share ragRetrievalExecutor: each channel task blocks
+     * waiting for its own route futures, so an outer task on the same pool could
+     * occupy a worker while waiting for its queued children (starvation).
+     * Channel tasks mostly block, so queue capacity is doubled relative to the
+     * route pool; rejected submissions fall back to sequential retrieval.
+     */
+    @Bean(name = "ragChannelExecutor")
+    public AsyncTaskExecutor ragChannelExecutor(ZhiMeshProperties properties) {
+        ZhiMeshProperties.Executor settings = new ZhiMeshProperties.Executor();
+        int concurrency = Math.max(1, properties.getRetrieval().getConcurrency());
+        settings.setCorePoolSize(concurrency);
+        settings.setMaxPoolSize(concurrency);
+        settings.setQueueCapacity(Math.max(0, properties.getRetrieval().getQueueCapacity()) * 2);
+        return executor("rag-channel-", settings);
+    }
+
     @Bean(name = "backgroundExecutor")
     public AsyncTaskExecutor backgroundExecutor(ZhiMeshProperties properties) {
         return executor("background-", properties.getAsync().getBackground());

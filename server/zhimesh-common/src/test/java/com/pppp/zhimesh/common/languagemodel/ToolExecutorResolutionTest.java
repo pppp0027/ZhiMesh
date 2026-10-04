@@ -55,14 +55,15 @@ import static org.mockito.Mockito.when;
 
 /**
  * T2 统一 ToolExecutor 抽象的行为验证：混合注册按名解析、重名时内置优先、
- * 未知工具名兜底、超时/截断保护默认只作用于内置工具（mcp-guardrails-enabled
- * 开启后 MCP 工具一并纳入）、循环上限走配置。
+ * 未知工具名兜底、超时/截断保护默认同时作用于内置与 MCP 工具
+ * （mcp-guardrails-enabled=false 为回退位：MCP 工具直调不设防）、循环上限走配置。
  * <p>
  * Behavioral verification for the unified ToolExecutor abstraction: by-name
  * resolution across mixed registrations, builtin-wins name conflicts, the
- * unknown-tool fallback, guardrails (timeout/truncation) applied to builtin
- * tools by default (MCP tools join once mcp-guardrails-enabled is on), and
- * the configuration-driven loop limit.
+ * unknown-tool fallback, guardrails (timeout/truncation) covering builtin and
+ * MCP tools by default (mcp-guardrails-enabled=false is the rollback position:
+ * MCP tools run direct and unprotected), and the configuration-driven loop
+ * limit.
  */
 class ToolExecutorResolutionTest {
 
@@ -225,13 +226,14 @@ class ToolExecutorResolutionTest {
     }
 
     @Test
-    void mcpToolResultIsNeitherTruncatedNorAffectedByBuiltinTimeout() {
-        // 截断阈值远小于结果长度且超时极短：MCP 工具必须原样返回，证明默认（开关关闭）时
-        // 保护只作用于内置工具
-        // Truncation threshold far below the result length and a tiny timeout:
-        // the MCP tool must return verbatim, proving guardrails apply to builtin
-        // tools only while the switch is off (default)
+    void mcpToolOptsOutOfTruncationAndTimeoutWhenSwitchDisabled() {
+        // 截断阈值远小于结果长度且超时极短，开关显式关闭（回退位）：MCP 工具必须
+        // 原样返回，证明此时保护只作用于内置工具
+        // Truncation threshold far below the result length, a tiny timeout, and
+        // the switch explicitly off (rollback position): the MCP tool must return
+        // verbatim, proving guardrails apply to builtin tools only there
         stubAgentSettings(agent -> {
+            agent.setMcpGuardrailsEnabled(false);
             agent.setToolResultMaxChars(10);
             agent.setToolTimeoutMs(1);
         });
@@ -252,12 +254,14 @@ class ToolExecutorResolutionTest {
     }
 
     @Test
-    void mcpToolKeepsDirectCallWhenGuardrailsDisabledByDefault() throws Exception {
-        // 开关保持默认 false：MCP 工具直调——执行慢于超时阈值也不被打断，超长结果原样返回
-        // Switch left at its default false: the MCP tool is invoked directly — an
-        // execution slower than the timeout threshold is not interrupted and an
-        // oversized result comes back verbatim
+    void mcpToolKeepsDirectCallWhenGuardrailsDisabled() throws Exception {
+        // 开关显式关闭（回退位）：MCP 工具直调——执行慢于超时阈值也不被打断，
+        // 超长结果原样返回
+        // Switch explicitly off (rollback position): the MCP tool is invoked
+        // directly — an execution slower than the timeout threshold is not
+        // interrupted and an oversized result comes back verbatim
         stubAgentSettings(agent -> {
+            agent.setMcpGuardrailsEnabled(false);
             agent.setToolTimeoutMs(50);
             agent.setToolResultMaxChars(10);
         });
@@ -458,6 +462,8 @@ class ToolExecutorResolutionTest {
         assertThat(defaults.getMaxToolIterations()).isEqualTo(8);
         assertThat(defaults.getToolTimeoutMs()).isEqualTo(60000);
         assertThat(defaults.getToolResultMaxChars()).isEqualTo(4000);
+        assertThat(defaults.isMcpGuardrailsEnabled()).isTrue();
+        assertThat(defaults.getMaxToolFailuresPerTool()).isEqualTo(3);
 
         assertThat(new ZhiMeshProperties().getAgent().getMaxToolIterations()).isEqualTo(8);
 

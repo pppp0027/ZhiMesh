@@ -468,6 +468,15 @@ public class CharacterChatService {
         }
 
         String questionUuid = StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid()) ? askReq.getRegenerateQuestionUuid() : UuidUtil.createShort();
+        // 9.5 检索结束即切换到"回答中"：覆盖 MCP 装配与模型首 token 之间的静默段
+        // （可达数秒），此前前端会一直停留在"正在检索知识库"造成卡住假象；前端
+        // state.responding 文案已就绪，通用 STATE_CHANGED 渲染直接消费
+        // 9.5 Switch to "responding" as soon as retrieval ends: this covers the
+        // silent window (seconds) of MCP assembly plus model TTFT, during which
+        // the frontend otherwise keeps showing a stale "searching knowledge"
+        // state. The state.responding i18n text already exists on the frontend
+        // and the generic STATE_CHANGED rendering consumes it directly
+        SseManager.sendPartial(sseUuid, SSEEventName.STATE_CHANGED, SSEEventData.STATE_RESPONDING);
         // 10.构造本次SSE调用上下文
         SseAskParam sseAskParam = new SseAskParam();
         sseAskParam.setUser(user);

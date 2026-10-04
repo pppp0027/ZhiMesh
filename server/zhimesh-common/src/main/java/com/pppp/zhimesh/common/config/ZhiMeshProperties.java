@@ -341,6 +341,18 @@ public class ZhiMeshProperties {
             private int documentFrequencyFilterMinDocuments = 20;
             /** Stored with each index build so analyzer changes force a rebuild. */
             private String analyzerVersion = "cjk-bigram-trigram-ident-v1";
+            /**
+             * 就绪门控本地缓存 TTL。该门控在每个聊天请求的关键路径上执行，
+             * 不缓存时每次都要一趟远程 SQL（跨境/内网 WAN 下百毫秒级）；
+             * 索引构建低频，短 TTL 的两个陈旧方向都安全：未就绪→少走一路
+             * BM25（VECTOR 仍可用）；已就绪但索引失效→检索器报错被通道
+             * 失败兜底吞掉。0 或负数 = 关闭缓存（每次直查）。
+             * Local cache TTL for the readiness gate evaluated on every chat
+             * request's critical path; without it each turn pays one remote SQL
+             * round trip. Both staleness directions are safe under a short TTL.
+             * Zero or negative disables caching (query every time).
+             */
+            private long readinessCacheTtlMs = 30_000L;
         }
     }
 
@@ -348,6 +360,21 @@ public class ZhiMeshProperties {
     public static class IntentRouting {
         /** Master switch for production intent routing. */
         private boolean enabled = true;
+        /**
+         * 意图不明确（识别弃权，或有分数但未激活任何路由能力而兜底）时的回退宽度。
+         * false（默认）= 窄回退：只走最便宜最稳的 VECTOR；BM25 仅在
+         * EXACT_IDENTIFIER 明确信号时附加；GRAPH 只在确定 RELATIONSHIP 意图
+         * （GRAPH_REQUIRED 激活）时执行。GRAPH 锚点未命中会触发远程 LLM 实体
+         * 抽取（秒级）且实测普遍返回空，不应进入"不确定"的默认套餐。
+         * true = 旧版宽回退（V+G+B 有什么查什么），仅供回滚对照。
+         * Fallback width when the intent is ambiguous (recognizer abstained, or
+         * scores present but no routing capability activated). false (default)
+         * is the narrow fallback: VECTOR only — the cheapest safe route; BM25
+         * joins only on an explicit EXACT_IDENTIFIER signal and GRAPH only on a
+         * confident RELATIONSHIP intent. true restores the legacy wide
+         * baseline for rollback comparison.
+         */
+        private boolean graphOnUncertain = false;
         /** Keep the trained three-head classifier available for a later release, but off by default. */
         private boolean classifierEnabled = false;
         /** Versioned multi-label routing classifier artifact. */
@@ -456,7 +483,7 @@ public class ZhiMeshProperties {
      * LLM 工具调用循环配置。
      * <p>
      * LLM tool-calling loop settings. Guardrails (timeout/truncation) apply to
-     * builtin tools; MCP tools opt in via mcpGuardrailsEnabled (default off).
+     * builtin tools; MCP tools opt in via mcpGuardrailsEnabled (default on).
      */
     @Data
     public static class Agent {
@@ -466,10 +493,27 @@ public class ZhiMeshProperties {
         private long toolTimeoutMs = 60000;
         /** Maximum characters of a builtin tool result injected back into the model. */
         private int toolResultMaxChars = 4000;
+        /**
+         * 同一请求内同一工具的连续失败熔断阈值：达到后本请求不再执行该工具，
+         * 熔断说明作为工具结果回喂模型（成功一次即清零）。防止模型每轮重试
+         * 一个已死的外部工具（实测 fetch 连续失败 13 次仍被重试）。0=关闭。
+         * Consecutive-failure breaker per tool within one request: at the cap
+         * the tool is no longer executed and a breaker notice is fed back to
+         * the model instead (one success resets the count). Zero disables it.
+         */
+        private int maxToolFailuresPerTool = 3;
         /** Global fallback for the agentic switch: effective agentic = this flag AND character.is_agentic; false restores the pre-agentic single-shot chat for everyone (rollback path for migration 044). */
         private boolean defaultAgenticEnabled = true;
-        /** Whether MCP tool calls join the builtin timeout/truncation guardrails; false keeps the legacy direct-call behavior. Wired since the T7 MCP-guardrails switch: consumed by AbstractLLMService.executeToolWithGuardrails. */
-        private boolean mcpGuardrailsEnabled = false;
+        /**
+         * MCP 工具是否纳入超时/截断护栏。默认 true：MCP fetch 这类外呼工具
+         * 不设超时会拖满传输层自身上限，抓回的大网页全文回喂也会撑爆输入
+         * token。false = 旧版直连行为（回滚开关）。
+         * Whether MCP tool calls join the timeout/truncation guardrails.
+         * Default true: without a cap an MCP fetch runs to the transport's own
+         * limit and a large fetched page re-enters the model untruncated.
+         * false keeps the legacy direct-call behavior (rollback switch).
+         */
+        private boolean mcpGuardrailsEnabled = true;
         /** Lazy TTL (hours) for pending suspension checkpoints; expiry is judged on read, without a scheduled job. */
         private int pendingTtlHours = 24;
         /** Maximum suspensions (ask_user / approval) within one tool chain before the model must wrap up instead of suspending again. Wired since the T4 suspend/resume kernel: consumed via ToolContext.suspensionCount, inherited across resumes. */

@@ -45,7 +45,7 @@ class IntentQueryEmbeddingReuseTest {
                 Set.of(RoutingCapability.VECTOR_SUFFICIENT)));
         IntentRoutingService routing = new IntentRoutingService(
                 classifier, mock(PrototypeRouteIntentRecognizer.class),
-                new IntentRoutingPolicy(new RetrieverCapabilityRegistry()), properties);
+                new IntentRoutingPolicy(new RetrieverCapabilityRegistry(), new ZhiMeshProperties()), properties);
         RetrievalPlan plan = routing.route(query.text(), query.embedding(), null);
 
         EmbeddingStore<TextSegment> store = mock(EmbeddingStore.class);

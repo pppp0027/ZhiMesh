@@ -2,9 +2,12 @@ package com.pppp.zhimesh.common.config.embeddingstore;
 
 import com.pppp.zhimesh.common.config.ZhiMeshProperties;
 import com.pppp.zhimesh.common.util.ZhiMeshPropertiesUtil;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore;
+import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -16,6 +19,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.context.annotation.Primary;
 
+import javax.sql.DataSource;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -104,6 +108,52 @@ public class PgVectorEmbeddingStoreConfig {
         return createEmbeddingStore(tableName, pair.getRight());
     }
 
+    /**
+     * pgvector 专用共享连接池。此前 Builder 的 host/port 形式内部走
+     * PGSimpleDataSource——每次查询新建一条 TCP 连接，dev 库在 Tailscale
+     * WAN（单 RTT ~60ms）上每次向量查询都多付一整轮握手；三个向量库
+     * （KB/语义/情景）共享一个 Hikari 池。
+     * 注意：故意不注册为 Spring Bean——容器里出现任何 DataSource Bean 都
+     * 会让 Boot 的主数据源自动配置退避，顶掉 MyBatis 的主库；改由本配置
+     * 类持有并在 @PreDestroy 关闭。
+     * Shared Hikari pool for the three vector stores. The host/port builder
+     * path uses PGSimpleDataSource internally, which opens a fresh TCP
+     * connection per query (a full WAN handshake each time on Tailscale).
+     * Deliberately NOT a Spring bean: any DataSource bean would back off the
+     * Boot auto-configured primary datasource.
+     */
+    private volatile HikariDataSource vectorDataSource;
+
+    @PreDestroy
+    void closeVectorDataSource() {
+        if (null != vectorDataSource) {
+            vectorDataSource.close();
+        }
+    }
+
+    private DataSource vectorDataSource() {
+        HikariDataSource existing = vectorDataSource;
+        if (null != existing) {
+            return existing;
+        }
+        synchronized (this) {
+            if (null == vectorDataSource) {
+                HikariConfig config = new HikariConfig();
+                config.setPoolName("pgvector-store");
+                config.setJdbcUrl(dataBaseUrl);
+                config.setUsername(dataBaseUserName);
+                config.setPassword(dataBasePassword);
+                // 检索路由并发（dev 8）以内即可；闲时保持 2 条，长间隔空闲查询不冷启动
+                config.setMaximumPoolSize(8);
+                config.setMinimumIdle(2);
+                // WAN 上空闲连接会被中间设备掐断：30s keepalive 与主池策略一致
+                config.setKeepaliveTime(30_000);
+                vectorDataSource = new HikariDataSource(config);
+            }
+            return vectorDataSource;
+        }
+    }
+
     private EmbeddingStore<TextSegment> createEmbeddingStore(String tableName, int dimension) {
         // 正则表达式匹配
         String regex = "jdbc:postgresql://([^:/]+):(\\d+)/(\\w+).*";
@@ -125,12 +175,8 @@ public class PgVectorEmbeddingStoreConfig {
             throw new RuntimeException("parse url error");
         }
         log.info("Creating PgVectorEmbeddingStore with table name:{},dimension:{}", tableName, dimension);
-        return PgVectorEmbeddingStore.builder()
-                .host(host)
-                .port(Integer.parseInt(port))
-                .database(databaseName)
-                .user(dataBaseUserName)
-                .password(dataBasePassword)
+        return PgVectorEmbeddingStore.datasourceBuilder()
+                .datasource(vectorDataSource())
                 .dimension(dimension)
                 .createTable(true)
                 .dropTableFirst(false)

@@ -9,6 +9,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 请求级工具执行上下文：一次聊天请求构造一次，贯穿所有递归工具调用轮次，
@@ -33,6 +35,21 @@ public class ToolContext {
 
     /** 本次请求的工具调用轨迹收集器 / Collector of tool-call traces for this request */
     private List<ToolCallTrace> toolTraces;
+
+    /**
+     * 同一请求内每工具连续失败计数（成功清零），达到
+     * zhimesh.agent.max-tool-failures-per-tool 后该工具在本请求内熔断：
+     * 不再真正执行，熔断说明作为工具结果回喂模型。防止模型每轮重试
+     * 一个已死的外部工具（实测 fetch 连续失败 13 次仍被重试）。
+     * <p>
+     * Per-tool consecutive-failure counts within this request (reset on
+     * success); at zhimesh.agent.max-tool-failures-per-tool the tool is
+     * disabled for the rest of the request and a breaker notice is fed to
+     * the model instead of a real execution. Stops the model from retrying
+     * a dead external tool every round.
+     */
+    @Builder.Default
+    private Map<String, Integer> toolFailureCounts = new ConcurrentHashMap<>();
 
     /**
      * RAG 检索上下文（鉴权后的知识库范围 + 检索依赖），由聊天入口按请求构造；

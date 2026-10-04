@@ -75,9 +75,10 @@ zhimesh:
     # max-tool-iterations: 单次请求内工具循环轮数上限，达到后强制一次无工具收尾轮
     # tool-timeout-ms: 内置工具单次执行超时；超时按失败结果回给模型继续对话
     # tool-result-max-chars: 内置工具结果注入模型前的截断长度
+    # max-tool-failures-per-tool: 同一请求内同一工具连续失败熔断阈值（成功清零），0=关闭
     # default-agentic-enabled: 全量 agentic 的兜底开关；false 时全体角色回到改造前的
     #                          单次问答（044 存量全开的回退路径，不回滚数据）
-    # mcp-guardrails-enabled: MCP 工具是否纳入超时/截断防护；默认关闭，灰度后再开
+    # mcp-guardrails-enabled: MCP 工具是否纳入超时/截断防护；默认开启，false=旧版直连（回滚）
     # pending-ttl-hours: 挂起检查点惰性过期时长（小时），读取时判定，无定时任务
     # max-suspensions: 同一工具链内 ask_user/审批挂起次数上限，达到后模型优雅收尾
     # <p>
@@ -86,16 +87,18 @@ zhimesh:
     # tool-timeout-ms: per-execution timeout for builtin tools; a timeout is fed back
     #                  to the model as a failure result instead of breaking the chat
     # tool-result-max-chars: truncation length before a builtin tool result re-enters the model
+    # max-tool-failures-per-tool: consecutive-failure breaker per tool within one request (reset on success); 0 disables
     # default-agentic-enabled: global fallback switch; false restores the pre-agentic
     #                          single-shot chat for everyone (rollback path for 044)
-    # mcp-guardrails-enabled: whether MCP tools join the timeout/truncation guardrails (off until rollout)
+    # mcp-guardrails-enabled: whether MCP tools join the timeout/truncation guardrails (default on; false = legacy direct call)
     # pending-ttl-hours: lazy TTL in hours for pending suspension checkpoints
     # max-suspensions: ask_user/approval suspensions allowed within one tool chain
     max-tool-iterations: ${ZHIMESH_AGENT_MAX_TOOL_ITERATIONS:8}
     tool-timeout-ms: ${ZHIMESH_AGENT_TOOL_TIMEOUT_MS:60000}
     tool-result-max-chars: ${ZHIMESH_AGENT_TOOL_RESULT_MAX_CHARS:4000}
+    max-tool-failures-per-tool: ${ZHIMESH_AGENT_MAX_TOOL_FAILURES_PER_TOOL:3}
     default-agentic-enabled: ${ZHIMESH_AGENT_DEFAULT_AGENTIC_ENABLED:true}
-    mcp-guardrails-enabled: ${ZHIMESH_AGENT_MCP_GUARDRAILS_ENABLED:false}
+    mcp-guardrails-enabled: ${ZHIMESH_AGENT_MCP_GUARDRAILS_ENABLED:true}
     pending-ttl-hours: ${ZHIMESH_AGENT_PENDING_TTL_HOURS:24}
     max-suspensions: ${ZHIMESH_AGENT_MAX_SUSPENSIONS:3}
   indexing:
@@ -212,6 +215,9 @@ zhimesh:
     enabled: ${ZHIMESH_INTENT_ROUTING_ENABLED:true}
     # Keep the trained three-head classifier for a later version; do not enable yet.
     classifier-enabled: ${ZHIMESH_INTENT_ROUTING_CLASSIFIER_ENABLED:false}
+    # Fallback width when the intent is ambiguous: false (default) = narrow
+    # VECTOR-only fallback; true = legacy wide V+G+B baseline (rollback).
+    graph-on-uncertain: ${ZHIMESH_INTENT_ROUTING_GRAPH_ON_UNCERTAIN:false}
     classifier-resource: ${ZHIMESH_INTENT_ROUTING_CLASSIFIER_RESOURCE:classpath:rag/retrieval-router-v1.json}
     classifier-sha256: ${ZHIMESH_INTENT_ROUTING_CLASSIFIER_SHA256:}
     route-prototype-resource: ${ZHIMESH_INTENT_ROUTING_ROUTE_PROTOTYPE_RESOURCE:classpath:rag/retrieval-route-prototypes.zh-CN.json}

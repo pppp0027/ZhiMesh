@@ -33,8 +33,10 @@ class ZhiMeshPropertiesDefaultsTest {
 
     /**
      * Agent collaboration defaults (migration 044): agentic stays the product
-     * default with a config-only rollback switch, MCP guardrails stay off until
-     * rollout, and the suspension budgets keep their pinned values.
+     * default with a config-only rollback switch, MCP guardrails are on by
+     * default (fetch-style external calls need a timeout and result cap), the
+     * per-tool consecutive-failure breaker is armed at 3, and the suspension
+     * budgets keep their pinned values.
      */
     @Test
     void agentCollaborationDefaults() {
@@ -42,8 +44,9 @@ class ZhiMeshPropertiesDefaultsTest {
         assertEquals(8, agent.getMaxToolIterations());
         assertEquals(60000L, agent.getToolTimeoutMs());
         assertEquals(4000, agent.getToolResultMaxChars());
+        assertEquals(3, agent.getMaxToolFailuresPerTool());
         assertTrue(agent.isDefaultAgenticEnabled());
-        assertFalse(agent.isMcpGuardrailsEnabled());
+        assertTrue(agent.isMcpGuardrailsEnabled());
         assertEquals(24, agent.getPendingTtlHours());
         assertEquals(3, agent.getMaxSuspensions());
     }

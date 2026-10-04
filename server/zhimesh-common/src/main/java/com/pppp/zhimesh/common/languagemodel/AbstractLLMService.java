@@ -812,22 +812,27 @@ public abstract class AbstractLLMService extends CommonModelService {
             //滑动窗口算法限制消息长度
             // Sliding window algorithm to limit message length
             ShortTermMemoryService shortTermMemoryService = SpringUtil.getBean(ShortTermMemoryService.class);
+
+            //处理重复的UserMessage（上轮重试/挂起遗留的待答消息）：整表一次
+            //读出裁掉尾部，至多一次整表写回。此前是 memory.clear() 后逐条
+            // re-add——TokenWindowChatMemory 每次 add 都是一次整列表 SET，在
+            // WAN Redis（单 RTT ~60ms）上 N 条历史就是 N+1 次额外往返。
+            // Handle duplicate UserMessage (a leftover pending message from a
+            // previous round): trim with one read and at most one whole-list
+            // write, instead of memory.clear() plus N re-adds, each of which is
+            // a full-list SET on the WAN Redis (~60ms per round trip).
+            List<ChatMessage> existingMessages = shortTermMemoryService.getMessages(memoryId);
+            if (!existingMessages.isEmpty()
+                    && existingMessages.get(existingMessages.size() - 1) instanceof UserMessage) {
+                shortTermMemoryService.updateMessages(memoryId,
+                        existingMessages.subList(0, existingMessages.size() - 1));
+            }
+
             TokenWindowChatMemory memory = ShortTermMemoryWindow.open(
                     shortTermMemoryService, memoryId,
                     tokenBudget.messageWindowTokens(), tokenCountEstimator);
             if (StringUtils.isNotBlank(chatModelRequest.getSystemMessage())) {
                 memory.add(SystemMessage.from(chatModelRequest.getSystemMessage()));
-            }
-
-            //处理重复的UserMessage
-            // Handle duplicate UserMessage
-            if (!memory.messages().isEmpty()) {
-                ChatMessage lastMessage = memory.messages().get(memory.messages().size() - 1);
-                if (lastMessage instanceof UserMessage) {
-                    List<ChatMessage> list = memory.messages().subList(0, memory.messages().size() - 1);
-                    memory.clear();
-                    list.forEach(memory::add);
-                }
             }
 
             memory.add(UserMessage.from(userContents));
@@ -1128,6 +1133,26 @@ public abstract class AbstractLLMService extends CommonModelService {
                 executeCollaborativeRequest(req, executor, toolContext, sseUuid, agentSettings, toolExecutionMessages);
                 continue;
             }
+            // 连续失败熔断：达到 max-tool-failures-per-tool 后本请求不再真正执行该工具，
+            // 熔断说明回喂模型——否则模型会每轮重试一个已死的外部工具直到轮数上限
+            // Consecutive-failure breaker: at max-tool-failures-per-tool the tool
+            // is no longer executed in this request and the breaker notice is fed
+            // back to the model — otherwise it retries a dead external tool every
+            // round until the iteration cap
+            int maxToolFailures = agentSettings.getMaxToolFailuresPerTool();
+            Integer priorFailures = null == toolContext ? null
+                    : toolContext.getToolFailureCounts().get(req.name());
+            if (maxToolFailures > 0 && null != priorFailures && priorFailures >= maxToolFailures) {
+                String breakerNotice = "Tool " + req.name() + " failed " + priorFailures
+                        + " consecutive times in this request and is now disabled for it;"
+                        + " answer from the information already collected";
+                log.warn("Tool disabled by consecutive-failure breaker, toolName:{}, failures:{}",
+                        req.name(), priorFailures);
+                SseManager.sendToolCall(sseUuid, req.name(), 0L, false, req.arguments(), breakerNotice);
+                toolExecutionMessages.add(ToolExecutionResultMessage.from(req, breakerNotice));
+                recordToolCallTrace(toolContext, req, 0L, false, breakerNotice);
+                continue;
+            }
             // 执行前先发 TOOL_STARTED：前端实时点亮该工具的 running 步骤（与下方 TOOL_CALL
             // 完成事件配对）。「No Tool executor found」分支不发——没有可点亮的真实执行
             // Send TOOL_STARTED before execution so the frontend lights up the
@@ -1141,6 +1166,9 @@ public abstract class AbstractLLMService extends CommonModelService {
                 long toolDuration = System.currentTimeMillis() - toolStart;
                 log.info("Tool execution completed, toolName:{}, resultLength:{}, duration:{}ms",
                         req.name(), result == null ? 0 : result.length(), toolDuration);
+                if (null != toolContext) {
+                    toolContext.getToolFailureCounts().remove(req.name());
+                }
                 SseManager.sendToolCall(sseUuid, req.name(), toolDuration, true, req.arguments(), result);
                 toolExecutionMessages.add(ToolExecutionResultMessage.from(req, result));
                 recordToolCallTrace(toolContext, req, toolDuration, true, result);
@@ -1148,6 +1176,9 @@ public abstract class AbstractLLMService extends CommonModelService {
                 long toolDuration = System.currentTimeMillis() - toolStart;
                 log.warn("Tool execution failed, toolName:{}, duration:{}ms, errorType:{}",
                         req.name(), toolDuration, e.getClass().getSimpleName());
+                if (null != toolContext) {
+                    toolContext.getToolFailureCounts().merge(req.name(), 1, Integer::sum);
+                }
                 SseManager.sendToolCall(sseUuid, req.name(), toolDuration, false, req.arguments(), e.getMessage());
                 toolExecutionMessages.add(ToolExecutionResultMessage.from(req, e.getMessage()));
                 recordToolCallTrace(toolContext, req, toolDuration, false, e.getMessage());

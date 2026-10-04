@@ -50,13 +50,21 @@ import dev.langchain4j.store.embedding.filter.logical.And;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
+import org.springframework.core.task.AsyncTaskExecutor;
 
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.MetadataKey.CHARACTER_ID;
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.MetadataKey.KB_UUID;
@@ -237,7 +245,14 @@ public class CharacterChatHelper {
                     .reranker(reranker)
                     .rerankTopN(memoryMaxResults)
                     .relevanceGateEnabled(true)
-                    .rerankSingleCandidate(true)
+                    // 单候选不再强制远程 rerank（跨境 ~600ms 纯时延）：记忆候选已过本通道
+                    // minScore 向量门，对 1 个候选 rerank 无排序意义；KB 通道保持强制
+                    // （rerank 分数是它唯一的相关性过滤门）
+                    // A single candidate skips the forced remote rerank (~600ms of pure
+                    // cross-border latency): memory candidates already passed this
+                    // channel's minScore vector gate and reranking one candidate has no
+                    // ordering value; the KB channel keeps forcing (its rerank score is
+                    // that channel's only relevance gate)
                     .build();
             retrieverWrappers.addAll(new CompositeRag(
                     ZhiMeshConstant.RetrieveContentFrom.CHARACTER_MEMORY).createRetriever(memoryRetrieveParam));
@@ -256,7 +271,14 @@ public class CharacterChatHelper {
                     .reranker(reranker)
                     .rerankTopN(memoryMaxResults)
                     .relevanceGateEnabled(true)
-                    .rerankSingleCandidate(true)
+                    // 单候选不再强制远程 rerank（跨境 ~600ms 纯时延）：记忆候选已过本通道
+                    // minScore 向量门，对 1 个候选 rerank 无排序意义；KB 通道保持强制
+                    // （rerank 分数是它唯一的相关性过滤门）
+                    // A single candidate skips the forced remote rerank (~600ms of pure
+                    // cross-border latency): memory candidates already passed this
+                    // channel's minScore vector gate and reranking one candidate has no
+                    // ordering value; the KB channel keeps forcing (its rerank score is
+                    // that channel's only relevance gate)
                     .build();
             retrieverWrappers.addAll(new CompositeRag(
                     ZhiMeshConstant.RetrieveContentFrom.CHARACTER_MEMORY_EPISODIC)
@@ -321,16 +343,72 @@ public class CharacterChatHelper {
             }
         }
 
-        // Execute wrappers on the chat orchestration thread. Composite retrievers
-        // fan out their leaf vector/graph/BM25 routes on ragRetrievalExecutor.
-        // A chat task therefore never submits children to its own executor and
-        // then occupies a worker while waiting for those queued children.
+        // Execute channels concurrently on a dedicated outer executor: the memory
+        // channels and the KB channel are independent composites, and running
+        // them back-to-back serialized the memory channel's full latency (vector
+        // search + rerank) ahead of the KB channel's. Channels must NOT share
+        // ragRetrievalExecutor — each composite retrieve() blocks waiting for its
+        // own route futures on that pool, so an outer task on the same pool could
+        // occupy a worker while waiting for its queued children (starvation).
+        // Failure containment matches the legacy sequential loop: a channel that
+        // throws (or exceeds the outer budget) keeps a null response and the
+        // remaining channels still deliver their content.
+        // 通道并发执行（独立外层线程池）：记忆通道与 KB 通道是相互独立的组合检索器，
+        // 顺序执行会把记忆通道的全部时延（向量检索+rerank）串在 KB 通道前面。通道
+        // 任务不能复用 ragRetrievalExecutor——每个组合检索的 retrieve() 会阻塞等待
+        // 自己提交到该池的路由任务，外层任务若占用同池 worker 等待排在自己后面的
+        // 子任务会饿死。失败 containment 与原顺序循环一致：抛异常（或超外层预算）
+        // 的通道保持空响应，其余通道照常产出。
+        AsyncTaskExecutor channelExecutor = null;
+        try {
+            channelExecutor = SpringUtil.getBean("ragChannelExecutor", AsyncTaskExecutor.class);
+        } catch (Exception ignored) {
+            // No Spring context (unit tests): fall back to sequential execution.
+        }
+        if (null == channelExecutor) {
+            for (RetrieverWrapper retriever : retrieverWrappers) {
+                try {
+                    List<Content> contents = retriever.getRetriever().retrieve(Query.from(retrievalQuery));
+                    retriever.setResponse(contents);
+                } catch (Exception e) {
+                    log.error("Retrieve content error", e);
+                }
+            }
+            return retrieverWrappers;
+        }
+        // 外层预算 = 2×最慢路由超时 + rerank 超时 + 5s 余量（路由自身已有
+        // per-route 超时与重试，外层只兜底防挂死，不干扰正常慢路由）
+        // Outer budget = 2x slowest route timeout + rerank timeout + 5s slack
+        // (routes already carry per-route timeouts and retries; the outer cap
+        // only guards against a hung channel, not a legitimately slow one)
+        long outerBudgetMs = Math.max(properties.getRetrieval().getGraphTimeoutMs(),
+                properties.getRetrieval().getVectorTimeoutMs()) * 2
+                + properties.getRetrieval().getRerankTimeoutMs() + 5000L;
+        List<Future<?>> channelFutures = new ArrayList<>(retrieverWrappers.size());
         for (RetrieverWrapper retriever : retrieverWrappers) {
+            channelFutures.add(channelExecutor.submit(() -> {
+                try {
+                    retriever.setResponse(retriever.getRetriever().retrieve(Query.from(retrievalQuery)));
+                } catch (Exception e) {
+                    log.error("Retrieve content error", e);
+                }
+            }));
+        }
+        for (int i = 0; i < channelFutures.size(); i++) {
             try {
-                List<Content> contents = retriever.getRetriever().retrieve(Query.from(retrievalQuery));
-                retriever.setResponse(contents);
-            } catch (Exception e) {
-                log.error("Retrieve content error", e);
+                channelFutures.get(i).get(outerBudgetMs, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException timeout) {
+                channelFutures.get(i).cancel(true);
+                log.error("Retrieve channel exceeded outer budget {}ms, contentFrom:{}",
+                        outerBudgetMs, retrieverWrappers.get(i).getContentFrom());
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                channelFutures.forEach(future -> future.cancel(true));
+                log.error("Retrieve channels interrupted", interrupted);
+                break;
+            } catch (ExecutionException executed) {
+                // Unreachable in practice: the task body catches its own failures.
+                log.error("Retrieve content error", executed.getCause());
             }
         }
         return retrieverWrappers;
@@ -508,9 +586,18 @@ public class CharacterChatHelper {
                                                                   List<String> imageUrls) {
         ChatModelRequest.ChatModelRequestBuilder builder = ChatModelRequest.builder();
 
-        //System message
+        //System message（注入当前日期与星期：模型自身感知不到“今天”，缺了这个
+        //信息时“今天是星期几”这类问题会触发联网查时间的工具往返，实测多花 ~12s；
+        //注入后模型可离线推答，日期类问题不再出工具调用）
+        //System message with the current date and weekday injected: models have
+        // no built-in sense of "today", so trivial date questions otherwise
+        // trigger a web-fetch tool round trip (~12s measured).
+        String dateContext = "当前日期：" + LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy年MM月dd日"))
+                + " " + DayOfWeek.from(LocalDate.now()).getDisplayName(TextStyle.FULL, java.util.Locale.CHINESE);
         if (StringUtils.isNotBlank(character.getAiSystemMessage())) {
-            builder.systemMessage(character.getAiSystemMessage());
+            builder.systemMessage(character.getAiSystemMessage() + "\n\n" + dateContext);
+        } else {
+            builder.systemMessage(dateContext);
         }
 
         //Memory (for context understanding) — 上下文恒启用（2026-09-24 产品决策：

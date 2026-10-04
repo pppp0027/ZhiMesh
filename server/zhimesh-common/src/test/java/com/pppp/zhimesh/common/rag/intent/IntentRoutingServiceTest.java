@@ -112,6 +112,6 @@ class IntentRoutingServiceTest {
                                                 LinearRoutingIntentRecognizer classifier,
                                                 RetrieverCapabilityRegistry registry) {
         return new IntentRoutingService(classifier, mock(PrototypeRouteIntentRecognizer.class),
-                new IntentRoutingPolicy(registry), properties);
+                new IntentRoutingPolicy(registry, new ZhiMeshProperties()), properties);
     }
 }
