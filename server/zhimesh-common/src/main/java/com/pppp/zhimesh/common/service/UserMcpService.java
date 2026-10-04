@@ -276,6 +276,17 @@ public class UserMcpService extends ServiceImpl<UserMcpMapper, UserMcp> {
     /** 初始化失败后的熔断窗口 / Circuit window opened by an initialization failure */
     private static final long MCP_INIT_CIRCUIT_MS = 60 * 1000L;
 
+    /**
+     * 工具清单缓存 TTL：listTools 是一次远程往返，聊天链路每条消息都 discover 一遍；
+     * 管理端 Mcp 定义变更的可见延迟与客户端 TTL 兜底同口径（最多数分钟）
+     * <p>
+     * TTL of the cached tool list: listTools is a remote round trip and the
+     * chat link rediscovers it every message; admin-side Mcp definition
+     * changes become visible within the same TTL-bounded doctrine as the
+     * client cache (at most a few minutes).
+     */
+    private static final long MCP_TOOLS_TTL_MS = 60 * 1000L;
+
     private final ConcurrentHashMap<String, CachedMcpClient> mcpClientCache = new ConcurrentHashMap<>();
 
     /** 一个 (userId, mcpId) 的缓存条目：底层客户端 + 引用计数 + 重建工厂 */
@@ -285,6 +296,9 @@ public class UserMcpService extends ServiceImpl<UserMcpMapper, UserMcp> {
         private final AtomicInteger inUse = new AtomicInteger();
         private volatile Supplier<McpClient> rebuildFactory;
         private volatile McpClient client;
+        /** TTL 内复用的工具清单快照（listTools 远程往返的缓存）+ 抓取时刻 */
+        private volatile List<ToolSpecification> cachedTools;
+        private volatile long toolsFetchedAt;
         private volatile long lastReleaseAt = System.currentTimeMillis();
         private volatile long initFailedAt = 0L;
 
@@ -438,17 +452,34 @@ public class UserMcpService extends ServiceImpl<UserMcpMapper, UserMcp> {
 
         @Override
         public List<ToolSpecification> listTools() {
+            // TTL 内的清单快照直接复用（远程往返省一次）；抓取在锁外做——持 entry 锁
+            // 等秒级远程调用会串行化同一 (userId, mcpId) 的所有请求并阻塞检出/清扫。
+            // 自愈重建后的新清单同样落缓存；条目被逐出时快照随条目一起消失
+            // Serve the snapshot within the TTL (one remote round trip saved);
+            // fetch outside the entry lock — a seconds-long remote call under
+            // the lock would serialize every request on the same (userId, mcpId)
+            // and block checkout/sweep. The post-self-heal list lands in the
+            // cache too; evicting the entry drops the snapshot with it.
+            long now = System.currentTimeMillis();
+            List<ToolSpecification> cached = entry.cachedTools;
+            if (null != cached && now - entry.toolsFetchedAt < MCP_TOOLS_TTL_MS) {
+                return cached;
+            }
             McpClient client = entry.client;
+            List<ToolSpecification> tools;
             try {
-                return client.listTools();
+                tools = client.listTools();
             } catch (McpException serverError) {
                 throw serverError;
             } catch (RuntimeException failure) {
                 if (!isTransportFailure(failure)) {
                     throw failure;
                 }
-                return selfHeal("listTools", client, failure).listTools();
+                tools = selfHeal("listTools", client, failure).listTools();
             }
+            entry.cachedTools = tools;
+            entry.toolsFetchedAt = System.currentTimeMillis();
+            return tools;
         }
 
         @Override

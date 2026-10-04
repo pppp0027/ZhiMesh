@@ -3,6 +3,8 @@ package com.pppp.zhimesh.common.service;
 import com.pppp.zhimesh.common.base.ThreadContext;
 import com.pppp.zhimesh.common.config.ZhiMeshProperties;
 import com.pppp.zhimesh.common.cosntant.ZhiMeshConstant;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import com.pppp.zhimesh.common.dto.AskReq;
 import com.pppp.zhimesh.common.dto.KbInfoResp;
 import com.pppp.zhimesh.common.dto.RefGraphDto;
@@ -83,6 +85,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import ws.schild.jave.info.MultimediaInfo;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.*;
@@ -706,11 +709,34 @@ public class CharacterChatService {
                             .checkpointUuid(signal.getCheckpointUuid())
                             .build());
                 }
-                self.saveAfterAiResponse(chatContext, askReq, effectiveRetrievers, response,
-                        questionMeta, answerMeta, audioInfo, llmService,
-                        chatRequestParams.getMemoryWindowMaxTokens(), toolContext);
+                // 持久化后移到 sendComplete 之后：META 载荷（questionMeta/answerMeta/
+                // audioInfo/conversationUuid）在 save 前已全部定形，save 对它们只读不写；
+                // sendComplete 内部全捕获且必 unregister，不会因发送失败跳过 save。
+                // 收益：用户先收到 [DONE]（省 ~1.4s 串行 DB 写的尾部），持久化失败只落
+                // 日志——旧顺序里 save 抛异常会让 sendComplete 不执行、前端挂死
+                // Persist AFTER sendComplete: the META payload (questionMeta/
+                // answerMeta/audioInfo/conversationUuid) is fully shaped before the
+                // save, which only reads it; sendComplete swallows its own errors and
+                // always unregisters, so a failed send can never skip the save.
+                // Benefit: the user receives [DONE] first (the ~1.4s serial DB-write
+                // tail leaves the critical path); a persistence failure only logs —
+                // in the old order a save exception skipped sendComplete and hung
+                // the frontend.
                 sseManager.sendComplete(user.getId(), sseUuid, questionMeta, answerMeta, audioInfo,
                         chatContext.conversation() == null ? null : chatContext.conversation().getUuid());
+                try {
+                    self.saveAfterAiResponse(chatContext, askReq, effectiveRetrievers, response,
+                            questionMeta, answerMeta, audioInfo, llmService,
+                            chatRequestParams.getMemoryWindowMaxTokens(), toolContext);
+                } catch (Exception e) {
+                    // 完成事件已送达后的持久化失败：记录并保留现场（SSE 通道已关，无从
+                    // 通知前端），与 SseManager.sendComplete 的吞异常口径对齐
+                    // Persistence failure after the completion event was delivered:
+                    // log and keep state (the SSE channel is closed, nothing to
+                    // notify) — mirrors SseManager.sendComplete's swallow posture
+                    log.error("saveAfterAiResponse failed after sendComplete, userId:{}, sseUuid:{}",
+                            user.getId(), sseUuid, e);
+                }
             });
         } catch (Exception e) {
             turnLease.close();
@@ -775,16 +801,48 @@ public class CharacterChatService {
     private static final int RUNNABLE_WORKFLOW_QUERY_LIMIT = 100;
 
     /**
-     * 按请求解析当前用户可调用的工作流清单：一次工作流列表查询（mine+public 同口径）+
-     * 一次起始节点 in 查询，把每个工作流映射为 title+uuid+起始节点首个文本输入定义的
-     * WorkflowOption；无可调用工作流时返回空列表
+     * 用户可调用工作流目录缓存（按 userId，30s 写后过期）：目录查询 = 两次远程 SQL
+     * （工作流清单 + 起始节点 in 查询），Agentic 路径每条消息都跑一遍。条目为不可变
+     * record，跨请求共享安全；新建/编辑工作流最迟 30s 可见（与管理端 Mcp 定义的
+     * TTL 兜底同口径）；空目录同样缓存——刚建首个工作流的用户最多等一个 TTL
      * <p>
-     * Resolve the user's runnable workflow catalog per request: one workflow
-     * list query (mine+public scope) plus one start-node in-query, mapping each
-     * workflow to a WorkflowOption of title+uuid+the start node's first TEXT
-     * input definition; empty when nothing is runnable.
+     * Per-user cache of the runnable workflow catalog (30s expire-after-write):
+     * the catalog costs two remote SQL queries (workflow list + start-node
+     * in-query) and the agentic path re-ran them every message. Entries are
+     * immutable records, safe to share across requests; a new/edited workflow
+     * becomes visible within 30s (same TTL doctrine as the admin-side Mcp
+     * definition fallback); the empty catalog is cached too — a user who just
+     * created their first workflow waits at most one TTL.
+     */
+    private final Cache<Long, List<RunWorkflowTool.WorkflowOption>> runnableWorkflowCatalogCache =
+            CacheBuilder.newBuilder().expireAfterWrite(30, TimeUnit.SECONDS).build();
+
+    /**
+     * 按请求解析当前用户可调用的工作流清单（30s 目录缓存，见
+     * {@link #runnableWorkflowCatalogCache}）：缓存未命中时一次工作流列表查询
+     * （mine+public 同口径）+ 一次起始节点 in 查询，把每个工作流映射为
+     * title+uuid+起始节点首个文本输入定义的 WorkflowOption；无可调用工作流时返回空列表
+     * <p>
+     * Resolve the user's runnable workflow catalog per request (30s catalog
+     * cache, see {@link #runnableWorkflowCatalogCache}): on a cache miss, one
+     * workflow list query (mine+public scope) plus one start-node in-query,
+     * mapping each workflow to a WorkflowOption of title+uuid+the start node's
+     * first TEXT input definition; empty when nothing is runnable.
      */
     private List<RunWorkflowTool.WorkflowOption> listRunnableWorkflowOptions(User user) {
+        // 竞态双查无害（同值互相覆盖），不值得为此串行化
+        // A racy double load is harmless (same value overwrites) — not worth
+        // serializing loads for
+        List<RunWorkflowTool.WorkflowOption> cached = runnableWorkflowCatalogCache.getIfPresent(user.getId());
+        if (null != cached) {
+            return cached;
+        }
+        List<RunWorkflowTool.WorkflowOption> options = listRunnableWorkflowOptionsUncached(user);
+        runnableWorkflowCatalogCache.put(user.getId(), options);
+        return options;
+    }
+
+    private List<RunWorkflowTool.WorkflowOption> listRunnableWorkflowOptionsUncached(User user) {
         List<Workflow> workflows = workflowService.listRunnableForUser(user, RUNNABLE_WORKFLOW_QUERY_LIMIT);
         if (CollectionUtils.isEmpty(workflows)) {
             return List.of();
