@@ -9,6 +9,7 @@ import com.pppp.zhimesh.common.languagemodel.data.InnerStreamChatParam;
 import com.pppp.zhimesh.common.languagemodel.data.LLMException;
 import com.pppp.zhimesh.common.languagemodel.tool.McpToolExecutor;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolContext;
+import com.pppp.zhimesh.common.languagemodel.tool.ToolRoundExecutor;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolExecutor;
 import com.pppp.zhimesh.common.util.LocalCache;
 import com.pppp.zhimesh.common.util.SpringUtil;
@@ -487,12 +488,16 @@ class ToolExecutorResolutionTest {
     private List<ToolExecutionResultMessage> createToolExecutionMessages(AiMessage aiMessage,
                                                                          Map<String, ToolExecutor> tools,
                                                                          ToolContext toolContext) {
-        return (List<ToolExecutionResultMessage>) ReflectionTestUtils.invokeMethod(
-                llmService, "createToolExecutionMessages", aiMessage, tools, toolContext, "sse-test");
+        // 单轮执行层已抽到 ToolRoundExecutor：直接构造实例走公开入口，
+        // 不再经由反射触达 AbstractLLMService 的私有方法
+        // The per-round execution layer now lives in ToolRoundExecutor: build it
+        // directly and use its public entry instead of reflecting into a
+        // private AbstractLLMService method
+        return new ToolRoundExecutor().executeToolRound(aiMessage, tools, toolContext, "sse-test").resultMessages();
     }
 
     private ZhiMeshProperties.Agent resolveAgentSettings() {
-        return ReflectionTestUtils.invokeMethod(llmService, "resolveAgentSettings");
+        return new ToolRoundExecutor().resolveAgentSettings();
     }
 
     private void stubAgentSettings(Consumer<ZhiMeshProperties.Agent> customizer) {

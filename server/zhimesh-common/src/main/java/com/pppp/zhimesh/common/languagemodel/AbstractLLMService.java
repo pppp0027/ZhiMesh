@@ -21,6 +21,7 @@ import com.pppp.zhimesh.common.languagemodel.tool.McpToolExecutor;
 import com.pppp.zhimesh.common.languagemodel.tool.RunWorkflowTool;
 import com.pppp.zhimesh.common.languagemodel.tool.SuspensionSignal;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolContext;
+import com.pppp.zhimesh.common.languagemodel.tool.ToolRoundExecutor;
 import com.pppp.zhimesh.common.vo.ToolCallTrace;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolExecutor;
 import com.pppp.zhimesh.common.memory.shortterm.ShortTermMemoryService;
@@ -59,12 +60,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.CustomChatRequestParameterKeys.ENABLE_WEB_SEARCH;
 import static com.pppp.zhimesh.common.cosntant.ZhiMeshConstant.CustomChatRequestParameterKeys.ENABLE_THINKING;
@@ -82,16 +78,17 @@ public abstract class AbstractLLMService extends CommonModelService {
     private final Cache<String, TtsJobInfo> ttsJobCache;
 
     /**
-     * 内置工具超时执行线程池：守护线程避免阻塞 JVM 退出，仅在有内置工具执行时按需创建线程
+     * 工具循环的单轮执行层：一轮请求解析/协作分派/熔断/护栏/轨迹都收敛在
+     * {@link ToolRoundExecutor}，流式与阻塞两条循环只保留骨架（深度递归、轮数
+     * 上限收尾、挂起检查点合成）
      * <p>
-     * Pool enforcing timeouts for builtin tool execution: daemon threads avoid
-     * blocking JVM shutdown, and threads are created on demand only.
+     * The per-round execution layer of the tool loop: request parsing,
+     * collaborative dispatch, the breaker, guardrails, and traces all live in
+     * {@link ToolRoundExecutor}; the streaming and blocking loops keep only
+     * the skeleton (depth recursion, iteration-cap wrap-up, suspension
+     * checkpoint synthesis).
      */
-    private static final ExecutorService TOOL_EXECUTION_EXECUTOR = Executors.newCachedThreadPool(r -> {
-        Thread thread = new Thread(r, "builtin-tool-executor");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ToolRoundExecutor toolRoundExecutor = new ToolRoundExecutor();
 
     /**
      * 工具循环达上限后注入的收尾指令：告知模型不得再调用工具，必须基于已获取的
@@ -147,7 +144,7 @@ public abstract class AbstractLLMService extends CommonModelService {
      * (zhimesh.agent.max-suspensions) is hit: no further suspension, the model
      * answers directly from what it already gathered (infinite-asking guard).
      */
-    static final String SUSPENSION_LIMIT_REACHED_TEXT = "已达追问上限，请基于已有信息直接回答";
+    public static final String SUSPENSION_LIMIT_REACHED_TEXT = "已达追问上限，请基于已有信息直接回答";
 
     /**
      * 本请求未接线挂起回调（无 ToolContext.suspensionSink，如 blocking 路径误注册协作类
@@ -157,7 +154,7 @@ public abstract class AbstractLLMService extends CommonModelService {
      * wired on ToolContext (e.g. a collaborative tool mistakenly registered on
      * the blocking path).
      */
-    static final String SUSPENSION_UNSUPPORTED_TEXT = "当前会话不支持挂起提问，请基于已有信息直接回答";
+    public static final String SUSPENSION_UNSUPPORTED_TEXT = "当前会话不支持挂起提问，请基于已有信息直接回答";
 
     /**
      * adi_agent_pending_checkpoint.pending_request_id 的列宽上限：落库前截断（044 迁移
@@ -360,7 +357,7 @@ public abstract class AbstractLLMService extends CommonModelService {
      * @param params 参数对象，包含流式聊天所需的所有信息 / Parameter object containing all info needed for streaming chat
      */
     private void innerStreamingChat(InnerStreamChatParam params) {
-        int maxToolIterations = resolveAgentSettings().getMaxToolIterations();
+        int maxToolIterations = toolRoundExecutor.resolveAgentSettings().getMaxToolIterations();
         if (params.getToolCallDepth() >= maxToolIterations && !params.isToollessFinalRound()) {
             // 达到迭代上限的优雅收尾：剥掉工具规格并追加指令，让模型基于已获取的信息
             // 直接作答，而不是立刻向客户端发 [ERROR]；前端步骤条同时收到截断标注事件
@@ -435,7 +432,7 @@ public abstract class AbstractLLMService extends CommonModelService {
                     // peers first, then check whether a collaborative tool (ask_user etc.)
                     // suspended this round — when suspended, no recursive model call
                     // happens; the synthesized wrap-up path takes over
-                    ToolRoundOutcome toolRound = executeToolRound(responseAiMessage, toolExecutorMap,
+                    ToolRoundExecutor.ToolRoundOutcome toolRound = toolRoundExecutor.executeToolRound(responseAiMessage, toolExecutorMap,
                             params.getToolContext(), params.getSseUuid());
                     SuspensionSignal suspensionSignal = null != params.getToolContext()
                             ? params.getToolContext().getSuspensionSignal() : null;
@@ -509,24 +506,6 @@ public abstract class AbstractLLMService extends CommonModelService {
     }
 
     /**
-     * 工具轮执行结果载体：parsedRequests 为解析补全 id/name 后的请求（快照 AiMessage
-     * 必须与执行用的是同一批对象——parseToolRequest 对空 id 不幂等，每次调用生成新
-     * 随机 id，重复解析会破坏「请求-结果」配对）；resultMessages 仅含本轮已执行工具
-     * 的结果，挂起请求与其余协作请求的结果由恢复轮统一注入
-     * <p>
-     * Carrier of one tool round's outcome: parsedRequests are the requests
-     * after parseToolRequest completed their ids/names (the snapshot AiMessage
-     * must reuse the very same objects used for execution — parseToolRequest
-     * is not idempotent for blank ids, generating a fresh random id per call,
-     * so re-parsing would break request/result pairing); resultMessages holds
-     * only the executed tools' results — the suspended request and the other
-     * collaborative requests get theirs injected at resume time.
-     */
-    private record ToolRoundOutcome(List<ToolExecutionRequest> parsedRequests,
-                                    List<ToolExecutionResultMessage> resultMessages) {
-    }
-
-    /**
      * 协作类工具（ask_user / request_human_approval / 需审批 MCP 装饰器）挂起本轮后的
      * 合成收尾：不再递归调用模型。落检查点（经 ToolContext.suspensionSink 回调，
      * AbstractLLMService 保持无 Spring 依赖），快照 = 当前请求消息链 + 本轮 AiMessage
@@ -552,7 +531,7 @@ public abstract class AbstractLLMService extends CommonModelService {
      * intermediate token cache, so calculateToken records it exactly once).
      */
     private void suspendToolLoop(InnerStreamChatParam params, ChatResponse response,
-                                 ToolRoundOutcome toolRound, SuspensionSignal signal) {
+                                 ToolRoundExecutor.ToolRoundOutcome toolRound, SuspensionSignal signal) {
         ToolContext toolContext = params.getToolContext();
         // 防御：能走到这里说明协作工具绕过了 executeCollaborativeRequest 的无 sink
         // 闸门直接置位了信号（当前不存在该形态，T5 新增审批类协作工具时防患）——
@@ -705,7 +684,7 @@ public abstract class AbstractLLMService extends CommonModelService {
     }
 
     private ChatResponse innerChatWithDepth(String uuid, ChatModel chatModel, ChatModelRequest chatModelRequest, ChatRequest chatRequest, ToolContext toolContext, int depth) {
-        int maxToolIterations = resolveAgentSettings().getMaxToolIterations();
+        int maxToolIterations = toolRoundExecutor.resolveAgentSettings().getMaxToolIterations();
         try {
             if (depth >= maxToolIterations) {
                 // 达到迭代上限的优雅收尾，镜像流式路径 innerStreamingChat 的收尾轮：不再抛
@@ -717,12 +696,12 @@ public abstract class AbstractLLMService extends CommonModelService {
                 // as a disabled service), strip tool specifications and append an
                 // instruction so the model answers directly from what it gathered
                 log.warn("Tool call depth reached {} — forcing one tool-less wrap-up round", maxToolIterations);
-                // 阻塞路径没有 SSE 通道（与 createToolExecutionMessages 一致拿不到 sseUuid，
-                // SseManager.sendToolCall 对 null uuid 自行短路），因此不发前端截断标注事件，
+                // 阻塞路径没有 SSE 通道（拿不到 sseUuid，SseManager.sendToolCall 对 null
+                // uuid 自行短路），因此不发前端截断标注事件，
                 // 截断标注只落进轨迹供 META 合并与历史回放使用
-                // The blocking path has no SSE channel (no sseUuid is available, same
-                // as in createToolExecutionMessages; SseManager.sendToolCall short-circuits
-                // on a null uuid), so no frontend truncation event is emitted; the marker
+                // The blocking path has no SSE channel (no sseUuid is available;
+                // SseManager.sendToolCall short-circuits on a null uuid), so no
+                // frontend truncation event is emitted; the marker
                 // goes into the trace only, for META merge and history replay
                 if (null != toolContext && null != toolContext.getToolTraces()) {
                     List<ToolCallTrace> traces = toolContext.getToolTraces();
@@ -758,7 +737,8 @@ public abstract class AbstractLLMService extends CommonModelService {
             AiMessage responseAiMessage = chatResponse.aiMessage();
             if (responseAiMessage.hasToolExecutionRequests()) {
                 Map<String, ToolExecutor> toolExecutorMap = discoverRequestTools(chatModelRequest);
-                List<ToolExecutionResultMessage> toolExecutionMessages = createToolExecutionMessages(responseAiMessage, toolExecutorMap, toolContext, null);
+                List<ToolExecutionResultMessage> toolExecutionMessages = toolRoundExecutor
+                        .executeToolRound(responseAiMessage, toolExecutorMap, toolContext, null).resultMessages();
 
                 AiMessage aiMessage = AiMessage.aiMessage(responseAiMessage.toolExecutionRequests());
                 List<ChatMessage> messages = new ArrayList<>(chatRequest.messages());
@@ -1089,297 +1069,6 @@ public abstract class AbstractLLMService extends CommonModelService {
     }
 
     /**
-     * 阻塞路径（innerChatWithDepth）的既有入口：只取结果消息，行为与原实现一致。
-     * 协作类工具在阻塞路径没有挂起回调（无 suspensionSink），到 executeToolRound
-     * 里走「不支持挂起」的内联回答分支
-     * <p>
-     * Legacy entry for the blocking path (innerChatWithDepth): returns the
-     * result messages only, behavior identical to the original implementation.
-     * Collaborative tools have no suspension sink on the blocking path and take
-     * the "suspension unsupported" inline-answer branch inside executeToolRound.
-     */
-    private List<ToolExecutionResultMessage> createToolExecutionMessages(AiMessage aiMessage, Map<String, ToolExecutor> toolExecutorMap, ToolContext toolContext, String sseUuid) {
-        return executeToolRound(aiMessage, toolExecutorMap, toolContext, sseUuid).resultMessages();
-    }
-
-    /**
-     * 执行一轮工具请求：请求先统一解析补全 id/name（快照与执行共用同一批对象，见
-     * {@link ToolRoundOutcome}），非协作类工具照常执行；协作类工具（ask_user 等）交由
-     * {@link #executeCollaborativeRequest} 处理（挂起/上限内联回答/同轮忽略）
-     * <p>
-     * Executes one round of tool requests: every request is parsed first to
-     * complete its id/name (snapshot and execution share the same objects, see
-     * {@link ToolRoundOutcome}); non-collaborative tools run exactly as before;
-     * collaborative tools (ask_user etc.) go through
-     * {@link #executeCollaborativeRequest} (suspend / cap-reached inline answer
-     * / same-round skip).
-     */
-    private ToolRoundOutcome executeToolRound(AiMessage aiMessage, Map<String, ToolExecutor> toolExecutorMap, ToolContext toolContext, String sseUuid) {
-        ZhiMeshProperties.Agent agentSettings = resolveAgentSettings();
-        List<ToolExecutionRequest> parsedRequests = new ArrayList<>();
-        List<ToolExecutionResultMessage> toolExecutionMessages = new ArrayList<>();
-        for (ToolExecutionRequest rawRequest : aiMessage.toolExecutionRequests()) {
-            ToolExecutionRequest req = parseToolRequest(rawRequest);
-            parsedRequests.add(req);
-            log.info("Tool execution requested, toolName:{}", req.name());
-            ToolExecutor executor = toolExecutorMap.get(req.name());
-            if (null == executor) {
-                toolExecutionMessages.add(ToolExecutionResultMessage.from(req,
-                        "No Tool executor found for this tool request"));
-                recordToolCallTrace(toolContext, req, 0L, false, "No Tool executor found for this tool request");
-                continue;
-            }
-            if (executor.isCollaborative()) {
-                executeCollaborativeRequest(req, executor, toolContext, sseUuid, agentSettings, toolExecutionMessages);
-                continue;
-            }
-            // 连续失败熔断：达到 max-tool-failures-per-tool 后本请求不再真正执行该工具，
-            // 熔断说明回喂模型——否则模型会每轮重试一个已死的外部工具直到轮数上限
-            // Consecutive-failure breaker: at max-tool-failures-per-tool the tool
-            // is no longer executed in this request and the breaker notice is fed
-            // back to the model — otherwise it retries a dead external tool every
-            // round until the iteration cap
-            int maxToolFailures = agentSettings.getMaxToolFailuresPerTool();
-            Integer priorFailures = null == toolContext ? null
-                    : toolContext.getToolFailureCounts().get(req.name());
-            if (maxToolFailures > 0 && null != priorFailures && priorFailures >= maxToolFailures) {
-                String breakerNotice = "Tool " + req.name() + " failed " + priorFailures
-                        + " consecutive times in this request and is now disabled for it;"
-                        + " answer from the information already collected";
-                log.warn("Tool disabled by consecutive-failure breaker, toolName:{}, failures:{}",
-                        req.name(), priorFailures);
-                SseManager.sendToolCall(sseUuid, req.name(), 0L, false, req.arguments(), breakerNotice);
-                toolExecutionMessages.add(ToolExecutionResultMessage.from(req, breakerNotice));
-                recordToolCallTrace(toolContext, req, 0L, false, breakerNotice);
-                continue;
-            }
-            // 执行前先发 TOOL_STARTED：前端实时点亮该工具的 running 步骤（与下方 TOOL_CALL
-            // 完成事件配对）。「No Tool executor found」分支不发——没有可点亮的真实执行
-            // Send TOOL_STARTED before execution so the frontend lights up the
-            // running step in real time (paired with the TOOL_CALL completion
-            // event below). The "No Tool executor found" branch sends nothing —
-            // there is no real execution to light up.
-            SseManager.sendToolStarted(sseUuid, req.name(), req.arguments());
-            long toolStart = System.currentTimeMillis();
-            try {
-                final String result = executeToolWithGuardrails(executor, req, toolContext, agentSettings);
-                long toolDuration = System.currentTimeMillis() - toolStart;
-                log.info("Tool execution completed, toolName:{}, resultLength:{}, duration:{}ms",
-                        req.name(), result == null ? 0 : result.length(), toolDuration);
-                if (null != toolContext) {
-                    toolContext.getToolFailureCounts().remove(req.name());
-                }
-                SseManager.sendToolCall(sseUuid, req.name(), toolDuration, true, req.arguments(), result);
-                toolExecutionMessages.add(ToolExecutionResultMessage.from(req, result));
-                recordToolCallTrace(toolContext, req, toolDuration, true, result);
-            } catch (Exception e) {
-                long toolDuration = System.currentTimeMillis() - toolStart;
-                log.warn("Tool execution failed, toolName:{}, duration:{}ms, errorType:{}",
-                        req.name(), toolDuration, e.getClass().getSimpleName());
-                if (null != toolContext) {
-                    toolContext.getToolFailureCounts().merge(req.name(), 1, Integer::sum);
-                }
-                SseManager.sendToolCall(sseUuid, req.name(), toolDuration, false, req.arguments(), e.getMessage());
-                toolExecutionMessages.add(ToolExecutionResultMessage.from(req, e.getMessage()));
-                recordToolCallTrace(toolContext, req, toolDuration, false, e.getMessage());
-            }
-        }
-        return new ToolRoundOutcome(parsedRequests, toolExecutionMessages);
-    }
-
-    /**
-     * 协作类工具请求的处理分支（ask_user 等）：
-     * <ol>
-     *   <li>同轮已有协作工具挂起 → 本请求不执行、不产生结果消息（“一轮只挂第一个”），
-     *       「已被忽略，请单独重新发起」占位结果由恢复轮统一注入；</li>
-     *   <li>挂起能力不可用（无 ToolContext / 未接线 suspensionSink）或挂起次数已达
-     *       zhimesh.agent.max-suspensions 上限（防无限追问）→ 不挂起，返回引导文本，
-     *       工具循环照常继续，模型基于已有信息直接作答；</li>
-     *   <li>正常挂起 → 工具执行置位 ToolContext.suspensionSignal，轨迹记录
-     *       （toolName、success=true、resultSummary=问题文本），本轮不产生
-     *       结果消息，由 onCompleteResponse 的挂起分支落检查点并合成收尾；挂起事件
-     *       （agent_question / approval_request，按 kind 分发）由挂起分支在检查点
-     *       持久化成功后才发出（见 suspendToolLoop）。</li>
-     * </ol>
-     * <p>
-     * Handling branch for collaborative tool requests (ask_user etc.):
-     * <ol>
-     *   <li>another collaborative tool already suspended this round → this
-     *       request is neither executed nor given a result message ("only the
-     *       first suspends"); its "ignored, re-ask alone" placeholder is
-     *       injected at resume time;</li>
-     *   <li>suspension unavailable (no ToolContext / no suspensionSink wired)
-     *       or the zhimesh.agent.max-suspensions cap already hit (infinite
-     *       asking guard) → no suspension; a guidance text is returned as the
-     *       tool result and the loop continues normally so the model answers
-     *       directly from what it has;</li>
-     *   <li>ordinary suspension → the tool's execution sets
-     *       ToolContext.suspensionSignal, the trace is recorded (toolName,
-     *       success = true, resultSummary = the question), and this
-     *       round yields no result message — onCompleteResponse's suspension
-     *       branch persists the checkpoint and produces the synthesized
-     *       wrap-up; the suspension event (agent_question / approval_request,
-     *       dispatched by kind) is emitted by that branch only
-     *       after the checkpoint is durably persisted (see suspendToolLoop).</li>
-     * </ol>
-     */
-    private void executeCollaborativeRequest(ToolExecutionRequest req, ToolExecutor executor, ToolContext toolContext,
-                                             String sseUuid, ZhiMeshProperties.Agent agentSettings,
-                                             List<ToolExecutionResultMessage> toolExecutionMessages) {
-        if (null != toolContext && null != toolContext.getSuspensionSignal()) {
-            log.info("Collaborative tool request skipped: another suspension already raised in this round, toolName:{}",
-                    req.name());
-            return;
-        }
-        if (null == toolContext || null == toolContext.getSuspensionSink()
-                || toolContext.getSuspensionCount() >= agentSettings.getMaxSuspensions()) {
-            String guidance = null != toolContext && null != toolContext.getSuspensionSink()
-                    ? SUSPENSION_LIMIT_REACHED_TEXT : SUSPENSION_UNSUPPORTED_TEXT;
-            log.info("Collaborative tool answered inline instead of suspending, toolName:{}, guidance:{}",
-                    req.name(), guidance);
-            SseManager.sendToolCall(sseUuid, req.name(), 0L, true, req.arguments(), guidance);
-            toolExecutionMessages.add(ToolExecutionResultMessage.from(req, guidance));
-            recordToolCallTrace(toolContext, req, 0L, true, guidance);
-            return;
-        }
-        // 通过协作闸门后才发 TOOL_STARTED：内联回答分支（不真正挂起/执行）不发，
-        // 避免前端点亮一个从未执行的步骤
-        // Send TOOL_STARTED only after the collaborative gates pass: the
-        // inline-answer branches (no real suspension/execution) send nothing,
-        // so the frontend never lights up a step that never ran.
-        SseManager.sendToolStarted(sseUuid, req.name(), req.arguments());
-        long toolStart = System.currentTimeMillis();
-        try {
-            final String result = executeToolWithGuardrails(executor, req, toolContext, agentSettings);
-            long toolDuration = System.currentTimeMillis() - toolStart;
-            SuspensionSignal raised = toolContext.getSuspensionSignal();
-            if (null != raised) {
-                log.info("Collaborative tool raised suspension, toolName:{}, duration:{}ms", req.name(), toolDuration);
-                recordToolCallTrace(toolContext, req, toolDuration, true, raised.getQuestion());
-                // agent_question 事件不在此发：挂起分支（suspendToolLoop）落检查点成功后
-                // 才发卡，杜绝「前端已见卡片但无检查点可恢复」的半挂起态
-                // The agent_question event is NOT emitted here: the suspension
-                // branch (suspendToolLoop) sends the card only after the
-                // checkpoint is durably persisted, precluding a half-suspended
-                // state (card shown yet nothing to resume from)
-                return;
-            }
-            // 防御：协作工具执行成功却未置挂起信号——按普通工具结果继续本轮循环
-            // Defensive: a collaborative tool finished without raising the
-            // suspension signal — treat it as an ordinary tool result
-            log.info("Collaborative tool finished without suspension, toolName:{}, duration:{}ms",
-                    req.name(), toolDuration);
-            SseManager.sendToolCall(sseUuid, req.name(), toolDuration, true, req.arguments(), result);
-            toolExecutionMessages.add(ToolExecutionResultMessage.from(req, result));
-            recordToolCallTrace(toolContext, req, toolDuration, true, result);
-        } catch (Exception e) {
-            long toolDuration = System.currentTimeMillis() - toolStart;
-            log.warn("Collaborative tool execution failed, toolName:{}, duration:{}ms, errorType:{}",
-                    req.name(), toolDuration, e.getClass().getSimpleName());
-            SseManager.sendToolCall(sseUuid, req.name(), toolDuration, false, req.arguments(), e.getMessage());
-            toolExecutionMessages.add(ToolExecutionResultMessage.from(req, e.getMessage()));
-            recordToolCallTrace(toolContext, req, toolDuration, false, e.getMessage());
-        }
-    }
-
-    /**
-     * 执行工具并应用超时与结果截断保护：内置工具始终受保护；MCP 工具是否纳入同一保护
-     * 由 zhimesh.agent.mcp-guardrails-enabled 决定（默认关，保持原有直调零回归，
-     * 开启后同样走下方超时——含池线程 run_workflow 递归标记传播——与结果截断）。
-     * 轨迹（recordToolCallTrace）在调用点对 MCP 工具本就生效，此处不重复记录
-     * <p>
-     * Execute a tool, applying timeout and result-truncation guardrails:
-     * builtin tools are always guarded; whether MCP tools join the same
-     * guardrails is decided by zhimesh.agent.mcp-guardrails-enabled (default
-     * off, preserving the legacy direct call with zero regression; once on,
-     * MCP tools go through the timeout below — including the run_workflow
-     * recursion-flag propagation on pool threads — and result truncation).
-     * Tracing (recordToolCallTrace) already covers MCP tools at the call
-     * sites, so it is not duplicated here.
-     */
-    private String executeToolWithGuardrails(ToolExecutor executor, ToolExecutionRequest req,
-                                             ToolContext toolContext, ZhiMeshProperties.Agent agentSettings) throws Exception {
-        if (!agentSettings.isMcpGuardrailsEnabled() && executor.isMcpTool()) {
-            return executor.execute(req, toolContext);
-        }
-        String result;
-        long timeoutMs = agentSettings.getToolTimeoutMs();
-        if (timeoutMs > 0) {
-            // 工具在池线程上执行：把提交线程的 run_workflow 递归标记带过去。工作流线程
-            // （标记已置位）内再起 agent 时，其工具也走本执行器——不传播的话嵌套
-            // run_workflow 会在池线程上被放行，递归防护失效；结束时一律清除，
-            // 池线程复用不会携带脏标记
-            // Tools execute on pool threads: carry the submitting thread's
-            // run_workflow recursion flag across. An agent started inside a
-            // workflow thread (flag set) also runs its tools through this
-            // executor — without propagation a nested run_workflow would be
-            // allowed on the pool thread and the guard would be moot; always
-            // clear on exit so a reused pool thread never carries a stale flag
-            Boolean inRunWorkflow = RunWorkflowTool.IN_RUN_WORKFLOW.get();
-            Future<String> future = TOOL_EXECUTION_EXECUTOR.submit(() -> {
-                if (Boolean.TRUE.equals(inRunWorkflow)) {
-                    RunWorkflowTool.IN_RUN_WORKFLOW.set(Boolean.TRUE);
-                } else {
-                    RunWorkflowTool.IN_RUN_WORKFLOW.remove();
-                }
-                try {
-                    return executor.execute(req, toolContext);
-                } finally {
-                    RunWorkflowTool.IN_RUN_WORKFLOW.remove();
-                }
-            });
-            try {
-                result = future.get(timeoutMs, TimeUnit.MILLISECONDS);
-            } catch (TimeoutException e) {
-                future.cancel(true);
-                throw new IllegalStateException(
-                        "Tool execution timed out after " + timeoutMs + "ms, toolName:" + req.name(), e);
-            } catch (ExecutionException e) {
-                Throwable cause = null != e.getCause() ? e.getCause() : e;
-                if (cause instanceof Exception ex) {
-                    throw ex;
-                }
-                throw new RuntimeException(cause);
-            }
-        } else {
-            result = executor.execute(req, toolContext);
-        }
-        return truncateToolResult(result, agentSettings.getToolResultMaxChars());
-    }
-
-    /**
-     * 超长工具结果截断到 maxChars，截断时末尾追加标记
-     * Truncate an oversized tool result to maxChars, appending a marker when truncated
-     */
-    private String truncateToolResult(String result, int maxChars) {
-        if (null == result || result.length() <= maxChars) {
-            return result;
-        }
-        return result.substring(0, maxChars) + "\n...[truncated]";
-    }
-
-    /**
-     * 记录一次工具调用轨迹到请求级上下文（上下文或收集器为空时静默跳过）
-     * Record one tool-call trace into the request-scoped context (silently
-     * skipped when the context or collector is absent)
-     */
-    private void recordToolCallTrace(ToolContext toolContext, ToolExecutionRequest req,
-                                     long durationMs, boolean success, String resultSummary) {
-        if (null == toolContext || null == toolContext.getToolTraces()) {
-            return;
-        }
-        List<ToolCallTrace> traces = toolContext.getToolTraces();
-        traces.add(ToolCallTrace.builder()
-                .seq(traces.size())
-                .toolName(req.name())
-                .args(req.arguments())
-                .resultSummary(resultSummary)
-                .durationMs(durationMs)
-                .success(success)
-                .build());
-    }
-
-    /**
      * 构造请求级工具上下文，一次请求构造一次并贯穿所有递归工具调用轮次
      * Create the request-scoped tool context, constructed once per request and
      * shared across all recursive tool-call rounds
@@ -1390,23 +1079,6 @@ public abstract class AbstractLLMService extends CommonModelService {
                 .memoryId(chatModelRequest.getMemoryId())
                 .toolTraces(new ArrayList<>())
                 .build();
-    }
-
-    /**
-     * 读取工具调用循环配置；容器或配置不可用时回退到默认值
-     * Resolve tool-loop settings; falls back to defaults when the container or
-     * the properties bean is unavailable
-     */
-    private ZhiMeshProperties.Agent resolveAgentSettings() {
-        try {
-            ZhiMeshProperties properties = SpringUtil.getBean(ZhiMeshProperties.class);
-            if (null != properties && null != properties.getAgent()) {
-                return properties.getAgent();
-            }
-        } catch (Exception e) {
-            log.debug("ZhiMeshProperties unavailable, using default agent tool-loop settings", e);
-        }
-        return new ZhiMeshProperties.Agent();
     }
 
     /**
@@ -1453,31 +1125,5 @@ public abstract class AbstractLLMService extends CommonModelService {
                 log.error("close mcp client error", e);
             }
         });
-    }
-
-    /**
-     * 如果工具请求参数中没有包含id，则手动解析该参数以补充 id 和 name
-     * 部分模型（如硅基流动）返回的工具请求可能没有id和name，需要手动解析，如 ToolExecutionRequest { id = "", name = "", arguments = "maps_weather {"city": "广州"}" }
-     * If the tool request parameter does not contain an id, manually parse it to supplement id and name
-     * Some models (e.g., SiliconFlow) may return tool requests without id and name, requiring manual parsing
-     *
-     * @param req 工具请求参数 / Tool request parameter
-     */
-    private ToolExecutionRequest parseToolRequest(ToolExecutionRequest req) {
-        if (StringUtils.isBlank(req.id())) {
-            String arguments = req.arguments();
-            String name = req.name();
-            if (StringUtils.isBlank(name) && StringUtils.isNotBlank(arguments) && !arguments.startsWith("{")) {
-                String[] args = arguments.split(" ");
-                if (args.length > 0) {
-                    name = args[0];
-                    arguments = arguments.substring(name.length()).trim();
-                } else {
-                    name = "name_" + UuidUtil.createShort();
-                }
-            }
-            return ToolExecutionRequest.builder().id("id_" + UuidUtil.createShort()).name(name).arguments(arguments).build();
-        }
-        return req;
     }
 }
