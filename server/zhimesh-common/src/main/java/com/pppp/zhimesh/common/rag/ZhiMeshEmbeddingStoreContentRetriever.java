@@ -267,6 +267,22 @@ public class ZhiMeshEmbeddingStoreContentRetriever implements ContentRetriever {
             if (breakIfSearchMissed && result.isEmpty()) {
                 throw new BaseException(B_BREAK_SEARCH);
             }
+            if (result.isEmpty()) {
+                // B4 空返回插桩：预取路径的门后为空时，列出预取集的门前分数分布——
+                // 区分「预取集本身空」与「minScore 门杀了全部候选」
+                // B4 empty-return instrumentation: when the prefetched path is
+                // empty past the gate, list the pre-gate score distribution of
+                // the prefetched set — distinguishes "the prefetched set was
+                // empty" from "minScore killed every candidate"
+                List<Double> preGateScores = prefetchedContents.stream()
+                        .map(ZhiMeshEmbeddingStoreContentRetriever::vectorScore)
+                        .filter(score -> score > -1D)
+                        .sorted(Comparator.reverseOrder())
+                        .limit(5)
+                        .toList();
+                log.info("EMPTY_VECTOR_RETURN, retriever:{}, source:prefetched, minScore:{}, maxResults:{}, prefetchedCount:{}, preGateTopScores:{}",
+                        displayName, minScore, maxResults, prefetchedContents.size(), preGateScores);
+            }
             return result;
         }
 
@@ -301,6 +317,29 @@ public class ZhiMeshEmbeddingStoreContentRetriever implements ContentRetriever {
 
 //Determine whether to forcibly interrupt the query, if no match then stop further operations
         //判断是否要强行中断查询，没有命中则不再进行下一步操作（比如说请求LLM），直接抛出异常中断流程
+        if (CollectionUtils.isEmpty(result)) {
+            // B4 空返回插桩：门后为空时补一次去门对照查询（仅空返回时多一次检索，
+            // 诊断期临时手段，调参完成后应移除或降级）——「库真没有」与「minScore 门
+            // 杀了全部候选（附门前 top 分数）」在此对账；kB 作用域看 filter 表达式
+            // B4 empty-return instrumentation: when the gated result is empty,
+            // run one ungated probe search (one extra retrieval on empty only;
+            // a temporary diagnostic-phase measure — remove or downgrade after
+            // tuning) — reconciles "the store truly has nothing" against
+            // "minScore killed every candidate" (with the pre-gate top scores);
+            // the KB scope is visible in the filter expression
+            double emptyMinScore = minScoreProvider.apply(query);
+            List<Double> ungatedTopScores = embeddingStore.search(EmbeddingSearchRequest.builder()
+                            .queryEmbedding(embeddedQuery)
+                            .maxResults(maxResultsProvider.apply(query))
+                            .minScore(0D)
+                            .filter(filterProvider.apply(query))
+                            .build())
+                    .matches().stream()
+                    .map(EmbeddingMatch::score)
+                    .toList();
+            log.info("EMPTY_VECTOR_RETURN, retriever:{}, source:store, minScore:{}, maxResults:{}, filter:{}, ungatedTopScores:{}",
+                    displayName, emptyMinScore, maxResultsProvider.apply(query), filterProvider.apply(query), ungatedTopScores);
+        }
         if (breakIfSearchMissed && CollectionUtils.isEmpty(result)) {
             log.warn("Embedding search missed,query:{}", query.text());
             throw new BaseException(B_BREAK_SEARCH);

@@ -21,6 +21,7 @@ public class IntentRoutingPolicy {
         if (context.explicitMode() != null) {
             RetrievalSelection explicit = selection(Set.of(KnowledgeSourceType.DOCUMENT_KB),
                     LegacyRetrievalModeAdapter.toRoutes(context.explicitMode()));
+            recordStats(decision, explicit, false, true);
             return new RetrievalPlan(decision, explicit, explicit, false,
                     "explicit retrieval mode has priority");
         }
@@ -38,12 +39,35 @@ public class IntentRoutingPolicy {
                 && decision.activatedCapabilities().isEmpty()
                 && (abstained || !decision.routeScores().isEmpty()
                         || selected.routes().equals(baseline.routes()));
+        recordStats(decision, selected, fallback, false);
         return new RetrievalPlan(decision, selected, selected, fallback,
                 fallback
                         ? properties.getIntentRouting().isGraphOnUncertain()
                                 ? "classifier abstained; using wide request baseline"
                                 : "classifier abstained; using narrow vector fallback"
                         : "recognized route is executed directly");
+    }
+
+    /**
+     * B3 插桩：把「意图 + 激活路由 + 兜底标志」记入进程级计数器，每 100 次决策输出
+     * 一行汇总（见 {@link RouteActivationStats}）——调回退宽度/阈值前先有账
+     * <p>
+     * B3 instrumentation: feeds "intent + activated routes + fallback flag"
+     * into the in-process counters, one summary line per 100 decisions (see
+     * {@link RouteActivationStats}) — a ledger before retuning fallback
+     * width/thresholds.
+     */
+    private static void recordStats(IntentDecision decision, RetrievalSelection selected,
+                                    boolean fallback, boolean explicitMode) {
+        String routes = selected.routes().isEmpty() ? "none"
+                : String.join("+", selected.routes().stream().map(Enum::name).sorted().toList());
+        StringBuilder key = new StringBuilder("intent=").append(decision.intent())
+                .append(";routes=").append(routes)
+                .append(";fallback=").append(fallback);
+        if (explicitMode) {
+            key.append(";explicit=true");
+        }
+        RouteActivationStats.record(key.toString());
     }
 
     private RetrievalSelection proposed(IntentDecision decision, IntentRoutingContext context,

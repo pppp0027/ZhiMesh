@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -43,7 +44,12 @@ class QueryEmbeddingReuseTest {
         }
 
         assertThat(embeddingModel.invocations()).isEqualTo(1);
-        stores.forEach(store -> verify(store).search(argThat(
+        // 门内搜索 + 空返回的去门对照探针（EMPTY_VECTOR_RETURN 插桩）= 2 次，
+        // 两次请求携带同一预计算 embedding——复用断言不变
+        // The gated search plus the empty-return ungated probe
+        // (EMPTY_VECTOR_RETURN instrumentation) = 2 calls, both requests
+        // carrying the same precomputed embedding — the reuse assertion holds
+        stores.forEach(store -> verify(store, times(2)).search(argThat(
                 request -> request.queryEmbedding() == queryContext.embedding())));
     }
 
@@ -61,7 +67,10 @@ class QueryEmbeddingReuseTest {
         retriever.retrieve(Query.from("legacy query"));
 
         assertThat(embeddingModel.invocations()).isEqualTo(1);
-        verify(store).search(argThat(request -> request.queryEmbedding() != null));
+        // 空库触发去门探针，共 2 次搜索；两次都携带非空 embedding
+        // The empty store triggers the ungated probe: 2 searches, both with a
+        // non-null embedding
+        verify(store, times(2)).search(argThat(request -> request.queryEmbedding() != null));
     }
 
     @Test
