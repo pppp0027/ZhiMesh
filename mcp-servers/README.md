@@ -154,7 +154,7 @@ seed 只建了预设角色与 MCP 绑定，知识库（`system_kb_ids` 留空）
 ## 7. 注意事项
 
 - **mock 数据为内存态**：三个 server 的写操作（请假申请、创建工单、提交报销单）只存在内存中，server 进程重启后数据重置回内置演示数据。
-- **stdio_arg 为绝对路径**：`adi_mcp.stdio_arg` 记录了 `index.js` 的绝对路径（`D:/My-Study/iedaProjects/langchain4j-zhimesh/mcp-servers/...`）。仓库移动位置后需同步修改 `adi_mcp`（管理后台编辑或手工 UPDATE），否则 MCP 启动失败。
+- **stdio_arg 为绝对路径**：`adi_mcp.stdio_arg` 记录了 `index.js` 的绝对路径（即当前仓库内 `mcp-servers/<server>/index.js` 的绝对路径）。仓库移动位置后需同步修改 `adi_mcp`（管理后台编辑或手工 UPDATE），否则 MCP 启动失败。
 - **MCP server 需先安装依赖**：后端拉起 MCP 进程前，请确认已在 `mcp-servers/` 下执行过 `npm install`（见第 3 节）。
 - **演示数据口径**：员工姓名（如张三）、假期余额、工单编号、报销单号等 mock 口径以 server 内置数据为准，知识库文档（员工手册、IT 服务手册、财务报销制度）已与其对齐。
 

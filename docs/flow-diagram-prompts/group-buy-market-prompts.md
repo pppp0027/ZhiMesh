@@ -1,6 +1,6 @@
 # 以牌惠友（group-buy-market）流程图生成提示词
 
-下面 4 份提示词基于 `D:\My-Study\iedaProjects\group-buy-market` 当前源码。执行任一提示词时，必须调用本地 `process-flow-diagram` skill，输出单个自包含 HTML 文件，并按 skill 要求预览和修正。项目内“库存”特指拼团队伍剩余名额，不是 SKU 实物库存。
+下面 4 份提示词基于 `group-buy-market` 项目当前源码。执行任一提示词时，必须调用本地 `process-flow-diagram` skill，输出单个自包含 HTML 文件，并按 skill 要求预览和修正。项目内“库存”特指拼团队伍剩余名额，不是 SKU 实物库存。
 
 ## GBM-01：分层调用链路
 

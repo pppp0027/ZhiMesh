@@ -54,7 +54,7 @@ zhimesh-bootstrap
 所有Maven命令从`server`目录执行：
 
 ```powershell
-cd D:\My-Study\iedaProjects\zhimesh\server
+cd server
 
 # 完整构建
 mvn clean package -DskipTests

@@ -610,7 +610,7 @@ experiments/after-optimization/results/e4-hybrid-rerank-final
 重启包含最终代码的后端后，在 `ragas-evaluation` 根目录执行：
 
 ```powershell
-cd D:\My-Study\iedaProjects\zhimesh\ragas-evaluation
+cd ragas-evaluation
 
 .\experiments\after-optimization\run_final_experiments.ps1 -Stage smoke
 .\experiments\after-optimization\run_final_experiments.ps1 -Stage score-smoke

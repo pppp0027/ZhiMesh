@@ -29,6 +29,9 @@
 --   - zhimesh-hr / zhimesh-helpdesk / zhimesh-finance 三个 server 需先在 mcp-servers/ 下执行
 --     npm install，使 index.js 可运行（SQL 本身不依赖 node，仅 adi_mcp.stdio_arg
 --     记录了 index.js 的绝对路径）。
+--   - adi_mcp.stdio_arg 中的 __REPO_ROOT__ 占位符：执行前先替换为当前机器上仓库根目录
+--     的绝对路径（例如 /home/you/dev/langchain4j-zhimesh），否则后端拉起 MCP 会因路径
+--     不存在而失败。仓库换位置后同样需要改库里的 stdio_arg（见 README 第 7 节）。
 --
 -- 本文件固定使用以下九个 uuid（32 位小写 hex，重复执行不变化）：
 --   人事系统 MCP          1a6790d46b31224de2e4ab79a6857dec
@@ -53,7 +56,7 @@
 -- 1.1 智聘人事系统（mock，本地 stdio）
 INSERT INTO adi_mcp (uuid, title, transport_type, sse_url, sse_timeout, stdio_command, stdio_arg, install_type, website, remark, is_enable)
 SELECT '1a6790d46b31224de2e4ab79a6857dec', '智聘人事系统（mock）', 'stdio', '', 30, 'node',
-       'D:/My-Study/iedaProjects/langchain4j-zhimesh/mcp-servers/zhimesh-hr/index.js', 'local', '',
+       '__REPO_ROOT__/mcp-servers/zhimesh-hr/index.js', 'local', '',
        '智聘科技人事系统演示服务（mock 数据）：员工花名册、组织架构、假期余额、考勤记录查询与请假申请提交。本地 stdio 服务，写操作仅内存态，重启重置。',
        true
 WHERE NOT EXISTS (SELECT 1 FROM adi_mcp WHERE uuid = '1a6790d46b31224de2e4ab79a6857dec');
@@ -61,7 +64,7 @@ WHERE NOT EXISTS (SELECT 1 FROM adi_mcp WHERE uuid = '1a6790d46b31224de2e4ab79a6
 -- 1.2 智聘IT服务台（mock，本地 stdio）
 INSERT INTO adi_mcp (uuid, title, transport_type, sse_url, sse_timeout, stdio_command, stdio_arg, install_type, website, remark, is_enable)
 SELECT 'afd322b35d902f5e010928221aff7374', '智聘IT服务台（mock）', 'stdio', '', 30, 'node',
-       'D:/My-Study/iedaProjects/langchain4j-zhimesh/mcp-servers/zhimesh-helpdesk/index.js', 'local', '',
+       '__REPO_ROOT__/mcp-servers/zhimesh-helpdesk/index.js', 'local', '',
        '智聘科技 IT 服务台演示服务（mock 数据）：工单查询与创建、账号/VPN/邮箱状态查询、可申请软件目录。本地 stdio 服务，写操作仅内存态，重启重置。',
        true
 WHERE NOT EXISTS (SELECT 1 FROM adi_mcp WHERE uuid = 'afd322b35d902f5e010928221aff7374');
@@ -140,7 +143,7 @@ WHERE NOT EXISTS (SELECT 1 FROM adi_character_preset WHERE uuid = '0c044fcaf29ed
 -- 4.1 智聘财务系统（mock，本地 stdio）
 INSERT INTO adi_mcp (uuid, title, transport_type, sse_url, sse_timeout, stdio_command, stdio_arg, install_type, website, remark, is_enable)
 SELECT 'b52f8ce417d94a6f8b2e07c5d3a19f48', '智聘财务系统（mock）', 'stdio', '', 30, 'node',
-       'D:/My-Study/iedaProjects/langchain4j-zhimesh/mcp-servers/zhimesh-finance/index.js', 'local', '',
+       '__REPO_ROOT__/mcp-servers/zhimesh-finance/index.js', 'local', '',
        '智聘科技财务系统演示服务（mock 数据）：报销单查询与提交、部门预算余额、个人年度报销汇总。本地 stdio 服务，写操作仅内存态，重启重置。',
        true
 WHERE NOT EXISTS (SELECT 1 FROM adi_mcp WHERE uuid = 'b52f8ce417d94a6f8b2e07c5d3a19f48');

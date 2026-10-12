@@ -507,7 +507,7 @@ output/graph-diagnostics/e2-current/
 后端需使用本轮新代码重新打包并启动。然后执行：
 
 ```powershell
-cd D:\My-Study\iedaProjects\zhimesh\ragas-evaluation
+cd ragas-evaluation
 
 .\.venv\Scripts\python.exe collect_predictions.py `
   --config config-gdiag-e2-optimized-final.json `
