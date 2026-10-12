@@ -59,7 +59,7 @@
 
 ## T8 集成验收记录(2026-09-23)
 
-**落库**:044 于用户确认窗口由主线程亲执（dev 与生产共库 100.96.188.67:5432/ai_rag_knowledge，docker run postgres:16-alpine psql 客户端 + ON_ERROR_STOP=1）；复跑幂等 exit=0 全 NOTICE 跳过；verify_schema 0/0/0；抽查 adi_agent_pending_checkpoint 16 列、触发器、财务预设 e68a3d15c2f749b0a1e8d4c3f52b7096 种子、is_agentic 追平全 true。MSYS 路径改写注意：docker 挂载 `/sql/...` 需写 `//sql/...`。
+**落库**:044 于用户确认窗口由主线程亲执（dev 与生产共库，生产实例内网地址与库名略，docker run postgres:16-alpine psql 客户端 + ON_ERROR_STOP=1）；复跑幂等 exit=0 全 NOTICE 跳过；verify_schema 0/0/0；抽查 adi_agent_pending_checkpoint 16 列、触发器、财务预设 e68a3d15c2f749b0a1e8d4c3f52b7096 种子、is_agentic 追平全 true。MSYS 路径改写注意：docker 挂载 `/sql/...` 需写 `//sql/...`。
 
 **剧本（子代理执行、主线程核报告）**:a 自动查预算零挂起；b 报销两段式审批 APPROVAL→MCP_APPROVAL→同意放行，mock 真实新单 EX-20260914-001；c 拒绝前缀 0 trace、模型转述拒绝；d ask_user 无 options/带 options 双形态应答续跑；e 历史重放 16 轮含挂起节点；f `default-agentic-enabled=false` 回归：零 [AGENT_QUESTION]/[APPROVAL_REQUEST]、零 agentic 日志、报销直通无审批门（语义澄清：MCP 工具本就不受该开关门控——改造前即 enableMcp(true) 硬编码，开关语义=回到现状而非关闭 MCP）。
 
