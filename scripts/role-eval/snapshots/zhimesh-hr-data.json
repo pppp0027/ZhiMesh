@@ -1,0 +1,54 @@
+{
+  "_comment": "智聘科技（ZhiMesh）人事系统 mock 数据。年假口径（基准日 2026-09-13）：工龄<5年 5天；5-10年 10天；>10年 15天，按 hireDate 推算，各人年假总额与此规则自洽。病假统一 10 天/年、事假统一 5 天/年（公司福利口径）。",
+  "company": "智聘科技",
+  "today": "2026-09-13",
+  "employees": [
+    { "employeeId": "ZP1001", "name": "陈建国", "department": "技术部", "title": "技术总监", "hireDate": "2014-03-03", "email": "chenjianguo@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1002", "name": "李四", "department": "人事部", "title": "HRBP", "hireDate": "2018-07-02", "email": "lisi@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1003", "name": "王五", "department": "技术部", "title": "网络工程师", "hireDate": "2022-05-09", "email": "wangwu@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1004", "name": "赵敏", "department": "产品部", "title": "产品经理", "hireDate": "2019-09-23", "email": "zhaomin@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1005", "name": "刘洋", "department": "技术部", "title": "前端工程师", "hireDate": "2023-02-13", "email": "liuyang@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1006", "name": "孙丽", "department": "财务部", "title": "财务主管", "hireDate": "2015-11-05", "email": "sunli@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1008", "name": "张三", "department": "技术部", "title": "高级后端工程师", "hireDate": "2020-03-16", "email": "zhangsan@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1007", "name": "周杰", "department": "技术部", "title": "测试工程师", "hireDate": "2024-06-17", "email": "zhoujie@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1009", "name": "吴霞", "department": "人事部", "title": "人事专员", "hireDate": "2023-08-01", "email": "wuxia@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1010", "name": "郑强", "department": "市场部", "title": "市场总监", "hireDate": "2017-04-10", "email": "zhengqiang@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1011", "name": "冯婷", "department": "产品部", "title": "UI设计师", "hireDate": "2024-03-11", "email": "fengting@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1012", "name": "蒋伟", "department": "技术部", "title": "运维工程师", "hireDate": "2021-06-21", "email": "jiangwei@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1013", "name": "韩雪", "department": "市场部", "title": "新媒体运营", "hireDate": "2025-04-07", "email": "hanxue@zhimesh.com", "status": "在职" },
+    { "employeeId": "ZP1014", "name": "曹阳", "department": "财务部", "title": "会计", "hireDate": "2020-10-26", "email": "caoyang@zhimesh.com", "status": "离职", "leaveDate": "2026-06-30" },
+    { "employeeId": "ZP1015", "name": "谢鹏", "department": "技术部", "title": "数据工程师", "hireDate": "2022-11-14", "email": "xiepeng@zhimesh.com", "status": "离职", "leaveDate": "2026-08-15" }
+  ],
+  "departments": [
+    { "name": "技术部", "manager": "陈建国", "headcount": 6 },
+    { "name": "产品部", "manager": "赵敏", "headcount": 2 },
+    { "name": "人事部", "manager": "李四", "headcount": 2 },
+    { "name": "财务部", "manager": "孙丽", "headcount": 1 },
+    { "name": "市场部", "manager": "郑强", "headcount": 2 }
+  ],
+  "leaveBalances": {
+    "陈建国": { "年假": { "total": 15, "used": 5 }, "病假": { "total": 10, "used": 1 }, "事假": { "total": 5, "used": 0 } },
+    "李四": { "年假": { "total": 10, "used": 3 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 1 } },
+    "王五": { "年假": { "total": 5, "used": 1 }, "病假": { "total": 10, "used": 2 }, "事假": { "total": 5, "used": 0 } },
+    "赵敏": { "年假": { "total": 10, "used": 2 }, "病假": { "total": 10, "used": 1 }, "事假": { "total": 5, "used": 0 } },
+    "刘洋": { "年假": { "total": 5, "used": 0 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 1 } },
+    "孙丽": { "年假": { "total": 15, "used": 4 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 0 } },
+    "周杰": { "年假": { "total": 5, "used": 1 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 0 } },
+    "张三": { "年假": { "total": 10, "used": 2 }, "病假": { "total": 10, "used": 1 }, "事假": { "total": 5, "used": 0 } },
+    "吴霞": { "年假": { "total": 5, "used": 0 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 0 } },
+    "郑强": { "年假": { "total": 10, "used": 3 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 2 } },
+    "冯婷": { "年假": { "total": 5, "used": 0 }, "病假": { "total": 10, "used": 1 }, "事假": { "total": 5, "used": 0 } },
+    "蒋伟": { "年假": { "total": 10, "used": 2 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 0 } },
+    "韩雪": { "年假": { "total": 5, "used": 0 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 1 } },
+    "曹阳": { "年假": { "total": 10, "used": 6 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 0 } },
+    "谢鹏": { "年假": { "total": 5, "used": 2 }, "病假": { "total": 10, "used": 0 }, "事假": { "total": 5, "used": 1 } }
+  },
+  "attendanceAnomalies": [
+    { "date": "2026-08-12", "employeeName": "王五", "type": "迟到", "note": "上午上班迟到 25 分钟" },
+    { "date": "2026-08-27", "employeeName": "王五", "type": "缺卡", "note": "下班未打卡，补卡申请审批中" },
+    { "date": "2026-08-05", "employeeName": "刘洋", "type": "迟到", "note": "上午上班迟到 12 分钟" },
+    { "date": "2026-08-19", "employeeName": "周杰", "type": "早退", "note": "下午提前 40 分钟离开，已向直属负责人说明事由" },
+    { "date": "2026-07-22", "employeeName": "谢鹏", "type": "旷工", "note": "全天未到岗且未请假，已按考勤制度处理" },
+    { "date": "2026-07-08", "employeeName": "韩雪", "type": "缺卡", "note": "外勤走访未打卡，已补交外勤说明" }
+  ]
+}

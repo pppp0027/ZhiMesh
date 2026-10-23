@@ -1,0 +1,39 @@
+{
+  "_comment": "智聘科技（ZhiMesh）IT 服务台 mock 数据。基准日 2026-09-13；accounts 与人事花名册对齐；tickets 状态覆盖 待处理/处理中/已解决/已关闭。",
+  "company": "智聘科技",
+  "today": "2026-09-13",
+  "accounts": [
+    { "employeeName": "张三", "employeeId": "ZP1008", "account": "正常", "vpn": "正常", "email": "正常", "passwordExpiresInDays": 45 },
+    { "employeeName": "李四", "employeeId": "ZP1002", "account": "正常", "vpn": "正常", "email": "正常", "passwordExpiresInDays": 90 },
+    { "employeeName": "王五", "employeeId": "ZP1003", "account": "正常", "vpn": "正常", "email": "正常", "passwordExpiresInDays": 30 },
+    { "employeeName": "刘洋", "employeeId": "ZP1005", "account": "正常", "vpn": "正常", "email": "正常", "passwordExpiresInDays": 60 },
+    { "employeeName": "周杰", "employeeId": "ZP1007", "account": "正常", "vpn": "禁用", "email": "正常", "passwordExpiresInDays": 7 },
+    { "employeeName": "吴霞", "employeeId": "ZP1009", "account": "正常", "vpn": "正常", "email": "正常", "passwordExpiresInDays": 88 },
+    { "employeeName": "赵敏", "employeeId": "ZP1004", "account": "正常", "vpn": "正常", "email": "正常", "passwordExpiresInDays": 3 },
+    { "employeeName": "谢鹏", "employeeId": "ZP1015", "account": "已禁用", "vpn": "禁用", "email": "已注销", "passwordExpiresInDays": 0 }
+  ],
+  "tickets": [
+    { "id": "TK-20260908-001", "title": "VPN 无法连接公司内网", "category": "VPN", "urgency": "紧急", "status": "处理中", "reporter": "张三", "createdAt": "2026-09-08 09:41", "description": "在家办公时 VPN 客户端反复提示认证失败，无法访问内网 Git 与测试环境。" },
+    { "id": "TK-20260906-001", "title": "新员工入职账号与邮箱开通", "category": "账号", "urgency": "普通", "status": "处理中", "reporter": "吴霞", "createdAt": "2026-09-06 14:05", "description": "市场部新同事下周一入职，请提前开通域账号、企业邮箱并配发企业微信。" },
+    { "id": "TK-20260909-001", "title": "笔记本电脑键盘空格键失灵", "category": "硬件", "urgency": "普通", "status": "待处理", "reporter": "刘洋", "createdAt": "2026-09-09 10:22", "description": "办公本空格键需要用力按压才有反应，影响编码效率。" },
+    { "id": "TK-20260910-001", "title": "设计软件打开大文件卡顿严重", "category": "软件", "urgency": "普通", "status": "待处理", "reporter": "冯婷", "createdAt": "2026-09-10 16:48", "description": "PS 打开 2GB 以上源文件时频繁假死，疑似内存不足。" },
+    { "id": "TK-20260901-001", "title": "邮箱无法收发外部邮件", "category": "邮箱", "urgency": "紧急", "status": "已解决", "reporter": "赵敏", "createdAt": "2026-09-01 08:55", "description": "企业邮箱给客户发信被退回，外域来信也收不到。处理记录：为网关邮件中继证书过期，已更换并恢复。" },
+    { "id": "TK-20260828-001", "title": "三楼办公区 WiFi 间歇性断连", "category": "网络", "urgency": "普通", "status": "已解决", "reporter": "王五", "createdAt": "2026-08-28 11:30", "description": "三楼东侧工位 WiFi 每隔十几分钟掉线一次。处理记录：更换故障 AP 并调整信道后恢复。" },
+    { "id": "TK-20260825-001", "title": "显示器闪屏申请更换", "category": "硬件", "urgency": "普通", "status": "已关闭", "reporter": "周杰", "createdAt": "2026-08-25 09:12", "description": "工位显示器间歇闪屏。处理记录：已更换新显示器并验收关闭。" },
+    { "id": "TK-20260818-001", "title": "VPN 客户端安装失败", "category": "VPN", "urgency": "普通", "status": "已关闭", "reporter": "蒋伟", "createdAt": "2026-08-18 15:26", "description": "新装系统后 VPN 客户端报缺少驱动。处理记录：指导安装缺失驱动后正常，已关闭。" },
+    { "id": "TK-20260812-001", "title": "财务系统只读权限申请", "category": "软件", "urgency": "普通", "status": "已解决", "reporter": "孙丽", "createdAt": "2026-08-12 13:40", "description": "月度对账需要财务报表模块只读权限。处理记录：权限已开通。" },
+    { "id": "TK-20260805-001", "title": "会议室系统无法共享屏幕", "category": "软件", "urgency": "紧急", "status": "已关闭", "reporter": "郑强", "createdAt": "2026-08-05 10:03", "description": "客户拜访前大屏无法共享笔记本屏幕。处理记录：更换 HDMI 线并升级投屏软件后正常。" }
+  ],
+  "softwareCatalog": [
+    { "name": "IntelliJ IDEA", "category": "开发工具", "approvalRequired": true, "note": "JetBrains 付费授权，后端/算法开发主力 IDE" },
+    { "name": "VS Code", "category": "开发工具", "approvalRequired": false, "note": "免费，轻量编辑器，可自行安装" },
+    { "name": "Navicat", "category": "数据库工具", "approvalRequired": true, "note": "付费授权，数据库连接管理，需 DBA 会签" },
+    { "name": "Postman", "category": "开发工具", "approvalRequired": false, "note": "免费版即可满足接口调试，团队协作版需审批" },
+    { "name": "Docker Desktop", "category": "开发工具", "approvalRequired": false, "note": "个人版免费，用于容器化开发环境" },
+    { "name": "WPS Office", "category": "办公软件", "approvalRequired": false, "note": "企业版统一授权，全员可用" },
+    { "name": "腾讯会议", "category": "办公协作", "approvalRequired": false, "note": "企业版统一部署，用于视频会议" },
+    { "name": "企业微信", "category": "办公协作", "approvalRequired": false, "note": "全员标配，内部沟通与审批入口" },
+    { "name": "向日葵", "category": "远程控制", "approvalRequired": true, "note": "远程控制软件，需信息安全审批后开放" },
+    { "name": "Adobe Photoshop", "category": "设计工具", "approvalRequired": true, "note": "付费授权，仅设计岗，需部门负责人审批" }
+  ]
+}

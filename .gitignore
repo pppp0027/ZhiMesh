@@ -79,6 +79,7 @@ ragas-evaluation/.venv/
 ragas-evaluation/__pycache__/
 ragas-evaluation/**/__pycache__/
 ragas-evaluation/**/*.pyc
+scripts/role-eval/__pycache__/
 ragas-evaluation/.env
 ragas-evaluation/config.json
 ragas-evaluation/analysis/quantification/configs/concurrency-accounts.server.json

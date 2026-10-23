@@ -1,0 +1,44 @@
+{
+  "_comment": "三领域系统预设的五栏提示词 md5 快照（断言锚点口径）。来源：adi_character_preset.ai_system_message 的 md5，2026-10-23 经生产库只读核对（长度 991/988/994 字符）。DB 提示词一旦重写，此处 md5 与剧本断言口径需同步复核。重算 SQL：SELECT uuid, md5(ai_system_message), length(ai_system_message) FROM adi_character_preset WHERE uuid IN ('c40ac107cb1fb7e615288a4d119ce7c9','0c044fcaf29eda3ef3027919f28b3b18','e68a3d15c2f749b0a1e8d4c3f52b7096');",
+  "presets": [
+    {
+      "domain": "hr",
+      "presetUuid": "c40ac107cb1fb7e615288a4d119ce7c9",
+      "mcpId": 15,
+      "kbId": 13,
+      "kbTitle": "员工手册",
+      "promptMd5": "dc6e3b598413250af129be7cca0529be",
+      "promptLength": 991,
+      "toolPolicy": {
+        "approvalRequiredMcpTools": ["submit_leave_request"],
+        "argConstraints": { "submit_leave_request": { "employee_name": "@caller" } }
+      }
+    },
+    {
+      "domain": "it",
+      "presetUuid": "0c044fcaf29eda3ef3027919f28b3b18",
+      "mcpId": 16,
+      "kbId": 14,
+      "kbTitle": "IT 服务手册",
+      "promptMd5": "e6cea03761badce7981d39e5ebbde6cf",
+      "promptLength": 988,
+      "toolPolicy": {
+        "approvalRequiredMcpTools": ["create_ticket"],
+        "argConstraints": { "create_ticket": { "reporter": "@caller" } }
+      }
+    },
+    {
+      "domain": "finance",
+      "presetUuid": "e68a3d15c2f749b0a1e8d4c3f52b7096",
+      "mcpId": 17,
+      "kbId": 15,
+      "kbTitle": "财务报销制度",
+      "promptMd5": "47f2d1ab15c7c08a567327eda4b99b3b",
+      "promptLength": 994,
+      "toolPolicy": {
+        "approvalRequiredMcpTools": ["submit_expense_report"],
+        "argConstraints": { "submit_expense_report": { "employee_name": "@caller" } }
+      }
+    }
+  ]
+}
