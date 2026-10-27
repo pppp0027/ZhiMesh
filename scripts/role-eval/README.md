@@ -136,6 +136,36 @@ runner 对后端**强制直连**（忽略 `http_proxy`/`https_proxy` 环境变�
 （any-of，用于吸收同义词与工具命名差，如 `["search_tickets","search_ticket"]`）。
 答案匹配先做**空白归一化**（`「7 天」==「7天」`，换行/空格/全半角空格不敏感）。
 
+**检索双通道（2026-10-23 smoke 实测）**：zhimesh 对知识类问题在请求前做
+自动 RAG 注入（`IntentRoutingService` → 检索内容直接进 prompt，`isRefEmbedding=true`），
+`search_knowledge` 工具是第二通道，模型拿到注入内容后通常不再调工具。
+因此 policy_ref 类场景**不**断言 `toolCallsIncludes(search_knowledge)`，以
+`isRefEmbedding` / `kbSource` / 内容断言为准。`it-data-navicat-approval`
+（政策性质的数据查询）同理：注入通道可直接给出完整答案，两轮基线实测有/无
+工具调用都出现，故不断言工具调用。数据只在 mock MCP 里的 data_query 场景
+才断言工具调用。
+
+**模型口径**：三领域预设未绑定模型，后端回退首个可用 free 模型（当前
+`gpt-5.6-terra`，lingsuan 平台）——基线与生产同口径，跑分时留意
+`LLMContext` 的 fallback 日志确认模型未漂移。
+
+**审批拒绝的轨迹语义（2026-10-23 基线实测）**：写操作在审批装饰器路径下被
+`[APPROVAL_REJECTED]` 拒绝时，外层 trace 对该工具仍记 `success=true`（调用以
+「拒绝回喂」方式完成，业务并未执行）。故 `noSuccessfulCall` 在审批拒绝场景
+不可靠，approval_path 类场景改以 `answerNotContains(单号前缀)`（`LV-` /
+`TK-` / `EX-`）断言「未出单」，不使用 `successfulCall` / `noSuccessfulCall`。
+
+**full_chain 轮数口径**：写操作链路挂起次数不定（2026-10-23 实测 3~4 次）：
+T5 提示词纪律的逐项复述确认（第二次 ASK_USER）、builtin
+`request_human_approval` 与 MCP 提交门的双重审批（顺序不定、可能在提交
+**之后**再补一次审批卡）、以及无身份行时的本人身份再确认。故 full_chain 的
+turns 为身份答复轮（typed ASK_USER）+ 三条 `on=ANY` 的通用轮（文本兼容
+确认/批准/身份声明三种语境），实际挂起少于轮数时多余轮自然不消费。
+
+**偶发流式空答案**：SSE 偶发以空答案收尾（`hr-policy-sick-casual-quota`
+2026-10-23 出现一次，重跑即过）。policy_ref 单场景 FAIL 且 `answerExcerpt`
+为空时，先重跑一次再诊断。
+
 ## 结果 schema（docs/reports/role-eval/<run-id>/results.json）
 
 ```jsonc
