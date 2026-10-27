@@ -116,9 +116,15 @@ public class LocalAgentService implements AgentService {
                 request.getInputText(), memoryAndKnowledge.getLeft(), memoryAndKnowledge.getRight(), "", effectiveLocale);
 
         // 5. Build request params (system message + memory + MCP tools + thinking + web search)
+        // 身份行适用标记恒 false：AgentNode 工作流链路零变更（design Out 明确排除
+        // 工作流 AgentNode 链路行为变更），system message 与改造前逐字节一致
+        // The identity-line applicability flag is hard-coded false: the
+        // workflow AgentNode path stays byte-for-byte unchanged (design's Out
+        // explicitly excludes any AgentNode-chain behavior change)
         ChatModelRequest chatRequestParams = CharacterChatHelper.buildChatRequestParams(
                 character, memoryId,
-                processedPrompt, user, llmService, request.isEnableMcp(), request.isEnableWebSearch(), null);
+                processedPrompt, user, llmService, request.isEnableMcp(), request.isEnableWebSearch(), null,
+                false);
         chatRequestParams.setShortTermMemoryUserMessage(request.getInputText());
 
         // 6. Blocking LLM call

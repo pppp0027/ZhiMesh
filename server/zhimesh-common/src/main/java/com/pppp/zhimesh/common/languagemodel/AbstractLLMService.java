@@ -17,6 +17,7 @@ import com.pppp.zhimesh.common.languagemodel.data.InnerStreamChatParam;
 import com.pppp.zhimesh.common.languagemodel.data.LLMException;
 import com.pppp.zhimesh.common.languagemodel.data.LLMResponseContent;
 import com.pppp.zhimesh.common.languagemodel.tool.ApprovalRequiredDecorator;
+import com.pppp.zhimesh.common.languagemodel.tool.ArgScopeDecorator;
 import com.pppp.zhimesh.common.languagemodel.tool.McpToolExecutor;
 import com.pppp.zhimesh.common.languagemodel.tool.RunWorkflowTool;
 import com.pppp.zhimesh.common.languagemodel.tool.SuspensionSignal;
@@ -920,18 +921,28 @@ public abstract class AbstractLLMService extends CommonModelService {
     }
 
     /**
-     * 发现本次请求可用的全部工具：MCP 来源照旧（命中 approvalRequiredTools 的先包
-     * {@link ApprovalRequiredDecorator} 审批门），再合并请求级内置工具（重名时内置优先，
-     * 内置覆盖装饰器——审批门仅约束 MCP 工具）
+     * 发现本次请求可用的全部工具：MCP 来源照旧（命中 argConstraints 的先包
+     * {@link ArgScopeDecorator} 参数域门、命中 approvalRequiredTools 的再包
+     * {@link ApprovalRequiredDecorator} 审批门——审批最外层，凭证 hash 基于模型原始
+     * 参数；两层都命中时审批通过后仍要过参数域校验），再合并请求级内置工具（重名时
+     * 内置优先，内置覆盖装饰器——两类门仅约束 MCP 工具）
      * Discover all tools available for this request: MCP sources as before
-     * (those hit by approvalRequiredTools are first wrapped with the
-     * {@link ApprovalRequiredDecorator} approval gate), then merge
-     * request-scoped builtin tools (builtin wins on name conflicts, overriding
-     * a decorator too — the approval gate constrains MCP tools only)
+     * (those hit by argConstraints are first wrapped with the
+     * {@link ArgScopeDecorator} argument-scope gate, then those hit by
+     * approvalRequiredTools with the {@link ApprovalRequiredDecorator}
+     * approval gate — approval outermost, its grant hash computed over the
+     * model's original arguments; a tool hit by both still passes the
+     * argument-scope check after approval), then merge request-scoped builtin
+     * tools (builtin wins on name conflicts, overriding a decorator too — both
+     * gates constrain MCP tools only)
      */
     private Map<String, ToolExecutor> discoverRequestTools(ChatModelRequest httpRequestParams) {
         List<McpClient> mcpClients = httpRequestParams.getMcpClients();
         Map<String, ToolExecutor> requestTools = new LinkedHashMap<>(getMcpToolExecutors(mcpClients));
+        // 装配顺序：参数域在内层、审批在外层（审批凭证 hash 必须基于模型原始参数）
+        // Stacking order: argument scope inner, approval outer (the approval
+        // grant's hash must cover the model's original arguments)
+        wrapArgScopeTools(requestTools, httpRequestParams.getArgConstraints());
         wrapApprovalRequiredTools(requestTools, httpRequestParams.getApprovalRequiredTools());
         if (CollectionUtils.isNotEmpty(mcpClients)) {
             log.info("MCP tools available, clientCount:{}, toolCount:{}, toolNames:{}",
@@ -948,15 +959,16 @@ public abstract class AbstractLLMService extends CommonModelService {
                 String toolName = builtinTool.spec().name();
                 ToolExecutor previous = requestTools.put(toolName, builtinTool);
                 if (null != previous) {
-                    if (previous instanceof ApprovalRequiredDecorator) {
-                        // 审批门被内置覆盖：标记名与内置工具重名，approvalRequiredMcpTools
-                        // 对该名不再生效（审批门仅约束 MCP 工具的既有语义），显式留痕
-                        // The approval gate is overridden by a builtin: the
-                        // marked name collides with a builtin tool and
-                        // approvalRequiredMcpTools no longer applies to it
-                        // (the gate-constrains-MCP-only semantics), logged
-                        // explicitly
-                        log.warn("Builtin tool overrides the approval-gated MCP tool with the same name; the approval marking no longer applies, toolName:{}",
+                    if (previous instanceof ApprovalRequiredDecorator || previous instanceof ArgScopeDecorator) {
+                        // 策略装饰器（审批门/参数域门）被内置覆盖：标记名与内置工具重名，
+                        // approvalRequiredMcpTools / argConstraints 对该名不再生效（两类门
+                        // 仅约束 MCP 工具的既有语义），显式留痕
+                        // A policy decorator (approval gate / argument-scope gate)
+                        // is overridden by a builtin: the marked name collides
+                        // with a builtin tool and approvalRequiredMcpTools /
+                        // argConstraints no longer apply to it (both gates
+                        // constrain MCP tools only), logged explicitly
+                        log.warn("Builtin tool overrides the policy-decorated MCP tool with the same name; the policy marking (approval gate / argument scope) no longer applies, toolName:{}",
                                 toolName);
                     } else {
                         log.warn("Builtin tool overrides MCP tool with the same name, toolName:{}", toolName);
@@ -993,6 +1005,44 @@ public abstract class AbstractLLMService extends CommonModelService {
             }
             executors.put(toolName, new ApprovalRequiredDecorator(executor));
         }
+    }
+
+    /**
+     * 对命中参数域约束的 MCP 执行器就地包参数域装饰器（装配期包装，McpToolExecutor
+     * 零改动；必须先于 {@link #wrapApprovalRequiredTools} 调用——参数域在内层、审批
+     * 在外层，审批凭证 hash 基于模型原始参数）：约束参数值 ≠ 当前对话用户名（或参数
+     * 缺失）时不执行真实调用，拒绝文本回喂模型；当前用户不可解析时 fail-open 放行。
+     * 约束映射为空时原样返回（无参数域门，行为不变）。未发现的工具名静默跳过（MCP
+     * 未绑定该工具）；已是参数域装饰器（防重复包装）或协作类（保持审批挂起语义）跳过
+     * <p>
+     * Wrap the MCP executors hit by the argument-scope constraints with the
+     * argument-scope decorator in place (assembly-time wrapping,
+     * McpToolExecutor untouched; must be called <b>before</b>
+     * {@link #wrapApprovalRequiredTools} — argument scope inner, approval
+     * outer, the approval grant's hash computed over the model's original
+     * arguments): a constrained argument value differing from the current chat
+     * user (or a missing argument) skips the real invocation and feeds the
+     * rejection text back to the model; an unresolvable current user is let
+     * through fail-open. An empty constraints map returns the map unchanged
+     * (no argument-scope gate, unchanged behavior). Unknown tool names are
+     * skipped silently (no MCP tool bound); already-wrapped argument-scope
+     * decorators (double-wrap guard) and collaborative entries (preserving the
+     * approval-suspension semantics) are skipped.
+     */
+    static void wrapArgScopeTools(Map<String, ToolExecutor> executors, Map<String, Map<String, String>> argConstraints) {
+        if (null == argConstraints || argConstraints.isEmpty()) {
+            return;
+        }
+        argConstraints.forEach((toolName, params) -> {
+            if (null == params || params.isEmpty()) {
+                return;
+            }
+            ToolExecutor executor = executors.get(toolName);
+            if (null == executor || executor.isCollaborative() || executor instanceof ArgScopeDecorator) {
+                return;
+            }
+            executors.put(toolName, new ArgScopeDecorator(executor, params));
+        });
     }
 
     private List<ToolSpecification> toolSpecifications(Map<String, ToolExecutor> toolExecutorMap) {

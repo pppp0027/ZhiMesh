@@ -9,6 +9,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -81,6 +82,29 @@ public class ChatModelRequest {
      * are unaffected. Absent = no approval gate, unchanged behavior.
      */
     private Set<String> approvalRequiredTools;
+    /**
+     * MCP 工具参数域约束（可空）：来自角色 tool_policy 的 argConstraints（工具名 →
+     * 参数名 → 约束表达式，当前唯一表达式 "@caller" = 参数值必须等于当前对话用户名），
+     * 由聊天入口写入；discoverRequestTools 对命中的 MCP 工具执行器<b>先</b>包
+     * {@link com.pppp.zhimesh.common.languagemodel.tool.ArgScopeDecorator} 参数域门
+     * （值不等或参数缺失即不执行真实调用，拒绝文本回喂模型；当前用户不可解析时
+     * fail-open 放行），<b>再</b>包审批装饰器（审批最外层，凭证 hash 基于模型原始
+     * 参数）。仅约束 MCP 工具，内置工具不受影响；为空 = 无参数域门，行为不变
+     * <p>
+     * Argument-scope constraints for MCP tools (nullable): the character
+     * tool_policy's argConstraints (tool name → argument name → constraint
+     * expression, the only expression today being "@caller" = the value must
+     * equal the current chat user's name), written by the chat entry;
+     * discoverRequestTools wraps the hit MCP executors with the
+     * {@link com.pppp.zhimesh.common.languagemodel.tool.ArgScopeDecorator}
+     * argument-scope gate <b>first</b> (a differing value or a missing argument
+     * skips the real invocation and feeds the rejection text back to the model;
+     * an unresolvable current user is let through fail-open), <b>then</b> with
+     * the approval decorator (approval outermost, its grant hash computed over
+     * the model's original arguments). MCP tools only; builtin tools are
+     * unaffected. Absent = no argument-scope gate, unchanged behavior.
+     */
+    private Map<String, Map<String, String>> argConstraints;
     private String responseFormat;
     private Boolean returnThinking;
     private Boolean enableWebSearch;

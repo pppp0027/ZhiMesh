@@ -575,15 +575,22 @@ public class CharacterChatHelper {
                                                                   User user, AbstractLLMService llmService,
                                                                   boolean enableMcp, boolean enableWebSearch,
                                                                   List<String> imageUrls) {
+        // 身份行适用标记缺省 false：注入要求调用方显式选择完整重载并表态
+        // （design Assumption「身份行注入仅 agentic 生效路径」），本便捷重载不注入
+        // The identity-line applicability flag defaults to false: injection
+        // requires a caller to explicitly pick the full overload and opt in
+        // (design Assumption: identity line on the agentic-effective path
+        // only); this convenience overload never injects
         return buildChatRequestParams(character, character.getUuid(), userPrompt, user, llmService,
-                enableMcp, enableWebSearch, imageUrls);
+                enableMcp, enableWebSearch, imageUrls, false);
     }
 
     public static ChatModelRequest buildChatRequestParams(Character character, String memoryId,
                                                                   String userPrompt, User user,
                                                                   AbstractLLMService llmService,
                                                                   boolean enableMcp, boolean enableWebSearch,
-                                                                  List<String> imageUrls) {
+                                                                  List<String> imageUrls,
+                                                                  boolean callerIdentityApplicable) {
         ChatModelRequest.ChatModelRequestBuilder builder = ChatModelRequest.builder();
 
         //System message（注入当前日期与星期：模型自身感知不到“今天”，缺了这个
@@ -594,10 +601,48 @@ public class CharacterChatHelper {
         // trigger a web-fetch tool round trip (~12s measured).
         String dateContext = "当前日期：" + LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy年MM月dd日"))
                 + " " + DayOfWeek.from(LocalDate.now()).getDisplayName(TextStyle.FULL, java.util.Locale.CHINESE);
+        //身份行（M2 调用者身份，仅 agentic 生效路径——design.md Assumption 契约）：
+        //生效条件 = 调用方显式传入的适用标记 callerIdentityApplicable（聊天侧
+        //CharacterChatService 传 agenticEffective = default-agentic-enabled &&
+        //角色 is_agentic；工作流 AgentNode 链路 LocalAgentService 恒传 false，该链路
+        //零变更）&& 开关 zhimesh.agent.caller-identity-injection-enabled（默认 true）
+        //&& 当前对话用户可解析，三者齐备才在 dateContext 之后追加身份行——供模型解析
+        //"我/本人"的指代并以该身份办理业务（MCP 写操作"仅限本人"的硬约束在
+        //ArgScopeDecorator，这里只解决"模型知道我是谁"）。用户取本方法既有 user 参数
+        //（两处调用方均沿 ThreadContext.getCurrentUser() 既有口径填充，工作流线程池上
+        //ThreadLocal 不可靠故不做二次回源）；任一条件不满足（非 agentic 回退、
+        //AgentNode、开关关、用户 null/姓名空白）不追加任何字符，system message 与
+        //注入前逐字节一致——default-agentic-enabled=false 时无论 identity 开关两态
+        //全路径均回到改造前口径
+        //Identity line (M2 caller identity, agentic-effective path only — the
+        //design.md Assumption contract): it takes effect only when the
+        //caller-supplied applicability flag callerIdentityApplicable (the chat
+        //path in CharacterChatService passes agenticEffective =
+        //default-agentic-enabled && the character's is_agentic; the workflow
+        //AgentNode path in LocalAgentService always passes false — zero change
+        // there) AND the zhimesh.agent.caller-identity-injection-enabled switch
+        //(default true) AND a resolvable current chat user all hold; the line
+        //is then appended after dateContext so the model can resolve
+        //"I/myself" references and act for the user ("self-service only" for
+        //MCP writes is enforced by ArgScopeDecorator; this line only gives the
+        //model the "who am I" context). The user comes from this method's
+        //existing user parameter (both callers populate it along the
+        //ThreadContext.getCurrentUser() convention; no re-resolving here — a
+        //ThreadLocal is unreliable on workflow pool threads); whenever any
+        //condition fails (non-agentic rollback, AgentNode, switch off, null
+        //user / blank name) nothing is appended and the system message stays
+        //byte-for-byte identical to pre-injection — with
+        //default-agentic-enabled=false, every path returns to the pre-change
+        //system message regardless of the identity switch
+        String systemTail = dateContext;
+        if (callerIdentityApplicable && isCallerIdentityInjectionEnabled()
+                && null != user && StringUtils.isNotBlank(user.getName())) {
+            systemTail = dateContext + "\n" + callerIdentityLine(user.getName());
+        }
         if (StringUtils.isNotBlank(character.getAiSystemMessage())) {
-            builder.systemMessage(character.getAiSystemMessage() + "\n\n" + dateContext);
+            builder.systemMessage(character.getAiSystemMessage() + "\n\n" + systemTail);
         } else {
-            builder.systemMessage(dateContext);
+            builder.systemMessage(systemTail);
         }
 
         //Memory (for context understanding) — 上下文恒启用（2026-09-24 产品决策：
@@ -709,5 +754,43 @@ public class CharacterChatHelper {
             return false;
         }
         return true;
+    }
+
+    /**
+     * 身份行文案（逐字约定，eval 剧本与前端断言锚点，改动需同步 design.md）：
+     * 「当前对话用户：{name}。以该身份理解"我/本人"的指代；为其办理业务时以其姓名
+     * 填写员工姓名类参数。」
+     * <p>
+     * The identity-line wording (a verbatim contract and the anchor for eval
+     * scenarios and frontend assertions; changes must sync design.md):
+     * "Current chat user: {name}. Interpret 'I/myself' references as this
+     * identity; when handling business for them, fill employee-name-like
+     * arguments with this name."
+     */
+    private static String callerIdentityLine(String name) {
+        return "当前对话用户：" + name + "。以该身份理解\"我/本人\"的指代；为其办理业务时以其姓名填写员工姓名类参数。";
+    }
+
+    /**
+     * 读取身份注入开关（zhimesh.agent.caller-identity-injection-enabled，默认 true）：
+     * 容器或配置不可用时回退默认值，沿 ToolRoundExecutor.resolveAgentSettings 的
+     * 「解析失败用默认」口径——配置读取异常绝不阻断聊天装配
+     * <p>
+     * Read the identity-injection switch
+     * (zhimesh.agent.caller-identity-injection-enabled, default true): an
+     * unavailable container or properties bean falls back to the declared
+     * default, following ToolRoundExecutor.resolveAgentSettings's
+     * defaults-on-resolution-failure convention — a config-read failure never
+     * blocks chat assembly.
+     */
+    private static boolean isCallerIdentityInjectionEnabled() {
+        try {
+            ZhiMeshProperties properties = SpringUtil.getBean(ZhiMeshProperties.class);
+            return null == properties || null == properties.getAgent()
+                    || properties.getAgent().isCallerIdentityInjectionEnabled();
+        } catch (Exception e) {
+            log.debug("ZhiMeshProperties unavailable, using the default caller-identity injection setting", e);
+            return true;
+        }
     }
 }

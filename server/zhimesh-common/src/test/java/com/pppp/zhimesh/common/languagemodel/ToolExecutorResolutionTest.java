@@ -7,6 +7,8 @@ import com.pppp.zhimesh.common.entity.ModelPlatform;
 import com.pppp.zhimesh.common.helper.SseManager;
 import com.pppp.zhimesh.common.languagemodel.data.InnerStreamChatParam;
 import com.pppp.zhimesh.common.languagemodel.data.LLMException;
+import com.pppp.zhimesh.common.languagemodel.tool.ApprovalRequiredDecorator;
+import com.pppp.zhimesh.common.languagemodel.tool.ArgScopeDecorator;
 import com.pppp.zhimesh.common.languagemodel.tool.McpToolExecutor;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolContext;
 import com.pppp.zhimesh.common.languagemodel.tool.ToolRoundExecutor;
@@ -43,6 +45,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -138,6 +141,60 @@ class ToolExecutorResolutionTest {
         assertThat(tools).containsOnlyKeys("search", "unique_mcp");
         assertThat(tools.get("search")).isSameAs(builtin);
         assertThat(tools.get("unique_mcp")).isInstanceOf(McpToolExecutor.class);
+    }
+
+    @Test
+    void argConstraintToolsAreWrappedWithArgScopeInnerAndApprovalOuter() {
+        // 装配矩阵（argConstraints + approvalRequiredTools 同时命中同一 MCP 工具）：
+        // 审批装饰器最外层、内层 delegate 为 ArgScopeDecorator（审批凭证 hash 覆盖模型
+        // 原始参数，审批通过后仍要过参数域）；仅 argConstraints 命中的工具只包参数域
+        // 装饰器；未命中的原样
+        // Assembly matrix (argConstraints and approvalRequiredTools both hitting
+        // the same MCP tool): the approval decorator outermost with an
+        // ArgScopeDecorator as the inner delegate (the approval grant's hash
+        // covers the model's original arguments, and an approved call still
+        // passes the argument scope); a tool hit by argConstraints alone gets
+        // only the argument-scope decorator; misses stay as-is
+        McpClient mcpClient = mock(McpClient.class);
+        ToolSpecification submit = toolSpec("submit_leave_request");
+        ToolSpecification createTicket = toolSpec("create_ticket");
+        ToolSpecification weather = toolSpec("weather");
+        when(mcpClient.listTools()).thenReturn(List.of(submit, createTicket, weather));
+        ChatModelRequest request = ChatModelRequest.builder()
+                .mcpClients(List.of(mcpClient))
+                .argConstraints(Map.of(
+                        "submit_leave_request", Map.of("employee_name", "@caller"),
+                        "create_ticket", Map.of("reporter", "@caller")))
+                .approvalRequiredTools(Set.of("submit_leave_request"))
+                .build();
+
+        Map<String, ToolExecutor> tools = discoverRequestTools(request);
+
+        ToolExecutor bothGated = tools.get("submit_leave_request");
+        assertThat(bothGated).isInstanceOf(ApprovalRequiredDecorator.class);
+        assertThat(ReflectionTestUtils.getField(bothGated, "delegate")).isInstanceOf(ArgScopeDecorator.class);
+        assertThat(bothGated.spec()).isSameAs(submit);
+
+        assertThat(tools.get("create_ticket")).isInstanceOf(ArgScopeDecorator.class);
+        assertThat(tools.get("create_ticket").spec()).isSameAs(createTicket);
+        assertThat(tools.get("weather")).isInstanceOf(McpToolExecutor.class);
+    }
+
+    @Test
+    void noArgConstraintsLeavesDiscoveredMcpExecutorsUntouched() {
+        // 请求不带 argConstraints（默认态）：装配零参数域门，MCP 执行器原样
+        // A request without argConstraints (the default): no argument-scope
+        // gate is assembled and the MCP executor stays as-is
+        McpClient mcpClient = mock(McpClient.class);
+        ToolSpecification submit = toolSpec("submit_leave_request");
+        when(mcpClient.listTools()).thenReturn(List.of(submit));
+        ChatModelRequest request = ChatModelRequest.builder()
+                .mcpClients(List.of(mcpClient))
+                .build();
+
+        Map<String, ToolExecutor> tools = discoverRequestTools(request);
+
+        assertThat(tools.get("submit_leave_request")).isInstanceOf(McpToolExecutor.class);
     }
 
     @Test

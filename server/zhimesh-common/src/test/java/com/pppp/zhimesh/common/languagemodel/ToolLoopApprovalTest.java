@@ -10,6 +10,7 @@ import com.pppp.zhimesh.common.languagemodel.data.InnerStreamChatParam;
 import com.pppp.zhimesh.common.languagemodel.data.LLMResponseContent;
 import com.pppp.zhimesh.common.languagemodel.tool.ApprovalGrant;
 import com.pppp.zhimesh.common.languagemodel.tool.ApprovalRequiredDecorator;
+import com.pppp.zhimesh.common.languagemodel.tool.ArgScopeDecorator;
 import com.pppp.zhimesh.common.languagemodel.tool.RequestHumanApprovalTool;
 import com.pppp.zhimesh.common.languagemodel.tool.SuspensionCheckpointSink;
 import com.pppp.zhimesh.common.languagemodel.tool.SuspensionSignal;
@@ -523,6 +524,53 @@ class ToolLoopApprovalTest {
         assertThat(executors.get(TOOL_NAME)).isSameAs(submit);
 
         AbstractLLMService.wrapApprovalRequiredTools(executors, Set.of());
+        assertThat(executors.get(TOOL_NAME)).isSameAs(submit);
+    }
+
+    @Test
+    void wrapArgScopeToolsWrapsOnlyHitNonCollaborativeMcpExecutors() {
+        // 参数域装配矩阵：命中约束映射的 MCP 执行器被包参数域装饰器；已是协作类的跳过
+        // （保持审批挂起语义）；空参数条目与未知名（MCP 未绑定）静默跳过；未命中原样
+        // Argument-scope assembly matrix: MCP executors hit by the constraints
+        // map get the argument-scope decorator; collaborative entries are
+        // skipped (preserving the approval-suspension semantics); empty
+        // parameter entries and unknown names (no MCP bound) are skipped
+        // silently; misses stay as-is
+        ToolExecutor submit = new CountingMcpExecutor(TOOL_NAME);
+        ToolExecutor weather = new CountingMcpExecutor("weather");
+        ToolExecutor askUser = new RequestHumanApprovalTool();
+        Map<String, ToolExecutor> executors = new LinkedHashMap<>();
+        executors.put(TOOL_NAME, submit);
+        executors.put("weather", weather);
+        executors.put(RequestHumanApprovalTool.NAME, askUser);
+
+        java.util.Map<String, String> constraints = Map.of("employee_name", "@caller");
+        AbstractLLMService.wrapArgScopeTools(executors, Map.of(
+                TOOL_NAME, constraints,
+                RequestHumanApprovalTool.NAME, constraints,
+                "not_bound_tool", constraints,
+                "empty_params_tool", Map.of()));
+
+        assertThat(executors.get(TOOL_NAME)).isInstanceOf(ArgScopeDecorator.class);
+        assertThat(executors.get(TOOL_NAME).spec().name()).isEqualTo(TOOL_NAME);
+        assertThat(executors.get("weather")).isSameAs(weather);
+        assertThat(executors.get(RequestHumanApprovalTool.NAME)).isSameAs(askUser);
+        assertThat(executors).hasSize(3);
+    }
+
+    @Test
+    void wrapArgScopeToolsLeavesEverythingUntouchedOnEmptyOrNullMap() {
+        // 空映射 / null：装配无参数域门，执行器映射原样（行为不变的默认态）
+        // An empty or null map: no argument-scope gate is assembled and the
+        // executor map stays untouched (the unchanged default state)
+        Map<String, ToolExecutor> executors = new LinkedHashMap<>();
+        ToolExecutor submit = new CountingMcpExecutor(TOOL_NAME);
+        executors.put(TOOL_NAME, submit);
+
+        AbstractLLMService.wrapArgScopeTools(executors, null);
+        assertThat(executors.get(TOOL_NAME)).isSameAs(submit);
+
+        AbstractLLMService.wrapArgScopeTools(executors, Map.of());
         assertThat(executors.get(TOOL_NAME)).isSameAs(submit);
     }
 

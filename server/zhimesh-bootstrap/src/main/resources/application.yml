@@ -78,6 +78,9 @@ zhimesh:
     # max-tool-failures-per-tool: 同一请求内同一工具连续失败熔断阈值（成功清零），0=关闭
     # default-agentic-enabled: 全量 agentic 的兜底开关；false 时全体角色回到改造前的
     #                          单次问答（044 存量全开的回退路径，不回滚数据）
+    # caller-identity-injection-enabled: agentic system message 是否追加当前对话用户
+    #                          身份行；false 时不追加，system message 与改造前逐字节
+    #                          一致（独立回退开关，与整体 agentic 回退正交）
     # mcp-guardrails-enabled: MCP 工具是否纳入超时/截断防护；默认开启，false=旧版直连（回滚）
     # pending-ttl-hours: 挂起检查点惰性过期时长（小时），读取时判定，无定时任务
     # max-suspensions: 同一工具链内 ask_user/审批挂起次数上限，达到后模型优雅收尾
@@ -90,6 +93,10 @@ zhimesh:
     # max-tool-failures-per-tool: consecutive-failure breaker per tool within one request (reset on success); 0 disables
     # default-agentic-enabled: global fallback switch; false restores the pre-agentic
     #                          single-shot chat for everyone (rollback path for 044)
+    # caller-identity-injection-enabled: whether the caller identity line is appended
+    #                          to the agentic system message; false restores the
+    #                          pre-change system message byte-for-byte (standalone
+    #                          rollback switch, orthogonal to the agentic fallback)
     # mcp-guardrails-enabled: whether MCP tools join the timeout/truncation guardrails (default on; false = legacy direct call)
     # pending-ttl-hours: lazy TTL in hours for pending suspension checkpoints
     # max-suspensions: ask_user/approval suspensions allowed within one tool chain
@@ -98,6 +105,7 @@ zhimesh:
     tool-result-max-chars: ${ZHIMESH_AGENT_TOOL_RESULT_MAX_CHARS:4000}
     max-tool-failures-per-tool: ${ZHIMESH_AGENT_MAX_TOOL_FAILURES_PER_TOOL:3}
     default-agentic-enabled: ${ZHIMESH_AGENT_DEFAULT_AGENTIC_ENABLED:true}
+    caller-identity-injection-enabled: ${ZHIMESH_AGENT_CALLER_IDENTITY_INJECTION_ENABLED:true}
     mcp-guardrails-enabled: ${ZHIMESH_AGENT_MCP_GUARDRAILS_ENABLED:true}
     pending-ttl-hours: ${ZHIMESH_AGENT_PENDING_TTL_HOURS:24}
     max-suspensions: ${ZHIMESH_AGENT_MAX_SUSPENSIONS:3}

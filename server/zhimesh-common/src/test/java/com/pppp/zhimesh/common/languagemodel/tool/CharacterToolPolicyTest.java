@@ -6,6 +6,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -176,6 +178,141 @@ class CharacterToolPolicyTest {
         assertThatThrownBy(() -> policy.getBuiltinDenylist().add("search_knowledge"))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> policy.getApprovalRequiredMcpTools().add("another_tool"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    // ==================== argConstraints 解析 / argConstraints parsing ====================
+
+    @Test
+    void argConstraintsParsedForSingleToolAndParam() {
+        // 045 人事/财务种子形态：工具名 → 参数名 → 约束表达式（当前唯一 "@caller"）
+        // The 045 HR/finance seed shape: tool name → parameter name → constraint
+        // expression (the only expression today is "@caller")
+        CharacterToolPolicy policy = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":{\"submit_leave_request\":{\"employee_name\":\"@caller\"}}}");
+
+        assertThat(policy.getArgConstraints())
+                .containsExactly(Map.entry("submit_leave_request", Map.of("employee_name", "@caller")));
+        // 参数域约束与其余两键正交：不点亮 denylist、不点亮审批标记
+        // Argument-scope constraints are orthogonal to the other two keys
+        assertThat(policy.getBuiltinDenylist()).isEmpty();
+        assertThat(policy.getApprovalRequiredMcpTools()).isEmpty();
+    }
+
+    @Test
+    void nestedMultipleToolsAndParamsParseIndependently() {
+        CharacterToolPolicy policy = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":{"
+                        + "\"submit_leave_request\":{\"employee_name\":\"@caller\"},"
+                        + "\"submit_expense_report\":{\"employee_name\":\"@caller\",\"other_param\":\"@caller\"}}}");
+
+        assertThat(policy.getArgConstraints()).hasSize(2);
+        assertThat(policy.getArgConstraints().get("submit_leave_request"))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("employee_name", "@caller"));
+        assertThat(policy.getArgConstraints().get("submit_expense_report"))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("employee_name", "@caller", "other_param", "@caller"));
+    }
+
+    @Test
+    void missingArgConstraintsKeyYieldsEmptyMap() {
+        // 缺 key（JSON 只有别的键）、null 输入、实体字段空白 → 均为空 Map
+        // Missing key, null input, and a blank entity field all yield an empty map
+        CharacterToolPolicy withoutKey = CharacterToolPolicy.fromPolicyJson(
+                "{\"builtinDenylist\":[\"run_workflow\"]}");
+        Character blank = new Character();
+
+        assertThat(withoutKey.getArgConstraints()).isEmpty();
+        assertThat(CharacterToolPolicy.fromPolicyJson(null).getArgConstraints()).isEmpty();
+        assertThat(CharacterToolPolicy.fromCharacter(blank).getArgConstraints()).isEmpty();
+        assertThat(CharacterToolPolicy.defaultPolicy().getArgConstraints()).isEmpty();
+    }
+
+    @Test
+    void emptyArgConstraintsObjectAndEmptyEntriesYieldEmptyMap() {
+        // 空对象、以及"工具条目里没有任何文本参数"的条目，均为空 Map
+        // An empty object, and tool entries without any textual parameter, both yield an empty map
+        CharacterToolPolicy emptyObject = CharacterToolPolicy.fromPolicyJson("{\"argConstraints\":{}}");
+        CharacterToolPolicy emptyToolEntry = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":{\"submit_leave_request\":{}}}");
+
+        assertThat(emptyObject.getArgConstraints()).isEmpty();
+        assertThat(emptyToolEntry.getArgConstraints()).isEmpty();
+    }
+
+    @Test
+    void wrongTypedArgConstraintsIsIgnoredWhileSiblingKeysStillParse() {
+        // argConstraints 整体类型不符、工具条目非对象、参数值非文本：按空处理不连坐其余 key
+        // A non-object argConstraints, a non-object tool entry, and non-textual
+        // values are all treated as empty without taking down sibling keys
+        CharacterToolPolicy scalarKey = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":\"@caller\",\"approvalRequiredMcpTools\":[\"submit_expense_report\"]}");
+        CharacterToolPolicy scalarToolEntry = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":{\"submit_leave_request\":\"@caller\"}}");
+        CharacterToolPolicy nonTextualValue = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":{\"submit_leave_request\":{\"employee_name\":42,\"days\":\"@caller\"}}}");
+
+        assertThat(scalarKey.getArgConstraints()).isEmpty();
+        assertThat(scalarKey.getApprovalRequiredMcpTools()).containsExactly("submit_expense_report");
+        assertThat(scalarToolEntry.getArgConstraints()).isEmpty();
+        // 条目内仅丢弃坏值，同条目的合法参数保留
+        // Only the bad value is dropped within the entry; valid siblings survive
+        assertThat(nonTextualValue.getArgConstraints())
+                .containsExactly(Map.entry("submit_leave_request", Map.of("days", "@caller")));
+    }
+
+    @Test
+    void invalidJsonFailSafeYieldsEmptyArgConstraints() {
+        // 非法 JSON 整体回到默认策略：argConstraints 也为空、不抛异常（fail-safe）
+        // Invalid JSON falls back wholesale: argConstraints is empty too, no exception (fail-safe)
+        CharacterToolPolicy policy = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":{\"submit_leave_request\":{\"employee_name\":\"@caller\"}");
+
+        assertThat(policy.isBuiltinAllowed("run_workflow")).isTrue();
+        assertThat(policy.getArgConstraints()).isEmpty();
+    }
+
+    @Test
+    void allThreeKeysCoexistInOnePolicyJson() {
+        // 045 种子落库后的完整形态：denylist、审批标记、参数域约束三键共存
+        // The full post-045 seed shape: denylist, approval markers, and
+        // argument-scope constraints coexisting in one JSON
+        CharacterToolPolicy policy = CharacterToolPolicy.fromPolicyJson(
+                "{\"builtinDenylist\":[\"run_workflow\"],"
+                        + "\"approvalRequiredMcpTools\":[\"submit_expense_report\",\"submit_leave_request\"],"
+                        + "\"argConstraints\":{\"submit_expense_report\":{\"employee_name\":\"@caller\"}}}");
+
+        assertThat(policy.isBuiltinAllowed("run_workflow")).isFalse();
+        assertThat(policy.getApprovalRequiredMcpTools())
+                .containsExactlyInAnyOrder("submit_expense_report", "submit_leave_request");
+        assertThat(policy.getArgConstraints())
+                .containsExactly(Map.entry("submit_expense_report", Map.of("employee_name", "@caller")));
+    }
+
+    @Test
+    void argConstraintsKeyConstantIsPinnedToMigration045Contract() {
+        // 常量与迁移 045 注释钉死的契约一致；用常量拼出策略 JSON 回环解析验证
+        // The constant matches the contract pinned by migration 045; round-trip
+        // a policy JSON built from the constants
+        assertThat(CharacterToolPolicy.KEY_ARG_CONSTRAINTS).isEqualTo("argConstraints");
+
+        String json = String.format("{\"%s\":{\"submit_leave_request\":{\"employee_name\":\"@caller\"}}}",
+                CharacterToolPolicy.KEY_ARG_CONSTRAINTS);
+        CharacterToolPolicy policy = CharacterToolPolicy.fromPolicyJson(json);
+
+        assertThat(policy.getArgConstraints())
+                .containsExactly(Map.entry("submit_leave_request", Map.of("employee_name", "@caller")));
+    }
+
+    @Test
+    void argConstraintsMapIsDeeplyImmutable() {
+        CharacterToolPolicy policy = CharacterToolPolicy.fromPolicyJson(
+                "{\"argConstraints\":{\"submit_leave_request\":{\"employee_name\":\"@caller\"}}}");
+
+        // 外层与每个参数 Map 均不可变（请求级只读视图不允许原地改写）
+        // Both the outer map and every parameter map are immutable
+        assertThatThrownBy(() -> policy.getArgConstraints().put("another_tool", Map.of()))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> policy.getArgConstraints().get("submit_leave_request").put("days", "@caller"))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 }

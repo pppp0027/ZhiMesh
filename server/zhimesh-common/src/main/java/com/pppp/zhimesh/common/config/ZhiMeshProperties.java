@@ -505,6 +505,20 @@ public class ZhiMeshProperties {
         /** Global fallback for the agentic switch: effective agentic = this flag AND character.is_agentic; false restores the pre-agentic single-shot chat for everyone (rollback path for migration 044). */
         private boolean defaultAgenticEnabled = true;
         /**
+         * 调用者身份注入开关：agentic 生效路径的 system message 是否在 dateContext
+         * 之后追加当前对话用户身份行（"当前对话用户：{name}…"，供模型解析"我/本人"
+         * 的指代并以该身份办理业务）。false 时不追加，system message 与注入改造前
+         * 逐字节一致（独立回退开关）；与 default-agentic-enabled（整体 agentic
+         * 回退）正交，仅控制身份行这一处追加。
+         * Whether the caller identity line is appended to the agentic system
+         * message (after dateContext) so the model can resolve "I/myself"
+         * references and act for the current chat user. false skips the line
+         * and the system message stays byte-for-byte identical to the
+         * pre-injection state (standalone rollback switch); orthogonal to
+         * default-agentic-enabled, which rolls back the whole agentic path.
+         */
+        private boolean callerIdentityInjectionEnabled = true;
+        /**
          * MCP 工具是否纳入超时/截断护栏。默认 true：MCP fetch 这类外呼工具
          * 不设超时会拖满传输层自身上限，抓回的大网页全文回喂也会撑爆输入
          * token。false = 旧版直连行为（回滚开关）。

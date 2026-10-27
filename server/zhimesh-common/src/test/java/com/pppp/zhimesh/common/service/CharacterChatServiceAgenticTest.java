@@ -517,6 +517,81 @@ class CharacterChatServiceAgenticTest {
     }
 
     @Test
+    void argConstraintsRideTheRequestParamsWhenPolicyMarksTools() {
+        // tool_policy 携带 argConstraints：约束映射原样写入
+        // ChatModelRequest.argConstraints（沿 approvalRequiredTools 的同一请求参数通道；
+        // 装包 ArgScopeDecorator 由 AbstractLLMService.discoverRequestTools 按 discover
+        // 期工具命中处理）；与 denylist 共存时两键互不干扰
+        // The tool_policy carries argConstraints: the map rides
+        // ChatModelRequest.argConstraints as-is (the same request-params
+        // channel as approvalRequiredTools; wrapping with ArgScopeDecorator is
+        // discoverRequestTools' job, matched against the discovered tools);
+        // alongside a denylist the two keys never interfere
+        character.setToolPolicy("{\"builtinDenylist\":[\"run_workflow\"],"
+                + "\"argConstraints\":{\"submit_leave_request\":{\"employee_name\":\"@caller\"},"
+                + "\"create_ticket\":{\"reporter\":\"@caller\"}}}");
+        runExecuteChat(Boolean.TRUE, true, null);
+
+        SseAskParamCapture captured = captureAskParam();
+        assertThat(captured.param.getHttpRequestParams().getArgConstraints())
+                .containsEntry("submit_leave_request", Map.of("employee_name", "@caller"))
+                .containsEntry("create_ticket", Map.of("reporter", "@caller"))
+                .hasSize(2);
+    }
+
+    @Test
+    void argConstraintsStayUnsetWithoutMarkersOrAgenticMode() {
+        // 无标记（默认策略）或非 agentic（角色未开启）都保持 argConstraints=null：装配无
+        // 参数域门，行为回到现状（与 approvalRequiredTools 同口径的回退等价）
+        // Neither a default policy (no markers) nor a non-agentic character sets
+        // argConstraints: no argument-scope gate is assembled and behavior stays
+        // as before (the same rollback equality as approvalRequiredTools)
+        runExecuteChat(Boolean.TRUE, true, null);
+        character.setToolPolicy("{\"argConstraints\":{\"submit_leave_request\":{\"employee_name\":\"@caller\"}}}");
+        runExecuteChat(Boolean.FALSE, true, null);
+
+        ArgumentCaptor<SseAskParam> paramCaptor = ArgumentCaptor.forClass(SseAskParam.class);
+        verify(sseManager, times(2)).call(eq(llmService), paramCaptor.capture(), any(), any());
+        for (SseAskParam param : paramCaptor.getAllValues()) {
+            assertThat(param.getHttpRequestParams().getArgConstraints()).isNull();
+        }
+    }
+
+    @Test
+    void identityLineInjectedOnAgenticChatPathOnly() {
+        // 身份行接线（design 契约「仅 agentic 生效路径」）：agentic 生效 + identity
+        // 开关默认开 + 用户可解析 → system message 尾部追加身份行（日期之后）；同一
+        // 用户 + 非 agentic 角色 → 不追加任何字符，逐字节回到改造前（= agentic 形态
+        // 去掉身份行那一行）；AgentNode 侧由 LocalAgentService 恒传 false 承担
+        // Identity-line wiring (the design contract "agentic-effective path
+        // only"): agentic effective + the identity switch on by default + a
+        // resolvable user → the system message ends with the identity line
+        // (after the date line); the same user with a non-agentic character →
+        // nothing appended, byte-for-byte pre-change (= the agentic shape minus
+        // the identity line); the AgentNode side is carried by LocalAgentService
+        // passing a hard-coded false
+        user.setName("李四");
+        runExecuteChat(Boolean.TRUE, true, null);
+        runExecuteChat(Boolean.FALSE, true, null);
+
+        ArgumentCaptor<SseAskParam> paramCaptor = ArgumentCaptor.forClass(SseAskParam.class);
+        verify(sseManager, times(2)).call(eq(llmService), paramCaptor.capture(), any(), any());
+        String agenticSystemMessage = paramCaptor.getAllValues().get(0).getHttpRequestParams().getSystemMessage();
+        String nonAgenticSystemMessage = paramCaptor.getAllValues().get(1).getHttpRequestParams().getSystemMessage();
+
+        String identityLine = "当前对话用户：李四。以该身份理解\"我/本人\"的指代；"
+                + "为其办理业务时以其姓名填写员工姓名类参数。";
+        assertThat(agenticSystemMessage).endsWith(identityLine);
+        assertThat(agenticSystemMessage.indexOf("当前日期："))
+                .isLessThan(agenticSystemMessage.indexOf("当前对话用户：李四"));
+        assertThat(nonAgenticSystemMessage).doesNotContain("当前对话用户");
+        // 字节级口径：非 agentic = agentic 去掉「\n+身份行」，两者其余部分逐字节一致
+        // The byte-level convention: non-agentic = agentic minus the "\n +
+        // identity line", everything else byte-identical
+        assertThat(agenticSystemMessage).isEqualTo(nonAgenticSystemMessage + "\n" + identityLine);
+    }
+
+    @Test
     void toolPolicyDenylistRemovingAllBuiltinToolsSkipsAgenticContext() {
         // 四件内置工具都被摘掉：注册集为空 → 回到非 agentic 行为（不构造上下文、
         // 不注册任何工具）；这是 ask_user/request_human_approval 恒可用后唯一的

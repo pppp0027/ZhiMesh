@@ -476,15 +476,25 @@ public class CharacterChatService {
         }
         */
         // 11.装配System Message、短期记忆 + MCP等（恢复轮同样走正常装配——按当前配置
-        // 新建 MCP 客户端/system prompt/工具集合；仅消息链与迭代深度被检查点覆盖）
+        // 新建 MCP 客户端/system prompt/工具集合；仅消息链与迭代深度被检查点覆盖）。
+        // agentic 生效判定上移至此一次求值：身份行接线（仅 agentic 聊天路径注入，传给
+        // buildChatRequestParams 的 callerIdentityApplicable 标记）与第 11.5 步
+        // Agentic 分支共用同一变量同一口径
         // 11. Assemble System Message, short-term memory + MCP (resumed rounds
         // take the normal assembly too — fresh MCP clients / system prompt /
         // tool set per current config; only the message chain and iteration
-        // depth are overridden by the checkpoint)
+        // depth are overridden by the checkpoint). The agentic-effectiveness
+        // decision is hoisted here and computed once: the identity-line wiring
+        // (agentic chat path only, passed as buildChatRequestParams'
+        // callerIdentityApplicable flag) and the step-11.5 agentic branch share
+        // this one variable and convention
+        boolean agenticEffective = resolveAgentSettings().isDefaultAgenticEnabled()
+                && Boolean.TRUE.equals(character.getIsAgentic());
         ChatModelRequest chatRequestParams = CharacterChatHelper.buildChatRequestParams(
                 character, chatContext.shortTermMemoryId(),
                 askReq.getProcessedPrompt() != null ? askReq.getProcessedPrompt() : askReq.getPrompt(),
-                user, llmService, true, Boolean.TRUE.equals(character.getIsEnableWebSearch()), askReq.getImageUrls());
+                user, llmService, true, Boolean.TRUE.equals(character.getIsEnableWebSearch()), askReq.getImageUrls(),
+                agenticEffective);
         chatRequestParams.setShortTermMemoryUserMessage(askReq.getPrompt());
         if (resumed) {
             chatRequestParams.setResumedMessages(resumeAssembly.resumedMessages());
@@ -529,7 +539,7 @@ public class CharacterChatService {
         // The completion callback still needs toolContext (tool-evidence
         // merging, traces and the suspension payload on the meta event)
         ToolContext toolContext = assembleAgenticBranch(chatContext, character, user, askReq, filteredKb,
-                llmService, resumeCheckpoint, resumed, sseAskParam, chatRequestParams);
+                llmService, resumeCheckpoint, resumed, sseAskParam, chatRequestParams, agenticEffective);
         // 12.设置temperature、是否返回思考等模型参数
         sseAskParam.setHttpRequestParams(chatRequestParams);
         sseAskParam.setModelProperties(
@@ -823,7 +833,10 @@ public class CharacterChatService {
      * 不动，工具是增量能力；agentic 未生效时不构造任何对象、不触发工作流可见性查询，
      * 行为与存量逐字节等价。审批门：tool_policy 的 approvalRequiredMcpTools 写入请求
      * 参数，由 AbstractLLMService.discoverRequestTools 对命中的 MCP 执行器包审批装饰器；
-     * 仅 agentic 生效时接线，集合为空不设置（无审批门，行为不变）
+     * 仅 agentic 生效时接线，集合为空不设置（无审批门，行为不变）。参数域门：tool_policy
+     * 的 argConstraints 沿同一请求参数通道写入（ArgScopeDecorator 为内层——审批装饰器
+     * 最外层使其凭证 hash 覆盖模型原始参数，审批通过后仍要过「仅限本人」校验），接线
+     * 条件与空值口径同审批门
      * <p>
      * Agentic branch assembly (executeChat step 11.5): effective = fallback
      * switch zhimesh.agent.default-agentic-enabled AND the character's
@@ -845,16 +858,23 @@ public class CharacterChatService {
      * request params, and AbstractLLMService.discoverRequestTools wraps the
      * hit MCP executors with the approval decorator; wired only while agentic
      * is effective, and an empty set leaves the field unset (no gate,
-     * unchanged behavior). Returns the assembled request-scoped ToolContext
+     * unchanged behavior). Argument-scope gate: the tool_policy's
+     * argConstraints ride the same request-params channel (ArgScopeDecorator,
+     * inner layer — approval outermost so its grant hash covers the model's
+     * original arguments, and an approved call still passes the
+     * self-service-only check), same wiring condition and empty-means-
+     * unchanged convention. Returns the assembled request-scoped ToolContext
      * (null = agentic not effective) — the completion callback still needs it
-     * for tool-evidence merging, trace/meta emission.
+     * for tool-evidence merging, trace/meta emission. The effectiveness
+     * decision itself is computed once by the caller (executeChat, before the
+     * system-message assembly) and passed in as agenticEffective so the
+     * identity-line applicability flag and this branch share one convention.
      */
     private ToolContext assembleAgenticBranch(ChatContext chatContext, Character character, User user, AskReq askReq,
                                               List<KbInfoResp> filteredKb, AbstractLLMService llmService,
                                               AgentPendingCheckpoint resumeCheckpoint, boolean resumed,
-                                              SseAskParam sseAskParam, ChatModelRequest chatRequestParams) {
-        boolean agenticEffective = resolveAgentSettings().isDefaultAgenticEnabled()
-                && Boolean.TRUE.equals(character.getIsAgentic());
+                                              SseAskParam sseAskParam, ChatModelRequest chatRequestParams,
+                                              boolean agenticEffective) {
         CharacterToolPolicy toolPolicy = CharacterToolPolicy.fromCharacter(character);
         List<RunWorkflowTool.WorkflowOption> runnableWorkflows =
                 agenticEffective ? listRunnableWorkflowOptions(user) : List.of();
@@ -913,6 +933,19 @@ public class CharacterChatService {
         }
         if (agenticEffective && CollectionUtils.isNotEmpty(toolPolicy.getApprovalRequiredMcpTools())) {
             chatRequestParams.setApprovalRequiredTools(toolPolicy.getApprovalRequiredMcpTools());
+        }
+        // 参数域门：tool_policy 的 argConstraints 沿 approvalRequiredTools 的同一请求
+        // 参数通道写入（仅 agentic 生效时接线、非空才设置），由
+        // AbstractLLMService.discoverRequestTools 对命中的 MCP 执行器包
+        // ArgScopeDecorator（内层、先于审批装饰器——审批通过后仍要过「仅限本人」校验）
+        // Argument-scope gate: the tool_policy's argConstraints ride the same
+        // request-params channel as approvalRequiredTools (wired only while
+        // agentic is effective, set only when non-empty), and
+        // AbstractLLMService.discoverRequestTools wraps the hit MCP executors
+        // with ArgScopeDecorator (inner, before the approval decorator — an
+        // approved call still passes the self-service-only check)
+        if (agenticEffective && !toolPolicy.getArgConstraints().isEmpty()) {
+            chatRequestParams.setArgConstraints(toolPolicy.getArgConstraints());
         }
         return toolContext;
     }
