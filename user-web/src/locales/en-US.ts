@@ -274,6 +274,7 @@ export default {
     stepSuspensionAskUser: 'Suspended: awaiting user answer',
     stepSuspensionApproval: 'Suspended: awaiting approval',
     stepResumed: 'Answer submitted, resuming',
+    stepArgScopeDenied: 'Blocked: caller-only',
     sourceList: 'Sources',
     configKnowledgeBase: 'Configure knowledge base for character',
     configMcp: 'Configure services and tools for character',

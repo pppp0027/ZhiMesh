@@ -54,6 +54,21 @@ function stepSuspensionKind(tool: Chat.ToolCall): Chat.SuspensionPayload['kind']
   return SUSPENSION_TOOL_KINDS[tool.toolName]
 }
 
+// 参数域拒绝节点：后端 ArgScopeDecorator 拒绝行的 resultSummary 带 [ARG_SCOPE] 前缀
+// （轨迹契约：审计/前端可据此前缀识别），语义是越权调用被硬拒，区别于普通工具失败
+const ARG_SCOPE_MARKER_PREFIX = '[ARG_SCOPE] '
+
+function stepArgScopeDenied(tool: Chat.ToolCall): boolean {
+  return !!tool.resultSummary?.startsWith(ARG_SCOPE_MARKER_PREFIX)
+}
+
+// ArgScope 拒绝行展示文本剥掉机器前缀（悬浮 title 保留全文供审计）
+function stepResultText(tool: Chat.ToolCall): string {
+  if (stepArgScopeDenied(tool))
+    return (tool.resultSummary ?? '').slice(ARG_SCOPE_MARKER_PREFIX.length)
+  return tool.resultSummary ?? ''
+}
+
 // running 步骤用 is-wait 同款 accent 色（与挂起节点一致）
 function stepStatusClass(tool: Chat.ToolCall): string {
   if (tool.running || stepSuspensionKind(tool))
@@ -71,6 +86,8 @@ function stepStatusIcon(tool: Chat.ToolCall): string {
     return 'ri:question-answer-line'
   if (kind)
     return 'ri:shield-check-line'
+  if (stepArgScopeDenied(tool))
+    return 'ri:shield-cross-line'
   return tool.resumed ? 'ri:play-circle-line' : tool.success ? 'ri:check-line' : 'ri:close-line'
 }
 
@@ -114,6 +131,7 @@ function truncate(text: string | undefined | null, max: number): string {
         <span v-if="stepSuspensionKind(tool) === 'ASK_USER'" class="tool-step-node">{{ t('chat.stepSuspensionAskUser') }}</span>
         <span v-else-if="stepSuspensionKind(tool)" class="tool-step-node">{{ t('chat.stepSuspensionApproval') }}</span>
         <span v-else-if="tool.resumed" class="tool-step-node">{{ t('chat.stepResumed') }}</span>
+        <span v-else-if="stepArgScopeDenied(tool)" class="tool-step-node">{{ t('chat.stepArgScopeDenied') }}</span>
         <span v-if="tool.args" class="tool-step-args" :title="tool.args">
           <span class="tool-step-label">{{ t('chat.toolCallArgs') }}</span>{{ truncate(tool.args, 60) }}
         </span>
@@ -121,7 +139,7 @@ function truncate(text: string | undefined | null, max: number): string {
           <span class="tool-step-label">{{ t('chat.toolCallDuration') }}</span>{{ formatDuration(tool.durationMs) }}
         </span>
         <span v-if="tool.resultSummary" class="tool-step-result" :title="tool.resultSummary">
-          <span class="tool-step-label">{{ t('chat.toolCallResult') }}</span>{{ truncate(tool.resultSummary, 120) }}
+          <span class="tool-step-label">{{ t('chat.toolCallResult') }}</span>{{ truncate(stepResultText(tool), 120) }}
         </span>
       </span>
     </span>

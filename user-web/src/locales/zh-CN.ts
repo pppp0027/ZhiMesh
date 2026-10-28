@@ -274,6 +274,7 @@ export default {
     stepSuspensionAskUser: '挂起：等待用户应答',
     stepSuspensionApproval: '挂起：等待人工审批',
     stepResumed: '应答已提交，恢复执行',
+    stepArgScopeDenied: '已拦截：仅限本人办理',
     sourceList: '信息来源',
     configKnowledgeBase: '配置角色使用的知识库',
     configMcp: '配置角色使用的服务与工具',
